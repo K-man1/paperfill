@@ -1,0 +1,1193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Paperfill — AI worksheet filler</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #f5f1e8;
+  --paper-deep: #ebe5d4;
+  --ink: #1a1814;
+  --ink-soft: #4a4438;
+  --rule: #c9c0a8;
+  --rule-soft: #ddd5bf;
+  --accent: #ff5a1f;
+  --accent-deep: #c93f10;
+  --highlight: #fce96a;
+  --shadow: 0 1px 0 rgba(0,0,0,0.04), 0 8px 24px -8px rgba(26,24,20,0.18);
+  --shadow-deep: 0 2px 0 rgba(0,0,0,0.04), 0 24px 48px -16px rgba(26,24,20,0.28);
+  --serif: "Fraunces", "Times New Roman", serif;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(ellipse 800px 400px at 20% -10%, rgba(255,90,31,0.08), transparent),
+    radial-gradient(ellipse 600px 300px at 90% 110%, rgba(252,233,106,0.18), transparent);
+}
+
+/* paper grain via subtle noise */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(26,24,20,0.012) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(26,24,20,0.012) 0 1px, transparent 1px 3px);
+  z-index: 1;
+  mix-blend-mode: multiply;
+}
+
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 48px 32px 96px;
+  position: relative;
+  z-index: 2;
+}
+
+/* ---- Masthead ---- */
+header.masthead {
+  border-bottom: 1px solid var(--ink);
+  padding-bottom: 16px;
+  margin-bottom: 40px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 24px;
+}
+.masthead .top-rule {
+  grid-column: 1 / -1;
+  border-top: 3px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.brand {
+  font-family: var(--serif);
+  font-weight: 800;
+  font-size: clamp(48px, 8vw, 96px);
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+  margin: 0;
+}
+.brand em {
+  font-style: italic;
+  color: var(--accent);
+}
+.subtitle {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  text-align: right;
+  padding-bottom: 6px;
+}
+
+/* ---- Stage system ---- */
+.stage { display: none; }
+.stage.active { display: block; animation: fadeUp 0.4s ease both; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- Stage 1: Drop zone ---- */
+.drop {
+  display: block;
+  background: #fff;
+  border: 2px dashed var(--rule);
+  border-radius: 4px;
+  padding: 80px 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: var(--shadow);
+  position: relative;
+}
+.drop:hover, .drop.dragover {
+  border-color: var(--accent);
+  background: #fffbf6;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-deep);
+}
+.drop.dragover { border-style: solid; }
+.drop-icon {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 64px;
+  line-height: 1;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+.drop h2 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 28px;
+  margin: 0 0 8px;
+  letter-spacing: -0.01em;
+}
+.drop p {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  margin: 0;
+}
+.drop input { display: none; }
+
+/* ---- Instructions box ---- */
+.instructions-box {
+  margin-bottom: 24px;
+}
+.instructions-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+.instructions-label span {
+  color: var(--ink-soft);
+  text-transform: none;
+  letter-spacing: 0;
+  font-style: italic;
+}
+#instructions {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 14px 16px;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  transition: border-color 0.15s;
+}
+#instructions:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+#instructions::placeholder {
+  color: var(--ink-soft);
+  opacity: 0.7;
+}
+
+.tagline {
+  font-family: var(--serif);
+  font-size: 22px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  margin: 32px 0;
+  max-width: 640px;
+}
+.tagline strong { color: var(--ink); font-weight: 600; }
+
+/* ---- How it works strip ---- */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  margin-top: 64px;
+  padding-top: 32px;
+  border-top: 1px solid var(--rule);
+}
+.step .num {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 48px;
+  font-weight: 400;
+  color: var(--accent);
+  line-height: 1;
+}
+.step h3 {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+.step p {
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* ---- Stage 2: Detected ---- */
+.split {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 32px;
+}
+.preview-pane {
+  background: #fff;
+  border-radius: 4px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.preview-pane img {
+  width: 100%;
+  display: block;
+  border: 1px solid var(--rule-soft);
+  margin-bottom: 16px;
+}
+.preview-pane img:last-child { margin-bottom: 0; }
+
+.info-pane {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+}
+.info-card {
+  background: #fff;
+  border-radius: 4px;
+  padding: 24px;
+  box-shadow: var(--shadow);
+  margin-bottom: 16px;
+}
+.info-card h3 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 18px;
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.stat .label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  margin-bottom: 4px;
+}
+.stat .value {
+  font-family: var(--serif);
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1;
+}
+.stat .value em {
+  font-style: italic;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.detected-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+}
+.detected-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  display: flex;
+  gap: 8px;
+}
+.detected-list li:last-child { border-bottom: none; }
+.detected-list .tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: var(--paper-deep);
+  padding: 2px 6px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 1px;
+}
+.tag.inline { background: #d4e9d2; color: #2d5a26; }
+.tag.open { background: #d4dde9; color: #234578; }
+.tag.table { background: #f0d8c8; color: #7d3c0e; }
+.detected-list .txt {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Buttons ---- */
+button {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-primary {
+  width: 100%;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 16px;
+  border-radius: 2px;
+  box-shadow: 0 2px 0 var(--ink-soft);
+  position: relative;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 0 var(--accent-deep);
+}
+.btn-primary:active { transform: translateY(1px); box-shadow: 0 0 0 var(--ink-soft); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-soft);
+  padding: 12px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  width: 100%;
+}
+.btn-ghost:hover { color: var(--ink); border-color: var(--ink); }
+
+/* ---- Loading ---- */
+.loading-bar {
+  height: 2px;
+  background: var(--rule-soft);
+  border-radius: 1px;
+  overflow: hidden;
+  margin-bottom: 12px;
+  display: none;
+}
+.loading-bar.active { display: block; }
+.loading-bar::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--accent);
+  animation: slide 1.2s ease-in-out infinite;
+}
+@keyframes slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+.loading-msg {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  text-align: center;
+  display: none;
+}
+.loading-msg.active { display: block; }
+
+/* ---- Stage 3: Editor ---- */
+.editor-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: #fff;
+  padding: 16px;
+  border-radius: 4px;
+  box-shadow: var(--shadow);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.editor-toolbar button { flex: 0 0 auto; padding: 12px 18px; min-width: 0; }
+.editor-toolbar .spacer { flex: 1; }
+.editor-toolbar #add-box-btn.active,
+.editor-toolbar .fmt-btn.active {
+  background: var(--accent);
+  color: var(--paper);
+  border-color: var(--accent-deep);
+}
+.fmt-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-left: 1px solid var(--rule-soft);
+  border-right: 1px solid var(--rule-soft);
+}
+.fmt-group:first-child { border-left: none; }
+.fmt-group select {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+.fmt-group select:disabled { opacity: 0.45; cursor: not-allowed; }
+.fmt-btn {
+  font-family: var(--serif);
+  font-size: 14px;
+  width: 34px;
+  height: 34px;
+  padding: 0 !important;
+  min-width: 0;
+  border: 1px solid var(--rule);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 2px;
+}
+.fmt-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.fmt-btn.b { font-weight: 800; }
+.fmt-btn.i { font-style: italic; }
+.fmt-btn.u { text-decoration: underline; }
+.fmt-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  margin-right: 4px;
+}
+.editor-help {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 16px;
+  text-align: center;
+}
+.editor-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  align-items: center;
+}
+.editor-page {
+  position: relative;
+  box-shadow: var(--shadow);
+  background: #fff;
+  max-width: 100%;
+}
+.editor-page.adding { cursor: crosshair; }
+.editor-page img {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.overlay {
+  position: absolute;
+  border: 1.5px dashed rgba(255,90,31,0.6);
+  background: rgba(255, 251, 240, 0.92);
+  font-family: "Fraunces", serif;
+  color: #000000;
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+}
+.overlay:hover { background: rgba(255, 251, 240, 0.9); border-color: var(--accent); }
+.overlay.selected { border-style: solid; border-color: var(--accent); background: rgba(255, 251, 240, 0.95); }
+.ov-text {
+  flex: 1;
+  padding: 1px 3px;
+  outline: none;
+  white-space: pre-wrap;
+  overflow: hidden;
+  cursor: text;
+  line-height: 1.15;
+}
+.ov-drag, .ov-delete {
+  position: absolute;
+  width: 18px; height: 18px;
+  color: var(--paper);
+  border-radius: 50%;
+  font-size: 11px;
+  font-family: var(--mono);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  user-select: none;
+}
+.overlay:hover .ov-drag,
+.overlay.selected .ov-drag,
+.overlay:hover .ov-delete,
+.overlay.selected .ov-delete { display: flex; }
+.ov-drag { left: -9px; top: -9px; background: var(--ink); cursor: move; }
+.ov-delete { right: -9px; top: -9px; background: var(--accent-deep); cursor: pointer; }
+.ov-resize {
+  position: absolute;
+  right: -8px; bottom: -8px;
+  width: 14px; height: 14px;
+  background: var(--ink);
+  border: 2px solid var(--paper);
+  border-radius: 50%;
+  cursor: nwse-resize;
+  display: none;
+  z-index: 5;
+}
+.overlay:hover .ov-resize, .overlay.selected .ov-resize { display: block; }
+.draw-rect {
+  position: absolute;
+  border: 2px solid var(--accent);
+  background: rgba(255,90,31,0.15);
+  pointer-events: none;
+}
+.saving-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(245,241,232,0.7);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  font-family: var(--mono);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.saving-overlay.active { display: flex; }
+
+/* ---- Error / toast ---- */
+.toast {
+  position: fixed;
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%) translateY(160%);
+  background: var(--ink);
+  color: var(--paper);
+  padding: 12px 20px;
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  z-index: 100;
+  transition: transform 0.3s ease;
+  box-shadow: var(--shadow-deep);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 480px;
+  cursor: pointer;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.error { background: var(--accent-deep); }
+.toast-dismiss { opacity: 0.7; font-size: 16px; line-height: 1; }
+.error-banner {
+  display: none;
+  background: #fff0ed;
+  border: 1.5px solid var(--accent-deep);
+  border-radius: 4px;
+  padding: 16px 20px;
+  margin-bottom: 24px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent-deep);
+  letter-spacing: 0.04em;
+}
+.error-banner.visible { display: block; }
+.error-banner strong { display: block; margin-bottom: 4px; font-size: 13px; }
+
+@media (max-width: 760px) {
+  .split { grid-template-columns: 1fr; }
+  .compare { grid-template-columns: 1fr; }
+  .steps { grid-template-columns: 1fr; gap: 16px; }
+  .info-pane { position: static; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header class="masthead">
+    <div class="top-rule">
+      <span>EST. 2026 · NJ</span>
+      <span id="status-line">Ready</span>
+    </div>
+    <h1 class="brand">Paper<em>fill</em>.</h1>
+    <div class="subtitle">AI worksheet filler<br>by Karman Singh</div>
+  </header>
+
+  <!-- ===== Error banner (shown above drop zone on failure) ===== -->
+  <div class="error-banner" id="error-banner">
+    <strong>Something went wrong</strong>
+    <span id="error-detail"></span>
+  </div>
+
+  <!-- ===== STAGE 1: Upload ===== -->
+  <section class="stage active" id="stage-upload">
+    <p class="tagline">
+      Drop in any <strong>fill-in-the-blank worksheet</strong> as a PDF.
+      We find every blank, every question, every box — then fill them
+      with answers that fit, without ever overlapping your original text.
+    </p>
+
+    <div class="instructions-box">
+      <label class="instructions-label" for="instructions">
+        Instructions <span>— optional</span>
+      </label>
+      <textarea id="instructions" placeholder="Paste an answer key or tell the AI how to fill the sheet. e.g. 'Cult of personality: Dictators promote an idealized, heroic image of themselves…' — the AI will match your answers to the right blanks."></textarea>
+    </div>
+
+    <label class="drop" id="drop">
+      <div class="drop-icon">↓</div>
+      <h2>Drop a PDF here</h2>
+      <p>or click to browse · max 10 MB</p>
+      <input type="file" id="file-input" accept="application/pdf">
+    </label>
+
+    <div class="steps">
+      <div class="step">
+        <div class="num">i.</div>
+        <h3>Parse the structure</h3>
+        <p>We map every underscore run, every question, every table cell to a precise bounding box.</p>
+      </div>
+      <div class="step">
+        <div class="num">ii.</div>
+        <h3>Ask the AI to fill it</h3>
+        <p>The AI only sees the question — never the coordinates. So nothing lands in the wrong place.</p>
+      </div>
+      <div class="step">
+        <div class="num">iii.</div>
+        <h3>Render the result</h3>
+        <p>Answers drop into their detected slots with auto-fit font sizing. Download the filled PDF.</p>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ===== STAGE 3: Editor ===== -->
+  <section class="stage" id="stage-result">
+    <div class="editor-toolbar">
+      <div class="fmt-group">
+        <span class="fmt-label">Font</span>
+        <select id="fmt-font" disabled>
+          <option value="sans">IBM Plex Sans</option>
+          <option value="serif">Georgia</option>
+        </select>
+        <select id="fmt-size" disabled>
+          <option>8</option><option>9</option><option>10</option>
+          <option>11</option><option>12</option><option>14</option>
+          <option>16</option><option>18</option><option>20</option>
+          <option>24</option><option>28</option><option>32</option>
+        </select>
+      </div>
+      <div class="fmt-group">
+        <button class="fmt-btn b" id="fmt-bold" disabled title="Bold (⌘B)">B</button>
+        <button class="fmt-btn i" id="fmt-italic" disabled title="Italic (⌘I)">I</button>
+        <button class="fmt-btn u" id="fmt-underline" disabled title="Underline (⌘U)">U</button>
+      </div>
+      <button class="btn-ghost" id="add-box-btn">+ Add box</button>
+      <button class="btn-ghost" id="save-btn">Save</button>
+      <div class="spacer"></div>
+      <button class="btn-primary" id="download-btn" style="min-width:180px">↓ Download PDF</button>
+      <button class="btn-ghost" id="restart-btn">Start over</button>
+    </div>
+    <div class="editor-help">
+      Click any text to edit. Drag the black handle to move a box, the red × to delete.
+      Click <b>+ Add box</b>, then drag on the page to draw a new field.
+    </div>
+    <div class="editor-pages" id="editor-pages"></div>
+  </section>
+</main>
+<div class="saving-overlay" id="saving">Re-rendering PDF…</div>
+
+<div class="toast" id="toast"><span id="toast-msg"></span><span class="toast-dismiss">×</span></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const stages = ["upload", "result"];
+function showStage(name) {
+  stages.forEach(s => $("stage-" + s).classList.toggle("active", s === name));
+}
+let _toastTimer = null;
+function toast(msg, isError = false) {
+  const t = $("toast");
+  $("toast-msg").textContent = msg;
+  t.classList.toggle("error", isError);
+  t.classList.add("show");
+  clearTimeout(_toastTimer);
+  // Errors stay until dismissed; success toasts auto-hide after 3 s
+  if (!isError) {
+    _toastTimer = setTimeout(() => t.classList.remove("show"), 3000);
+  }
+}
+$("toast").addEventListener("click", () => $("toast").classList.remove("show"));
+
+function showError(msg) {
+  $("error-banner").classList.add("visible");
+  $("error-detail").textContent = msg;
+  toast(msg, true);
+}
+function clearError() {
+  $("error-banner").classList.remove("visible");
+  $("error-detail").textContent = "";
+}
+function setStatus(msg) { $("status-line").textContent = msg; }
+
+let currentJob = null;
+
+// ---- Stage 1: Drop zone ----
+const drop = $("drop");
+const fileInput = $("file-input");
+
+["dragenter","dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("dragover"); })
+);
+["dragleave","drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("dragover"); })
+);
+drop.addEventListener("drop", e => {
+  const f = e.dataTransfer.files[0];
+  if (f) handleUpload(f);
+});
+fileInput.addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (f) handleUpload(f);
+});
+
+async function handleUpload(file) {
+  if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
+  clearError();
+  setStatus("Uploading…");
+  drop.style.opacity = "0.5";
+  drop.style.pointerEvents = "none";
+
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const r = await fetch("/api/upload", { method: "POST", body: form });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Upload failed");
+    currentJob = data;
+    setStatus("Filling with AI… (this can take up to 60 s)");
+    const r2 = await fetch("/api/fill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job_id: currentJob.job_id,
+        instructions: $("instructions").value,
+      }),
+    });
+    let fillData;
+    try {
+      fillData = await r2.json();
+    } catch (_) {
+      throw new Error("Server timed out or returned an unreadable response. Try again.");
+    }
+    if (!r2.ok) throw new Error(fillData.error || "Fill failed");
+    showStage("result");
+    // renderResult AFTER stage is visible, so img.clientWidth is non-zero
+    renderResult(fillData);
+    setStatus("Ready to edit");
+  } catch (err) {
+    showError(err.message);
+    setStatus("Ready");
+  } finally {
+    drop.style.opacity = "";
+    drop.style.pointerEvents = "";
+    fileInput.value = "";
+  }
+}
+
+// ---- Stage 3: Editor ----
+// State
+let overlays = [];           // [{id, page, bbox:[x0,y0,x1,y1], text, mode, font, size, bold, italic, underline}]
+let pageSizes = [];          // [{width, height}] in PDF points
+let pageScales = [];         // px-per-point for each page (after image load)
+let addMode = false;
+let dirty = false;
+let nextOvId = 0;
+let activeOverlayId = null;  // currently focused overlay (drives the format toolbar)
+
+function newOvId() { return "ov_n" + (nextOvId++) + "_" + Math.random().toString(36).slice(2,6); }
+function ovDefaults() {
+  return { mode: "region", font: "sans", size: 11, bold: false, italic: false, underline: false };
+}
+function findOv(id) { return overlays.find(o => o.id === id); }
+function findOvEl(id) { return document.querySelector(`.overlay[data-id="${CSS.escape(id)}"]`); }
+
+function renderResult(data) {
+  overlays = (data.overlays || []).map(o => ({ ...ovDefaults(), ...o }));
+  pageSizes = data.page_sizes || [];
+  pageScales = new Array(data.page_count).fill(1);
+  dirty = false;
+  addMode = false;
+  $("add-box-btn").classList.remove("active");
+
+  const root = $("editor-pages");
+  root.innerHTML = "";
+  for (let i = 0; i < data.page_count; i++) {
+    const wrap = document.createElement("div");
+    wrap.className = "editor-page";
+    wrap.dataset.page = i;
+    const img = document.createElement("img");
+    img.src = `/api/preview/${currentJob.job_id}/filled/${i}?t=${Date.now()}`;
+    img.dataset.page = i;
+    const onReady = () => {
+      const pt = pageSizes[i];
+      const w = img.clientWidth;
+      if (!pt || !w) { requestAnimationFrame(onReady); return; }
+      pageScales[i] = w / pt.width;
+      positionOverlaysOnPage(i);
+    };
+    img.addEventListener("load", onReady);
+    if (img.complete) onReady();
+    wrap.appendChild(img);
+    root.appendChild(wrap);
+    attachPageDrawHandlers(wrap, i);
+  }
+  // Recompute scales on resize
+  window.addEventListener("resize", recomputeAllScales);
+}
+
+function recomputeAllScales() {
+  document.querySelectorAll(".editor-page img").forEach(img => {
+    const i = +img.dataset.page;
+    const pt = pageSizes[i];
+    if (pt && img.clientWidth) {
+      pageScales[i] = img.clientWidth / pt.width;
+      positionOverlaysOnPage(i);
+    }
+  });
+}
+
+function positionOverlaysOnPage(pageIdx) {
+  const wrap = document.querySelector(`.editor-page[data-page="${pageIdx}"]`);
+  if (!wrap) return;
+  // Remove existing overlays for this page
+  wrap.querySelectorAll(".overlay").forEach(el => el.remove());
+  const scale = pageScales[pageIdx] || 1;
+  overlays.filter(o => o.page === pageIdx).forEach(o => {
+    wrap.appendChild(createOverlayEl(o, scale));
+  });
+}
+
+function createOverlayEl(ov, scale) {
+  const el = document.createElement("div");
+  el.className = "overlay";
+  el.dataset.id = ov.id;
+  applyOverlayPosition(el, ov, scale);
+
+  const txt = document.createElement("div");
+  txt.className = "ov-text";
+  txt.contentEditable = "true";
+  txt.spellcheck = false;
+  txt.textContent = ov.text || "";
+  applyOverlayTextStyle(txt, ov, scale);
+  txt.addEventListener("input", () => { ov.text = txt.innerText; dirty = true; });
+  txt.addEventListener("focus", () => {
+    el.classList.add("selected");
+    setActiveOverlay(ov.id);
+  });
+  txt.addEventListener("blur", () => {
+    el.classList.remove("selected");
+    // Keep activeOverlayId so the toolbar stays usable until another box gains focus.
+  });
+  // Hotkeys: ⌘B / ⌘I / ⌘U
+  txt.addEventListener("keydown", e => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const k = e.key.toLowerCase();
+    if (k === "b") { e.preventDefault(); toggleFmt("bold"); }
+    else if (k === "i") { e.preventDefault(); toggleFmt("italic"); }
+    else if (k === "u") { e.preventDefault(); toggleFmt("underline"); }
+  });
+
+  const drag = document.createElement("div");
+  drag.className = "ov-drag";
+  drag.textContent = "⤧";
+  drag.title = "Drag to move";
+  attachDragMove(drag, el, ov);
+
+  const del = document.createElement("div");
+  del.className = "ov-delete";
+  del.textContent = "×";
+  del.title = "Delete";
+  del.addEventListener("mousedown", e => e.stopPropagation());
+  del.addEventListener("click", e => {
+    e.stopPropagation();
+    overlays = overlays.filter(o => o.id !== ov.id);
+    el.remove();
+    if (activeOverlayId === ov.id) setActiveOverlay(null);
+    dirty = true;
+  });
+
+  const resize = document.createElement("div");
+  resize.className = "ov-resize";
+  resize.title = "Resize";
+  attachResize(resize, el, ov);
+
+  el.appendChild(txt);
+  el.appendChild(drag);
+  el.appendChild(del);
+  el.appendChild(resize);
+  return el;
+}
+
+function applyOverlayTextStyle(txt, ov, scale) {
+  txt.style.fontFamily = ov.font === "serif"
+    ? '"Georgia","Times New Roman",serif'
+    : '"IBM Plex Sans","Helvetica Neue",Helvetica,Arial,sans-serif';
+  txt.style.fontSize = Math.max(7, ov.size * scale) + "px";
+  txt.style.fontWeight = ov.bold ? "700" : "400";
+  txt.style.fontStyle = ov.italic ? "italic" : "normal";
+  txt.style.textDecoration = ov.underline ? "underline" : "none";
+}
+
+function attachResize(handle, overlayEl, ov) {
+  handle.addEventListener("mousedown", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const scale = pageScales[ov.page] || 1;
+    const startX = e.clientX, startY = e.clientY;
+    const origBbox = [...ov.bbox];
+    overlayEl.classList.add("selected");
+    function onMove(ev) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = (ev.clientY - startY) / scale;
+      ov.bbox = [origBbox[0], origBbox[1],
+                 Math.max(origBbox[0] + 8, origBbox[2] + dx),
+                 Math.max(origBbox[1] + 8, origBbox[3] + dy)];
+      applyOverlayPosition(overlayEl, ov, scale);
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      overlayEl.classList.remove("selected");
+      dirty = true;
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+function applyOverlayPosition(el, ov, scale) {
+  const [x0, y0, x1, y1] = ov.bbox;
+  el.style.left = (x0 * scale) + "px";
+  el.style.top = (y0 * scale) + "px";
+  el.style.width = Math.max(20, (x1 - x0) * scale) + "px";
+  el.style.height = Math.max(16, (y1 - y0) * scale) + "px";
+}
+
+function attachDragMove(handle, overlayEl, ov) {
+  handle.addEventListener("mousedown", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const scale = pageScales[ov.page] || 1;
+    const startX = e.clientX, startY = e.clientY;
+    const origBbox = [...ov.bbox];
+    overlayEl.classList.add("selected");
+    function onMove(ev) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = (ev.clientY - startY) / scale;
+      ov.bbox = [origBbox[0]+dx, origBbox[1]+dy, origBbox[2]+dx, origBbox[3]+dy];
+      applyOverlayPosition(overlayEl, ov, scale);
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      overlayEl.classList.remove("selected");
+      dirty = true;
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+function attachPageDrawHandlers(wrap, pageIdx) {
+  wrap.addEventListener("mousedown", e => {
+    if (!addMode) return;
+    if (e.target.closest(".overlay")) return;
+    e.preventDefault();
+    const scale = pageScales[pageIdx] || 1;
+    const wrapRect = wrap.getBoundingClientRect();
+    const sx = e.clientX - wrapRect.left;
+    const sy = e.clientY - wrapRect.top;
+    const rect = document.createElement("div");
+    rect.className = "draw-rect";
+    rect.style.left = sx + "px";
+    rect.style.top = sy + "px";
+    wrap.appendChild(rect);
+    function onMove(ev) {
+      const cx = ev.clientX - wrapRect.left;
+      const cy = ev.clientY - wrapRect.top;
+      const x = Math.min(sx, cx), y = Math.min(sy, cy);
+      const w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+      rect.style.left = x + "px";
+      rect.style.top = y + "px";
+      rect.style.width = w + "px";
+      rect.style.height = h + "px";
+    }
+    function onUp(ev) {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      const cx = ev.clientX - wrapRect.left;
+      const cy = ev.clientY - wrapRect.top;
+      const x = Math.min(sx, cx), y = Math.min(sy, cy);
+      const w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+      rect.remove();
+      let bbox;
+      if (w < 8 || h < 8) {
+        bbox = [sx/scale, sy/scale, (sx+90)/scale, (sy+18)/scale];
+      } else {
+        bbox = [x/scale, y/scale, (x+w)/scale, (y+h)/scale];
+      }
+      const ov = { ...ovDefaults(), id: newOvId(), page: pageIdx, bbox, text: "" };
+      overlays.push(ov);
+      positionOverlaysOnPage(pageIdx);
+      dirty = true;
+      addMode = false;
+      $("add-box-btn").classList.remove("active");
+      document.querySelectorAll(".editor-page").forEach(p => p.classList.remove("adding"));
+      // Focus newly added overlay
+      setTimeout(() => {
+        const els = wrap.querySelectorAll(".overlay");
+        const last = els[els.length - 1];
+        if (last) last.querySelector(".ov-text").focus();
+      }, 0);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+$("add-box-btn").addEventListener("click", () => {
+  addMode = !addMode;
+  $("add-box-btn").classList.toggle("active", addMode);
+  document.querySelectorAll(".editor-page").forEach(p => p.classList.toggle("adding", addMode));
+});
+
+// ---- Format toolbar ----
+function setActiveOverlay(id) {
+  activeOverlayId = id;
+  const ov = id ? findOv(id) : null;
+  const ctrls = ["fmt-font","fmt-size","fmt-bold","fmt-italic","fmt-underline"];
+  ctrls.forEach(c => $(c).disabled = !ov);
+  if (!ov) {
+    ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).classList.remove("active"));
+    return;
+  }
+  $("fmt-font").value = ov.font;
+  $("fmt-size").value = String(Math.round(ov.size));
+  $("fmt-bold").classList.toggle("active", !!ov.bold);
+  $("fmt-italic").classList.toggle("active", !!ov.italic);
+  $("fmt-underline").classList.toggle("active", !!ov.underline);
+}
+
+function applyActiveFmt(patch) {
+  if (!activeOverlayId) return;
+  const ov = findOv(activeOverlayId);
+  if (!ov) return;
+  Object.assign(ov, patch);
+  const el = findOvEl(ov.id);
+  if (el) {
+    const txt = el.querySelector(".ov-text");
+    const scale = pageScales[ov.page] || 1;
+    if (txt) applyOverlayTextStyle(txt, ov, scale);
+  }
+  setActiveOverlay(ov.id);
+  dirty = true;
+}
+
+function toggleFmt(key) {
+  if (!activeOverlayId) return;
+  const ov = findOv(activeOverlayId);
+  if (!ov) return;
+  applyActiveFmt({ [key]: !ov[key] });
+}
+
+$("fmt-font").addEventListener("change", e => applyActiveFmt({ font: e.target.value }));
+$("fmt-size").addEventListener("change", e => applyActiveFmt({ size: parseFloat(e.target.value) || 11 }));
+$("fmt-bold").addEventListener("click", () => toggleFmt("bold"));
+$("fmt-italic").addEventListener("click", () => toggleFmt("italic"));
+$("fmt-underline").addEventListener("click", () => toggleFmt("underline"));
+
+// Initialize disabled
+setActiveOverlay(null);
+
+async function saveOverlays() {
+  if (!currentJob) return false;
+  $("saving").classList.add("active");
+  setStatus("Saving…");
+  try {
+    const r = await fetch("/api/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: currentJob.job_id, overlays }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Save failed");
+    // Reload filled preview images (cache-bust)
+    document.querySelectorAll(".editor-page img").forEach(img => {
+      const i = img.dataset.page;
+      img.src = `/api/preview/${currentJob.job_id}/filled/${i}?t=${Date.now()}`;
+    });
+    dirty = false;
+    setStatus("Saved");
+    toast("Changes saved");
+    return true;
+  } catch (err) {
+    toast(err.message, true);
+    setStatus("Save failed");
+    return false;
+  } finally {
+    $("saving").classList.remove("active");
+  }
+}
+
+$("save-btn").addEventListener("click", saveOverlays);
+
+$("download-btn").addEventListener("click", async () => {
+  if (!currentJob) return;
+  if (dirty) {
+    const ok = await saveOverlays();
+    if (!ok) return;
+  }
+  window.location.href = `/api/download/${currentJob.job_id}`;
+});
+
+$("restart-btn").addEventListener("click", () => {
+  if (dirty && !confirm("Discard unsaved edits?")) return;
+  currentJob = null;
+  overlays = [];
+  showStage("upload");
+  setStatus("Ready");
+});
+</script>
+</body>
+</html>

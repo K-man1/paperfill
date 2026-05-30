@@ -1,0 +1,9 @@
+.git
+.DS_Store
+__pycache__
+*.pyc
+.env
+uploads/
+outputs/
+signin_log.json
+*.pdf

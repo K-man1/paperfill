@@ -1,0 +1,14 @@
+# Secrets — never commit; recreate directly on the server
+.env
+
+# Generated at runtime — regenerated on the server, don't ship
+uploads/
+outputs/
+signin_log.json
+
+# Python / OS cruft
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+.venv/

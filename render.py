@@ -1,0 +1,279 @@
+"""
+Renderer: takes the structure JSON + answers dict and produces a filled
+PDF. Coordinates are never seen by the LLM — they come from the
+preprocessor. Text auto-fits to the slot bbox.
+"""
+
+import fitz
+
+
+# Tunables
+HANDWRITING_FONT = "helv"  # built-in PDF font
+DEFAULT_FONT_SIZE = 11
+MIN_FONT_SIZE = 6
+SLOT_VERTICAL_OFFSET = -1  # negative = move up (text baseline sits ABOVE the underscore)
+
+_OV_DEFAULTS = {
+    "mode": "region",
+    "font": "sans",
+    "size": 11,
+    "bold": False,
+    "italic": False,
+    "underline": False,
+}
+
+
+def fit_text_in_bbox(text: str, bbox, font: str = HANDWRITING_FONT,
+                     max_size: float = DEFAULT_FONT_SIZE,
+                     min_size: float = MIN_FONT_SIZE) -> tuple[str, float]:
+    """
+    Find the largest font size that fits `text` horizontally within the
+    bbox width. If even min_size doesn't fit, returns text truncated with
+    an ellipsis at min_size.
+    """
+    width = bbox[2] - bbox[0]
+    size = max_size
+    while size >= min_size:
+        if fitz.get_text_length(text, fontname=font, fontsize=size) <= width:
+            return text, size
+        size -= 0.5
+    # Truncate to fit at minimum size
+    while text and fitz.get_text_length(text + "…", fontname=font, fontsize=min_size) > width:
+        text = text[:-1]
+    return text + "…", min_size
+
+
+def insert_text_in_slot(page, slot_bbox, text: str) -> None:
+    """Place text inside an inline-blank slot, baseline just above the underscore."""
+    text = text.strip()
+    if not text:
+        return
+    fitted, size = fit_text_in_bbox(text, slot_bbox)
+    x = slot_bbox[0] + 1  # small left padding
+    y = slot_bbox[3] + SLOT_VERTICAL_OFFSET
+    page.insert_text((x, y), fitted, fontname=HANDWRITING_FONT,
+                     fontsize=size, color=(0, 0, 0))
+
+
+def wrap_text_to_width(text: str, width: float, font: str, size: float) -> list[str]:
+    """Greedy word-wrap to fit a given width."""
+    words = text.split()
+    lines: list[str] = []
+    cur = ""
+    for w in words:
+        trial = (cur + " " + w).strip()
+        if fitz.get_text_length(trial, fontname=font, fontsize=size) <= width:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def insert_text_in_region(page, region, text: str,
+                          size: float = 10, line_gap: float = 3) -> None:
+    """Place a multi-line answer inside an open-response region with word wrap."""
+    text = text.strip()
+    if not text:
+        return
+    width = region[2] - region[0]
+    available_height = region[3] - region[1]
+    current_size = size
+    while current_size >= MIN_FONT_SIZE:
+        lines = wrap_text_to_width(text, width, HANDWRITING_FONT, current_size)
+        line_height = current_size + line_gap
+        if line_height * len(lines) <= available_height:
+            break
+        current_size -= 0.5
+    else:
+        lines = wrap_text_to_width(text, width, HANDWRITING_FONT, MIN_FONT_SIZE)
+        line_height = MIN_FONT_SIZE + line_gap
+
+    y = region[1] + current_size  # first baseline
+    for line in lines:
+        if y > region[3]:
+            break
+        page.insert_text((region[0], y), line, fontname=HANDWRITING_FONT,
+                         fontsize=current_size, color=(0, 0, 0))
+        y += line_height
+
+
+def _html_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+             .replace("\n", "<br>"))
+
+
+def _overlay_to_html(ov: dict) -> str | None:
+    text = (ov.get("text") or "").strip()
+    if not text:
+        return None
+    font = ov.get("font", "sans")
+    family = "serif" if font == "serif" else "sans-serif"
+    size = float(ov.get("size", 11))
+    weight = "700" if ov.get("bold") else "400"
+    style_italic = "italic" if ov.get("italic") else "normal"
+    decoration = "underline" if ov.get("underline") else "none"
+    css = (
+        f"font-family: {family}; "
+        f"font-size: {size}pt; "
+        f"font-weight: {weight}; "
+        f"font-style: {style_italic}; "
+        f"text-decoration: {decoration}; "
+        f"color: #000000; "
+        f"line-height: 1.15; "
+        f"margin: 0; padding: 0;"
+    )
+    return f'<p style="{css}">{_html_escape(text)}</p>'
+
+
+def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str) -> None:
+    """
+    Render the flat overlay list onto a copy of the PDF. Each overlay carries
+    its own formatting (font, size, bold/italic/underline) which is applied
+    via PyMuPDF's HTML/Story renderer.
+    """
+    doc = fitz.open(pdf_path)
+    for ov in overlays:
+        html = _overlay_to_html(ov)
+        if not html:
+            continue
+        page_idx = ov.get("page", 0)
+        if page_idx < 0 or page_idx >= len(doc):
+            continue
+        page = doc[page_idx]
+        rect = fitz.Rect(*ov["bbox"])
+        try:
+            page.insert_htmlbox(rect, html)
+        except Exception:
+            # htmlbox failed (bad rect, unsupported font) — fall back to plain text
+            insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
+    doc.save(out_path)
+    doc.close()
+
+
+def build_overlays_from_structure(structure: dict, answers: dict) -> list[dict]:
+    """
+    Turn the preprocessor's structured units + LLM answers into a flat list
+    of editable overlays. Inline blanks get a small region just above the
+    underscore; open-response answers use their detected answer_region.
+    """
+    overlays: list[dict] = []
+    nid = 0
+    for u in structure["units"]:
+        page = u["page"]
+        if u["type"] == "inline_blanks":
+            for slot in u["slots"]:
+                x0, y0, x1, y1 = slot["bbox"]
+                overlays.append({
+                    **_OV_DEFAULTS,
+                    "id": f"ov{nid}", "page": page,
+                    "bbox": [x0, y1 - 13, x1, y1 + 1],
+                    "text": answers.get(slot["slot_id"], ""),
+                })
+                nid += 1
+        elif u["type"] == "open_response":
+            overlays.append({
+                **_OV_DEFAULTS,
+                "id": f"ov{nid}", "page": page,
+                "bbox": list(u["answer_region"]),
+                "text": answers.get(u["unit_id"], ""),
+            })
+            nid += 1
+        elif u["type"] == "table":
+            for row in u["table_cells"]:
+                for cell in row:
+                    if cell is None:
+                        continue
+                    for slot in cell["slots"]:
+                        x0, y0, x1, y1 = slot["bbox"]
+                        overlays.append({
+                            **_OV_DEFAULTS,
+                            "id": f"ov{nid}", "page": page,
+                            "bbox": [x0, y1 - 13, x1, y1 + 1],
+                            "text": answers.get(slot["slot_id"], ""),
+                        })
+                        nid += 1
+    return overlays
+
+
+def render_filled_pdf(pdf_path: str, structure: dict,
+                      answers: dict[str, str], out_path: str) -> None:
+    """
+    Direct (non-overlay) render — used by the CLI demo only.
+    answers: maps slot_id (inline_blanks / table) and unit_id (open_response) → answer.
+    """
+    doc = fitz.open(pdf_path)
+    for unit in structure["units"]:
+        page = doc[unit["page"]]
+        if unit["type"] == "inline_blanks":
+            for slot in unit["slots"]:
+                ans = answers.get(slot["slot_id"], "")
+                if ans:
+                    insert_text_in_slot(page, slot["bbox"], ans)
+        elif unit["type"] == "open_response":
+            ans = answers.get(unit["unit_id"], "")
+            if ans:
+                insert_text_in_region(page, unit["answer_region"], ans)
+        elif unit["type"] == "table":
+            for row in unit["table_cells"]:
+                for cell in row:
+                    if cell is None:
+                        continue
+                    for slot in cell["slots"]:
+                        ans = answers.get(slot["slot_id"], "")
+                        if ans:
+                            insert_text_in_slot(page, slot["bbox"], ans)
+    doc.save(out_path)
+    doc.close()
+
+
+# ---------- demo CLI ---------------------------------------------------------
+
+def _make_demo_answers(structure: dict) -> dict[str, str]:
+    """Generate plausible filler text for every slot to eyeball placement."""
+    pool_short = ["risk", "loss", "death", "fire", "theft", "house", "auto"]
+    pool_med = ["premium", "policy", "coverage", "insurance", "deductible"]
+    pool_long = ["risk management", "actual cash value", "comprehensive coverage"]
+    demo: dict[str, str] = {}
+    i = 0
+    for u in structure["units"]:
+        if u["type"] == "inline_blanks":
+            for slot in u["slots"]:
+                ul = slot["underscore_length"]
+                if ul < 12:
+                    word = pool_short[i % len(pool_short)]
+                elif ul < 22:
+                    word = pool_med[i % len(pool_med)]
+                else:
+                    word = pool_long[i % len(pool_long)]
+                demo[slot["slot_id"]] = word
+                i += 1
+        elif u["type"] == "open_response":
+            demo[u["unit_id"]] = (
+                "This is a placeholder answer demonstrating how a multi-line "
+                "response flows inside the detected answer region."
+            )
+        elif u["type"] == "table":
+            for row in u["table_cells"]:
+                for cell in row:
+                    if cell is None:
+                        continue
+                    for slot in cell["slots"]:
+                        demo[slot["slot_id"]] = pool_short[i % len(pool_short)]
+                        i += 1
+    return demo
+
+
+if __name__ == "__main__":
+    import sys
+    from preprocess import preprocess_pdf
+
+    for path in sys.argv[1:]:
+        structure = preprocess_pdf(path)
+        answers = _make_demo_answers(structure)
+        out_path = "/tmp/" + path.rsplit("/", 1)[-1].replace(".pdf", ".filled.pdf")
+        render_filled_pdf(path, structure, answers, out_path)
+        print(f"{path} → {out_path}")

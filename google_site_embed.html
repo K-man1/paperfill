@@ -1,0 +1,70 @@
+<!--
+  PaperFill — Google Sites embed snippet
+  ======================================
+  HOW TO USE:
+    1. In Google Sites: Insert -> Embed -> "Embed code".
+    2. Paste this ENTIRE file into the box and click Next -> Insert.
+    3. Drag the embed's handles on the page to roughly match the height
+       you set below.
+
+  Replace APP_URL below with your live app once it's deployed
+  (e.g. https://karman.hackclub.app/ or your Cloudflare custom domain).
+
+  NOTE: For the embedded app to stay logged in inside this iframe, the
+  Flask app must send `SameSite=None; Secure` session cookies and a
+  `Content-Security-Policy: frame-ancestors` that allows sites.google.com.
+  Until that's in place, use the "Open in new tab" fallback link.
+-->
+<div class="paperfill-embed">
+  <iframe
+    class="paperfill-frame"
+    src="APP_URL"
+    title="PaperFill — AI worksheet filler"
+    loading="lazy"
+    allow="clipboard-write"
+    referrerpolicy="no-referrer-when-downgrade"></iframe>
+
+  <a class="paperfill-fallback" href="APP_URL" target="_blank" rel="noopener">
+    Trouble loading? Open PaperFill in a new tab &rarr;
+  </a>
+</div>
+
+<style>
+  .paperfill-embed {
+    /* Matches PaperFill's index.html palette */
+    --paper: #f5f1e8;
+    --ink: #1a1814;
+    --accent: #ff5a1f;
+    --rule: #c9c0a8;
+
+    width: 100%;
+    margin: 0 auto;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+  }
+
+  .paperfill-frame {
+    display: block;
+    width: 100%;
+    border: 0;
+    /* Sized for iPad: fills most of the screen but never collapses too short.
+       88vh adapts to portrait/landscape; min-height keeps it usable. */
+    height: 88vh;
+    min-height: 760px;
+  }
+
+  .paperfill-fallback {
+    display: block;
+    padding: 8px 12px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--ink);
+    text-decoration: none;
+    border-top: 1px solid var(--rule);
+    background: var(--paper);
+  }
+  .paperfill-fallback:hover { color: var(--accent); }
+</style>

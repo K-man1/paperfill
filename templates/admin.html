@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Paperfill — Admin Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #f5f1e8;
+  --paper-deep: #ebe5d4;
+  --ink: #1a1814;
+  --ink-soft: #4a4438;
+  --rule: #c9c0a8;
+  --rule-soft: #ddd5bf;
+  --accent: #ff5a1f;
+  --accent-deep: #c93f10;
+  --green: #16a34a;
+  --green-bg: #f0fdf4;
+  --green-border: #bbf7d0;
+  --red: #dc2626;
+  --red-bg: #fef2f2;
+  --red-border: #fecaca;
+  --serif: "Fraunces", "Times New Roman", serif;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  min-height: 100vh;
+}
+
+/* ---- Header ---- */
+header {
+  background: var(--ink);
+  color: #fff;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+}
+.logo {
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+}
+.logo span { color: var(--accent); }
+.badge {
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-left: 10px;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.85rem;
+}
+.header-right a {
+  color: #ccc;
+  text-decoration: none;
+}
+.header-right a:hover { color: #fff; }
+
+/* ---- Main layout ---- */
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 36px 24px 60px;
+}
+h1 {
+  font-family: var(--serif);
+  font-size: 1.8rem;
+  font-weight: 800;
+  margin: 0 0 6px;
+}
+.page-subtitle {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  margin: 0 0 32px;
+}
+
+/* ---- Stat cards ---- */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 36px;
+}
+.stat-card {
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 20px 24px;
+}
+.stat-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.stat-value {
+  font-family: var(--serif);
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.stat-value.green { color: var(--green); }
+.stat-value.red { color: var(--red); }
+
+/* ---- Table ---- */
+.section-title {
+  font-family: var(--serif);
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 0 0 14px;
+}
+.table-wrap {
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  overflow: hidden;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+thead {
+  background: var(--paper-deep);
+}
+th {
+  text-align: left;
+  padding: 12px 16px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--rule);
+}
+td {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: middle;
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--paper); }
+.mono { font-family: var(--mono); font-size: 0.82rem; }
+.pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.pill-user {
+  background: var(--green-bg);
+  color: var(--green);
+  border: 1px solid var(--green-border);
+}
+.pill-admin {
+  background: var(--red-bg);
+  color: var(--red);
+  border: 1px solid var(--red-border);
+}
+.pill-fail {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+.empty {
+  padding: 48px;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+/* ---- Logout ---- */
+.logout-btn {
+  display: inline-block;
+  padding: 7px 16px;
+  background: transparent;
+  border: 1px solid #555;
+  color: #ccc;
+  border-radius: 6px;
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+.logout-btn:hover { border-color: #aaa; color: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center;">
+    <span class="logo">Paper<span>fill</span></span>
+    <span class="badge">Admin</span>
+  </div>
+  <div class="header-right">
+    <span>{{ now }}</span>
+    <a href="/logout" class="logout-btn">Sign out</a>
+  </div>
+</header>
+
+<main>
+  <h1>Sign-in Dashboard</h1>
+  <p class="page-subtitle">All access attempts recorded since server start.</p>
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Total Attempts</div>
+      <div class="stat-value">{{ total }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">User Logins</div>
+      <div class="stat-value green">{{ user_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Admin Logins</div>
+      <div class="stat-value red">{{ admin_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Failed Attempts</div>
+      <div class="stat-value" style="color:#c2410c;">{{ fail_count }}</div>
+    </div>
+  </div>
+
+  <div class="section-title">Sign-in Log</div>
+  <div class="table-wrap">
+    {% if logs %}
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Timestamp</th>
+          <th>IP Address</th>
+          <th>Result</th>
+          <th>User Agent</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in logs|reverse %}
+        <tr>
+          <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
+          <td class="mono">{{ entry.timestamp }}</td>
+          <td class="mono">{{ entry.ip }}</td>
+          <td>
+            {% if entry.result == 'user' %}
+              <span class="pill pill-user">User</span>
+            {% elif entry.result == 'admin' %}
+              <span class="pill pill-admin">Admin</span>
+            {% else %}
+              <span class="pill pill-fail">Failed</span>
+            {% endif %}
+          </td>
+          <td style="color:var(--ink-soft);font-size:0.8rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.ua }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No sign-in attempts yet.</div>
+    {% endif %}
+  </div>
+</main>
+</body>
+</html>
