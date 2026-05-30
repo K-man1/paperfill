@@ -34,6 +34,8 @@ if _env_path.exists():
 
 from preprocess import preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
+from context_sources import (extract_file_text, fetch_youtube_transcript,
+                             assemble_context)
 
 
 # ---- Setup ---------------------------------------------------------------
@@ -368,8 +370,9 @@ def admin():
 
 @app.route("/")
 def index():
-    # Public: the worksheet filler is open to everyone (works inside the
-    # Google Sites iframe with no cookie). /admin stays gated below.
+    # Gated: require a sign-in (user or admin) before the filler is shown.
+    if not session.get("role"):
+        return redirect(url_for("login"))
     return render_template("index.html")
 
 
@@ -439,6 +442,44 @@ def upload():
     return jsonify(summary)
 
 
+@app.post("/api/context")
+def context():
+    """
+    Extract reference material the AI should use when filling the sheet.
+
+    Multipart body:
+      files       -> zero or more reference files (PDF / text / image)
+      youtube_urls-> JSON array of YouTube URLs (string)
+
+    Returns {context: "<combined labelled text>", sources: [{name, chars}]}.
+    The frontend passes `context` back into /api/fill.
+    """
+    sources: list[tuple[str, str]] = []
+    summary = []
+
+    for f in request.files.getlist("files"):
+        if not f.filename:
+            continue
+        text = extract_file_text(f.filename, f.read())
+        sources.append((f"Reference file: {f.filename}", text))
+        summary.append({"name": f.filename, "kind": "file", "chars": len(text)})
+
+    raw_urls = request.form.get("youtube_urls", "[]")
+    try:
+        urls = json.loads(raw_urls)
+    except (TypeError, json.JSONDecodeError):
+        urls = []
+    for url in urls if isinstance(urls, list) else []:
+        url = str(url).strip()
+        if not url:
+            continue
+        text = fetch_youtube_transcript(url)
+        sources.append((f"YouTube transcript: {url}", text))
+        summary.append({"name": url, "kind": "youtube", "chars": len(text)})
+
+    return jsonify({"context": assemble_context(sources), "sources": summary})
+
+
 @app.post("/api/fill")
 def fill():
     data = request.get_json(silent=True) or {}
@@ -448,6 +489,12 @@ def fill():
         return jsonify({"error": "unknown job_id"}), 404
 
     instructions = str(data.get("instructions", ""))[:8000]
+    context_text = str(data.get("context", ""))[:30000]
+    if context_text.strip():
+        instructions = (
+            f"{instructions}\n\nReference material the user attached "
+            f"(use it as authoritative source material):\n{context_text}"
+        ).strip()
     structure_for_llm = strip_bboxes_for_llm(job["structure"])
     try:
         answers = call_openai_to_fill(structure_for_llm, instructions)
