@@ -13,6 +13,13 @@ DEFAULT_FONT_SIZE = 11
 MIN_FONT_SIZE = 6
 SLOT_VERTICAL_OFFSET = -1  # negative = move up (text baseline sits ABOVE the underscore)
 
+# One-DM handwriting is generated at 64px tall; squeezing it into a ~14px slot
+# turns legible cursive into an illegible scratch. Render it noticeably taller
+# than typeset text (real handwriting is bigger than print and overshoots the
+# line), bottom-anchored a hair below the underscore so descenders dip under it.
+HW_TARGET_HEIGHT = 22   # px tall to aim for when width allows
+HW_DESCENDER_DROP = 3   # px the image bottom sits below the underscore line
+
 _OV_DEFAULTS = {
     "mode": "region",
     "font": "sans",
@@ -130,18 +137,30 @@ def _overlay_to_html(ov: dict) -> str | None:
 
 
 def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
-    """Stamp a transparent handwriting PNG into the slot, scaled to fit the
-    bbox height and left-aligned. The PNG already has the paper background
-    knocked out to alpha, so it overlays cleanly."""
+    """Stamp a transparent handwriting PNG into the slot. Rendered at a real
+    handwriting height (HW_TARGET_HEIGHT) rather than crammed into the thin
+    text slot, with the baseline sitting on the underscore and descenders
+    dipping just below it. Left-aligned; the PNG already has the paper
+    background knocked out to alpha, so it overlays cleanly."""
     import io
     from PIL import Image
 
     x0, y0, x1, y1 = bbox
-    box_w, box_h = x1 - x0, y1 - y0
+    box_w = x1 - x0
     img_w, img_h = Image.open(io.BytesIO(png_bytes)).size
-    scale = box_h / img_h if img_h else 1.0
-    draw_w = min(img_w * scale, box_w)                 # don't overflow the slot width
-    rect = fitz.Rect(x0, y0, x0 + draw_w, y1)
+    if not (img_w and img_h):
+        return
+
+    # Aim for HW_TARGET_HEIGHT, but if the word would then run past the blank's
+    # width, fall back to fitting the width (same behaviour typeset text has when
+    # a long answer must shrink). Aspect ratio is always preserved.
+    scale = HW_TARGET_HEIGHT / img_h
+    if img_w * scale > box_w:
+        scale = box_w / img_w
+    draw_w, draw_h = img_w * scale, img_h * scale
+
+    bottom = y1 + HW_DESCENDER_DROP            # let g/y/p tails dip under the line
+    rect = fitz.Rect(x0 + 1, bottom - draw_h, x0 + 1 + draw_w, bottom)
     page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
 
 

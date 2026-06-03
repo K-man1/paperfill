@@ -173,9 +173,18 @@ class OneDM:
     def _generate_word(self, word, style_t, laplace_t):
         """Diffusion-sample a single word -> PIL 'L' image, or None if the word
         has no renderable characters."""
+        import unicodedata
         import torchvision
         torch = self.torch
 
+        # The IAM vocab is plain ASCII — it has no á é í ó ú ñ ü. Simply dropping
+        # those codepoints doesn't just lose the accent, it CORRUPTS the whole
+        # word (e.g. "tenía" -> garbled "aena"). Transliterate accented Latin
+        # letters to their base form first (NFKD splits "í" -> "i" + combining
+        # accent; we keep the base, drop the combining mark), so "tenía"->"tenia",
+        # "destruyó"->"destruyo", "anduvió"->"anduvio", "ñ"->"n".
+        word = unicodedata.normalize("NFKD", word)
+        word = "".join(c for c in word if not unicodedata.combining(c))
         word = "".join(ch for ch in word if ch in self.vocab)
         if not word:
             return None
