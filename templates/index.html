@@ -220,6 +220,7 @@ header.masthead {
 }
 .attach-btn:hover { border-color: var(--accent); }
 .attach-btn input { display: none; }
+.hw-hint { color: var(--ink-soft); font-size: 0.85em; align-self: center; }
 .yt-add { display: flex; gap: 6px; flex: 1; min-width: 220px; }
 #yt-url {
   flex: 1;
@@ -752,6 +753,14 @@ button {
         </div>
       </div>
       <ul class="attach-list" id="attach-list"></ul>
+
+      <div class="attach-row">
+        <label class="attach-btn">
+          ✍️ Handwriting style
+          <input type="file" id="hw-sample" accept="image/png,image/jpeg,image/webp">
+        </label>
+        <span id="hw-sample-name" class="hw-hint">Optional — upload one clear word in your handwriting to fill answers in your style.</span>
+      </div>
     </div>
 
     <label class="drop" id="drop">
@@ -916,6 +925,27 @@ $("yt-url").addEventListener("keydown", e => {
 });
 
 // Send attachments to /api/context and return the extracted context string.
+let handwritingSample = null;   // File: the user's handwriting style image
+$("hw-sample").addEventListener("change", e => {
+  handwritingSample = e.target.files[0] || null;
+  $("hw-sample-name").textContent = handwritingSample
+    ? `Using “${handwritingSample.name}” — answers will be handwritten.`
+    : "Optional — upload one clear word in your handwriting to fill answers in your style.";
+});
+
+async function uploadStyle(jobId) {
+  if (!handwritingSample) return;
+  const form = new FormData();
+  form.append("job_id", jobId);
+  form.append("style", handwritingSample);
+  try {
+    const r = await fetch("/api/style", { method: "POST", body: form });
+    if (!r.ok) toast("Couldn't attach handwriting — filling with normal text.", true);
+  } catch (_) {
+    toast("Couldn't attach handwriting — filling with normal text.", true);
+  }
+}
+
 async function gatherContext() {
   if (refFiles.length === 0 && ytUrls.length === 0) return "";
   const form = new FormData();
@@ -947,7 +977,10 @@ async function handleUpload(file) {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "Upload failed");
     currentJob = data;
-    setStatus("Filling with AI… (this can take up to 60 s)");
+    await uploadStyle(currentJob.job_id);   // no-op unless a sample was picked
+    setStatus(handwritingSample
+      ? "Filling in your handwriting… (this can take up to 2 min)"
+      : "Filling with AI… (this can take up to 60 s)");
     const r2 = await fetch("/api/fill", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -129,21 +129,51 @@ def _overlay_to_html(ov: dict) -> str | None:
     return f'<p style="{css}">{_html_escape(text)}</p>'
 
 
-def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str) -> None:
+def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
+    """Stamp a transparent handwriting PNG into the slot, scaled to fit the
+    bbox height and left-aligned. The PNG already has the paper background
+    knocked out to alpha, so it overlays cleanly."""
+    import io
+    from PIL import Image
+
+    x0, y0, x1, y1 = bbox
+    box_w, box_h = x1 - x0, y1 - y0
+    img_w, img_h = Image.open(io.BytesIO(png_bytes)).size
+    scale = box_h / img_h if img_h else 1.0
+    draw_w = min(img_w * scale, box_w)                 # don't overflow the slot width
+    rect = fitz.Rect(x0, y0, x0 + draw_w, y1)
+    page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
+
+
+def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
+                        images: dict[str, bytes] | None = None) -> None:
     """
     Render the flat overlay list onto a copy of the PDF. Each overlay carries
     its own formatting (font, size, bold/italic/underline) which is applied
     via PyMuPDF's HTML/Story renderer.
+
+    If `images` maps an overlay id -> PNG bytes (handwriting from One-DM), that
+    overlay is stamped as an image instead of typeset text.
     """
+    images = images or {}
     doc = fitz.open(pdf_path)
     for ov in overlays:
-        html = _overlay_to_html(ov)
-        if not html:
-            continue
         page_idx = ov.get("page", 0)
         if page_idx < 0 or page_idx >= len(doc):
             continue
         page = doc[page_idx]
+
+        png = images.get(ov.get("id"))
+        if png:
+            try:
+                _insert_handwriting_image(page, ov["bbox"], png)
+                continue
+            except Exception:
+                pass  # fall through to text rendering on any image failure
+
+        html = _overlay_to_html(ov)
+        if not html:
+            continue
         rect = fitz.Rect(*ov["bbox"])
         try:
             page.insert_htmlbox(rect, html)

@@ -10,6 +10,7 @@ Endpoints:
   GET  /api/preview/<job_id>/<page>   Stream a page image for preview.
 """
 
+import base64
 import json
 import os
 import re
@@ -34,6 +35,7 @@ if _env_path.exists():
 
 from preprocess import preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
+from handwriting.client import handwriting_enabled, generate_handwriting
 from context_sources import (extract_file_text, fetch_youtube_transcript,
                              assemble_context)
 
@@ -110,6 +112,39 @@ JOBS: dict[str, dict] = {}
 
 def _job_meta_path(job_id: str) -> Path:
     return OUTPUTS / job_id / "job.json"
+
+
+def _hw_dir(job_id: str) -> Path:
+    return OUTPUTS / job_id / "hw"
+
+
+def _load_hw_images(job_id: str) -> dict[str, bytes]:
+    """Read previously generated handwriting PNGs keyed by overlay id."""
+    d = _hw_dir(job_id)
+    if not d.exists():
+        return {}
+    return {p.stem: p.read_bytes() for p in d.glob("*.png")}
+
+
+def _generate_hw_for_job(job_id: str) -> None:
+    """If the job has a handwriting style + the Modal service is configured,
+    generate a PNG per overlay and cache it on disk for rendering."""
+    job = JOBS[job_id]
+    style_b64 = job.get("style_b64")
+    if not (style_b64 and handwriting_enabled()):
+        return
+    items = {ov["id"]: ov.get("text", "") for ov in job.get("overlays", [])}
+    try:
+        images = generate_handwriting(style_b64, items)
+    except Exception as e:
+        print(f"[handwriting] generation failed, falling back to text: {e}")
+        return
+    d = _hw_dir(job_id)
+    d.mkdir(parents=True, exist_ok=True)
+    for old in d.glob("*.png"):           # clear stale words from a prior fill
+        old.unlink()
+    for ov_id, png in images.items():
+        (d / f"{ov_id}.png").write_bytes(png)
 
 
 def save_job(job_id: str) -> None:
@@ -505,6 +540,8 @@ def fill():
     job["answers"] = answers
     job["overlays"] = overlays
 
+    _generate_hw_for_job(job_id)          # no-op unless a style is attached
+
     try:
         _rerender_job(job_id)
     except Exception as e:
@@ -520,11 +557,34 @@ def fill():
     })
 
 
+@app.post("/api/style")
+def upload_style():
+    """Attach a handwriting sample (one word, ideally ~64px tall) to a job.
+    Accepts multipart file field 'style' or JSON {job_id, style_b64}."""
+    job_id = request.form.get("job_id") or (request.get_json(silent=True) or {}).get("job_id")
+    job = load_job(job_id)
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+
+    file = request.files.get("style")
+    if file is not None:
+        style_b64 = base64.b64encode(file.read()).decode()
+    else:
+        style_b64 = (request.get_json(silent=True) or {}).get("style_b64", "")
+    if not style_b64:
+        return jsonify({"error": "no style image provided"}), 400
+
+    job["style_b64"] = style_b64
+    save_job(job_id)
+    return jsonify({"ok": True, "handwriting_service": handwriting_enabled()})
+
+
 def _rerender_job(job_id: str) -> None:
     """Re-render the filled PDF + page PNG previews from the job's current overlays."""
     job = JOBS[job_id]
     filled_path = OUTPUTS / f"{job_id}-filled.pdf"
-    render_overlays_pdf(job["pdf_path"], job["overlays"], str(filled_path))
+    render_overlays_pdf(job["pdf_path"], job["overlays"], str(filled_path),
+                        images=_load_hw_images(job_id))
     doc = fitz.open(str(filled_path))
     preview_dir = OUTPUTS / job_id
     for i, page in enumerate(doc):

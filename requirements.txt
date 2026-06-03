@@ -3,3 +3,5 @@ openai>=1.50
 pymupdf>=1.24
 gunicorn>=21.2
 youtube-transcript-api>=0.6
+requests>=2.31
+pillow>=10.0
