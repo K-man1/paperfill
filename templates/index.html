@@ -221,6 +221,23 @@ header.masthead {
 .attach-btn:hover { border-color: var(--accent); }
 .attach-btn input { display: none; }
 .hw-hint { color: var(--ink-soft); font-size: 0.85em; align-self: center; }
+.hw-block { margin-top: 12px; }
+.hw-block > .hw-label {
+  display: block; font-family: var(--mono); font-size: 12px;
+  color: var(--ink); margin-bottom: 8px;
+}
+.hw-presets { display: flex; flex-wrap: wrap; gap: 10px; }
+.hw-card {
+  border: 1px solid var(--rule); border-radius: 6px; background: #fff;
+  padding: 6px 8px 4px; cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
+  width: 150px; text-align: center;
+}
+.hw-card:hover { border-color: var(--accent); }
+.hw-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(255,90,31,0.18); }
+.hw-card.hw-none { display: flex; align-items: center; justify-content: center; min-height: 56px; }
+.hw-card img { width: 100%; height: 38px; object-fit: contain; display: block; }
+.hw-card .hw-name { font-family: var(--mono); font-size: 11px; color: var(--ink); margin-top: 3px; }
+.hw-card .hw-sub { font-size: 10px; color: var(--ink-soft); }
 .yt-add { display: flex; gap: 6px; flex: 1; min-width: 220px; }
 #yt-url {
   flex: 1;
@@ -754,12 +771,20 @@ button {
       </div>
       <ul class="attach-list" id="attach-list"></ul>
 
-      <div class="attach-row">
-        <label class="attach-btn">
-          ✍️ Handwriting style
-          <input type="file" id="hw-sample" accept="image/png,image/jpeg,image/webp">
-        </label>
-        <span id="hw-sample-name" class="hw-hint">Optional — upload one clear word in your handwriting to fill answers in your style.</span>
+      <div class="hw-block" id="hw-block">
+        <span class="hw-label">✍️ Handwriting style <span class="hw-hint">— answers are written in your chosen style</span></span>
+        <div class="hw-presets" id="hw-presets">
+          <div class="hw-card hw-none selected" data-preset="" title="Plain typed text">
+            <div class="hw-name">Typed</div>
+            <div class="hw-sub">no handwriting</div>
+          </div>
+          <!-- preset cards injected here -->
+          <label class="hw-card hw-none" id="hw-upload-card" title="Upload one clear word in your own handwriting">
+            <div class="hw-name">Upload…</div>
+            <div class="hw-sub">your own word</div>
+            <input type="file" id="hw-sample" accept="image/png,image/jpeg,image/webp" hidden>
+          </label>
+        </div>
       </div>
     </div>
 
@@ -924,22 +949,79 @@ $("yt-url").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); $("yt-add-btn").click(); }
 });
 
-// Send attachments to /api/context and return the extracted context string.
-let handwritingSample = null;   // File: the user's handwriting style image
+// ---- Handwriting style picker -------------------------------------------
+// `handwritingStyle` is either "" (typed), a preset id, or "upload".
+let handwritingStyle = "";
+let handwritingSample = null;   // File: only when "upload" is chosen
+
+function selectHwCard(card) {
+  document.querySelectorAll("#hw-presets .hw-card")
+    .forEach(c => c.classList.remove("selected"));
+  card.classList.add("selected");
+}
+
+// Load the curated presets and inject a thumbnail card for each.
+(async function loadHwPresets() {
+  try {
+    const r = await fetch("/api/styles");
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.enabled) { $("hw-block").style.display = "none"; return; }
+    const uploadCard = $("hw-upload-card");
+    for (const p of data.presets) {
+      const card = document.createElement("div");
+      card.className = "hw-card";
+      card.dataset.preset = p.id;
+      card.title = `${p.label} — ${p.hint}`;
+      card.innerHTML =
+        `<img src="/api/styles/${p.id}.png" alt="${p.label}">` +
+        `<div class="hw-name">${p.label}</div><div class="hw-sub">${p.hint}</div>`;
+      card.addEventListener("click", () => {
+        handwritingStyle = p.id; handwritingSample = null;
+        selectHwCard(card);
+      });
+      $("hw-presets").insertBefore(card, uploadCard);
+    }
+  } catch (_) { /* handwriting just stays off */ }
+})();
+
+// "Typed" card → no handwriting.
+document.querySelector('#hw-presets .hw-none[data-preset=""]')
+  .addEventListener("click", function () {
+    handwritingStyle = ""; handwritingSample = null; selectHwCard(this);
+  });
+
+// Upload-your-own card.
 $("hw-sample").addEventListener("change", e => {
   handwritingSample = e.target.files[0] || null;
-  $("hw-sample-name").textContent = handwritingSample
-    ? `Using “${handwritingSample.name}” — answers will be handwritten.`
-    : "Optional — upload one clear word in your handwriting to fill answers in your style.";
+  const card = $("hw-upload-card");
+  if (handwritingSample) {
+    handwritingStyle = "upload";
+    card.querySelector(".hw-sub").textContent = handwritingSample.name.slice(0, 16);
+    selectHwCard(card);
+  }
 });
 
+const handwritingOn = () => handwritingStyle && handwritingStyle !== "";
+
 async function uploadStyle(jobId) {
-  if (!handwritingSample) return;
-  const form = new FormData();
-  form.append("job_id", jobId);
-  form.append("style", handwritingSample);
+  if (!handwritingOn()) return;
+  let opts;
+  if (handwritingStyle === "upload") {
+    if (!handwritingSample) return;
+    const form = new FormData();
+    form.append("job_id", jobId);
+    form.append("style", handwritingSample);
+    opts = { method: "POST", body: form };
+  } else {
+    opts = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: jobId, preset: handwritingStyle }),
+    };
+  }
   try {
-    const r = await fetch("/api/style", { method: "POST", body: form });
+    const r = await fetch("/api/style", opts);
     if (!r.ok) toast("Couldn't attach handwriting — filling with normal text.", true);
   } catch (_) {
     toast("Couldn't attach handwriting — filling with normal text.", true);
@@ -977,8 +1059,8 @@ async function handleUpload(file) {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "Upload failed");
     currentJob = data;
-    await uploadStyle(currentJob.job_id);   // no-op unless a sample was picked
-    setStatus(handwritingSample
+    await uploadStyle(currentJob.job_id);   // no-op unless a style was picked
+    setStatus(handwritingOn()
       ? "Filling in your handwriting… (this can take up to 2 min)"
       : "Filling with AI… (this can take up to 60 s)");
     const r2 = await fetch("/api/fill", {

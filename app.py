@@ -51,6 +51,25 @@ OUTPUTS.mkdir(exist_ok=True)
 MAX_UPLOAD_MB = 10
 ALLOWED_EXT = {".pdf"}
 
+# Curated handwriting style presets. These are real in-distribution IAM word
+# images (the data One-DM was trained on), which produce far more consistent
+# output than arbitrary user photos. Keys are the ids the UI sends to /api/style.
+STYLES_DIR = BASE_DIR / "handwriting" / "styles"
+STYLE_PRESETS = {
+    "bold":    {"label": "Bold",    "file": "bold.png",    "hint": "dark & clear"},
+    "neat":    {"label": "Neat",    "file": "neat.png",    "hint": "light & tidy"},
+    "cursive": {"label": "Cursive", "file": "cursive.png", "hint": "flowing"},
+}
+
+def _preset_b64(preset_id: str) -> str | None:
+    info = STYLE_PRESETS.get(preset_id)
+    if not info:
+        return None
+    path = STYLES_DIR / info["file"]
+    if not path.exists():
+        return None
+    return base64.b64encode(path.read_bytes()).decode()
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
@@ -557,22 +576,50 @@ def fill():
     })
 
 
+@app.get("/api/styles")
+def list_styles():
+    """List the curated handwriting presets for the UI picker."""
+    return jsonify({
+        "enabled": handwriting_enabled(),
+        "presets": [{"id": k, "label": v["label"], "hint": v["hint"]}
+                    for k, v in STYLE_PRESETS.items()],
+    })
+
+
+@app.get("/api/styles/<preset_id>.png")
+def style_preview(preset_id: str):
+    """Serve a preset's reference image so the picker can show what it looks like."""
+    info = STYLE_PRESETS.get(preset_id)
+    if not info:
+        abort(404)
+    return send_file(STYLES_DIR / info["file"], mimetype="image/png")
+
+
 @app.post("/api/style")
 def upload_style():
-    """Attach a handwriting sample (one word, ideally ~64px tall) to a job.
-    Accepts multipart file field 'style' or JSON {job_id, style_b64}."""
-    job_id = request.form.get("job_id") or (request.get_json(silent=True) or {}).get("job_id")
+    """Attach a handwriting style to a job. Accepts, in priority order:
+      - a preset id  (form 'preset' or JSON {preset})  ← recommended
+      - a multipart file field 'style'
+      - JSON {style_b64}
+    """
+    data = request.get_json(silent=True) or {}
+    job_id = request.form.get("job_id") or data.get("job_id")
     job = load_job(job_id)
     if job is None:
         return jsonify({"error": "unknown job_id"}), 404
 
+    preset = request.form.get("preset") or data.get("preset")
     file = request.files.get("style")
-    if file is not None:
+    if preset:
+        style_b64 = _preset_b64(preset)
+        if not style_b64:
+            return jsonify({"error": f"unknown preset '{preset}'"}), 400
+    elif file is not None:
         style_b64 = base64.b64encode(file.read()).decode()
     else:
-        style_b64 = (request.get_json(silent=True) or {}).get("style_b64", "")
+        style_b64 = data.get("style_b64", "")
     if not style_b64:
-        return jsonify({"error": "no style image provided"}), 400
+        return jsonify({"error": "no style provided"}), 400
 
     job["style_b64"] = style_b64
     save_job(job_id)
