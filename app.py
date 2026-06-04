@@ -56,9 +56,9 @@ ALLOWED_EXT = {".pdf"}
 # output than arbitrary user photos. Keys are the ids the UI sends to /api/style.
 STYLES_DIR = BASE_DIR / "handwriting" / "styles"
 STYLE_PRESETS = {
-    "bold":    {"label": "Bold",    "file": "bold.png",    "hint": "dark & clear"},
-    "neat":    {"label": "Neat",    "file": "neat.png",    "hint": "light & tidy"},
-    "cursive": {"label": "Cursive", "file": "cursive.png", "hint": "flowing"},
+    "neat":  {"label": "Neat",  "file": "neat.png",  "hint": "clean print"},
+    "light": {"label": "Light", "file": "light.png", "hint": "light print"},
+    "bold":  {"label": "Bold",  "file": "bold.png",  "hint": "bold print"},
 }
 
 def _preset_b64(preset_id: str) -> str | None:
