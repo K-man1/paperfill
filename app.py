@@ -504,6 +504,7 @@ def upload():
 
     JOBS[job_id] = {
         "pdf_path": str(pdf_path),
+        "original_name": Path(f.filename).name,  # for the download filename
         "structure": structure,
         "page_count": page_count,
         "page_sizes": page_sizes,
@@ -740,9 +741,13 @@ def download(job_id):
     job = load_job(job_id)
     if not job or not job.get("filled_path"):
         abort(404)
+    # Download under the original PDF's name (basename only, .pdf enforced).
+    name = Path(job.get("original_name") or "").name or "filled.pdf"
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
     return send_file(job["filled_path"],
                      as_attachment=True,
-                     download_name="filled.pdf",
+                     download_name=name,
                      mimetype="application/pdf")
 
 
