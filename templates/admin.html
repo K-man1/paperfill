@@ -192,6 +192,82 @@ tr:hover td { background: var(--paper); }
   font-size: 0.9rem;
 }
 
+/* ---- Access control card ---- */
+.settings-card {
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 22px 24px;
+  margin-bottom: 36px;
+  max-width: 520px;
+}
+.settings-card .hint {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  margin: 0 0 18px;
+}
+.settings-card .current {
+  font-family: var(--mono);
+  background: var(--paper-deep);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.85rem;
+}
+.field { margin-bottom: 14px; }
+.field label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.field input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  background: var(--paper);
+  color: var(--ink);
+}
+.field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.save-btn {
+  padding: 9px 20px;
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 7px;
+  font-family: var(--sans);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.save-btn:hover { background: var(--accent-deep); }
+.banner {
+  border-radius: 8px;
+  padding: 11px 14px;
+  font-size: 0.85rem;
+  margin-bottom: 18px;
+}
+.banner-ok {
+  background: var(--green-bg);
+  color: var(--green);
+  border: 1px solid var(--green-border);
+}
+.banner-err {
+  background: var(--red-bg);
+  color: var(--red);
+  border: 1px solid var(--red-border);
+}
+
 /* ---- Logout ---- */
 .logout-btn {
   display: inline-block;
@@ -242,6 +318,35 @@ tr:hover td { background: var(--paper); }
       <div class="stat-label">Failed Attempts</div>
       <div class="stat-value" style="color:#c2410c;">{{ fail_count }}</div>
     </div>
+  </div>
+
+  <div class="section-title">Access Control</div>
+  <div class="settings-card">
+    {% if pw_status == 'ok' %}
+      <div class="banner banner-ok">User access code updated. New sign-ins must use the new code.</div>
+    {% elif pw_status == 'mismatch' %}
+      <div class="banner banner-err">The two codes didn't match. Nothing was changed.</div>
+    {% elif pw_status == 'short' %}
+      <div class="banner banner-err">Code must be at least 3 characters. Nothing was changed.</div>
+    {% elif pw_status == 'conflict' %}
+      <div class="banner banner-err">That code is already the admin code. Pick a different one.</div>
+    {% endif %}
+    <p class="hint">
+      Change the access code users sign in with. The current code is
+      <span class="current">{{ current_user_password }}</span>.
+      The admin code is unaffected.
+    </p>
+    <form method="post" action="/admin/user-password" autocomplete="off">
+      <div class="field">
+        <label for="new_password">New user code</label>
+        <input type="text" id="new_password" name="new_password" required autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="confirm_password">Confirm new code</label>
+        <input type="text" id="confirm_password" name="confirm_password" required autocomplete="off" />
+      </div>
+      <button type="submit" class="save-btn">Update user code</button>
+    </form>
   </div>
 
   <div class="section-title">Sign-in Log</div>

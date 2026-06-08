@@ -5,6 +5,7 @@
 uploads/
 outputs/
 signin_log.json
+user_password.txt
 
 # Python / OS cruft
 __pycache__/

@@ -74,8 +74,26 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
-PASSWORD_USER  = "spurs"
 PASSWORD_ADMIN = "alien"
+
+# The user access code is changeable from the admin panel and persisted to
+# disk so it survives restarts and is shared across all gunicorn workers. It
+# is read fresh from disk on every login attempt, so a change takes effect
+# immediately for every worker process.
+DEFAULT_USER_PASSWORD = "spurs"
+USER_PASSWORD_PATH = BASE_DIR / "user_password.txt"
+
+def get_user_password() -> str:
+    try:
+        pw = USER_PASSWORD_PATH.read_text().strip()
+        if pw:
+            return pw
+    except OSError:
+        pass
+    return DEFAULT_USER_PASSWORD
+
+def set_user_password(pw: str) -> None:
+    USER_PASSWORD_PATH.write_text(pw.strip())
 
 # In-memory sign-in log persisted to disk on each write.
 SIGNIN_LOG_PATH = BASE_DIR / "signin_log.json"
@@ -384,14 +402,14 @@ def _extract_json_object(text: str) -> dict:
 def login():
     if request.method == "POST":
         pw = request.form.get("password", "")
-        if pw == PASSWORD_USER:
-            _record_signin("user")
-            session["role"] = "user"
-            return redirect(url_for("index"))
-        elif pw == PASSWORD_ADMIN:
+        if pw == PASSWORD_ADMIN:
             _record_signin("admin")
             session["role"] = "admin"
             return redirect(url_for("admin"))
+        elif pw == get_user_password():
+            _record_signin("user")
+            session["role"] = "user"
+            return redirect(url_for("index"))
         else:
             _record_signin("failed")
             return render_template("login.html", error="Incorrect access code. Please try again.")
@@ -419,7 +437,25 @@ def admin():
         admin_count=admin_count,
         fail_count=fail_count,
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        current_user_password=get_user_password(),
+        pw_status=request.args.get("pw_status"),
     )
+
+
+@app.post("/admin/user-password")
+def change_user_password():
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    new_pw = (request.form.get("new_password") or "").strip()
+    confirm = (request.form.get("confirm_password") or "").strip()
+    if len(new_pw) < 3:
+        return redirect(url_for("admin", pw_status="short"))
+    if new_pw != confirm:
+        return redirect(url_for("admin", pw_status="mismatch"))
+    if new_pw == PASSWORD_ADMIN:
+        return redirect(url_for("admin", pw_status="conflict"))
+    set_user_password(new_pw)
+    return redirect(url_for("admin", pw_status="ok"))
 
 
 @app.route("/")
