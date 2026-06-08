@@ -1,0 +1,18 @@
+# PaperFill — Caddy reverse-proxy config for Hack Club Nest.
+#
+# Add this block to your Nest Caddy config (see DEPLOY.md for where), then
+# reload Caddy. {$PORT:8080} is substituted from the PORT env var at startup,
+# so it matches whatever `nest get-port` gave you.
+#
+# TLS is automatic (Let's Encrypt). For ww2explained.com that means the
+# Cloudflare DNS records MUST be "DNS only" (grey cloud), not proxied —
+# otherwise Caddy can't complete the certificate challenge. See DEPLOY.md.
+
+ww2explained.com, www.ww2explained.com {
+	reverse_proxy localhost:{$PORT:8080}
+}
+
+# Optional: also serve the app on your Nest subdomain.
+karman.hackclub.app {
+	reverse_proxy localhost:{$PORT:8080}
+}
