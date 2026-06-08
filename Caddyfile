@@ -1,18 +1,24 @@
-# PaperFill — Caddy reverse-proxy config for Hack Club Nest.
+# PaperFill — Caddy reference for the Nest GATEWAY (not this app container).
 #
-# Add this block to your Nest Caddy config (see DEPLOY.md for where), then
-# reload Caddy. {$PORT:8080} is substituted from the PORT env var at startup,
-# so it matches whatever `nest get-port` gave you.
+# IMPORTANT: This block belongs in your Nest Caddyfile on the gateway shell
+# (the `hackclub.app` host where the `nest` CLI lives), NOT inside the app's
+# LXC container. The gateway already routes karman.hackclub.app to the
+# container's gunicorn:8080 — this adds ww2explained.com to the same backend.
 #
-# TLS is automatic (Let's Encrypt). For ww2explained.com that means the
-# Cloudflare DNS records MUST be "DNS only" (grey cloud), not proxied —
-# otherwise Caddy can't complete the certificate challenge. See DEPLOY.md.
+# The simplest correct move is to MIRROR your existing karman.hackclub.app
+# entry and just add the new hostnames. Whatever upstream target that block
+# uses for karman.hackclub.app, use the same here. A typical Nest entry looks
+# like:
+#
+#     ww2explained.com, www.ww2explained.com {
+#         reverse_proxy localhost:8080      # <-- match your existing karman.hackclub.app upstream
+#     }
+#
+# TLS is automatic (Let's Encrypt) once Cloudflare DNS for ww2explained.com is
+# "DNS only" (grey cloud). See DEPLOY.md.
+#
+# Reference: https://guides.hackclub.app/index.php/Subdomains_and_Custom_Domains
 
 ww2explained.com, www.ww2explained.com {
-	reverse_proxy localhost:{$PORT:8080}
-}
-
-# Optional: also serve the app on your Nest subdomain.
-karman.hackclub.app {
-	reverse_proxy localhost:{$PORT:8080}
+	reverse_proxy localhost:8080
 }

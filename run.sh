@@ -7,8 +7,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Activate the venv if it exists (Nest setup creates ./venv).
-if [ -d venv ]; then
+# Activate the venv if present. The Nest container uses .venv; a plain VM
+# setup may use venv. Prefer whichever exists.
+if [ -d .venv ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+elif [ -d venv ]; then
   # shellcheck disable=SC1091
   source venv/bin/activate
 fi
