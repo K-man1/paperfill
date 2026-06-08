@@ -819,10 +819,19 @@ button {
   <section class="stage" id="stage-result">
     <div class="editor-toolbar">
       <div class="fmt-group">
+        <span class="fmt-label">Document font</span>
+        <select id="doc-font" title="Font for the entire document">
+          <option value="sans">IBM Plex Sans</option>
+          <option value="serif">Georgia</option>
+          <option value="mono">Courier</option>
+        </select>
+      </div>
+      <div class="fmt-group">
         <span class="fmt-label">Font</span>
         <select id="fmt-font" disabled>
           <option value="sans">IBM Plex Sans</option>
           <option value="serif">Georgia</option>
+          <option value="mono">Courier</option>
         </select>
         <select id="fmt-size" disabled>
           <option>8</option><option>9</option><option>10</option>
@@ -1117,6 +1126,9 @@ function renderResult(data) {
   dirty = false;
   addMode = false;
   $("add-box-btn").classList.remove("active");
+  // Reflect the document's current font (all overlays share one unless individually overridden).
+  const ovFonts = new Set(overlays.map(o => o.font));
+  $("doc-font").value = ovFonts.size === 1 ? [...ovFonts][0] : "sans";
 
   const root = $("editor-pages");
   root.innerHTML = "";
@@ -1228,9 +1240,10 @@ function createOverlayEl(ov, scale) {
 }
 
 function applyOverlayTextStyle(txt, ov, scale) {
-  txt.style.fontFamily = ov.font === "serif"
-    ? '"Georgia","Times New Roman",serif'
-    : '"IBM Plex Sans","Helvetica Neue",Helvetica,Arial,sans-serif';
+  txt.style.fontFamily = {
+    serif: '"Georgia","Times New Roman",serif',
+    mono: '"IBM Plex Mono",ui-monospace,"Courier New",monospace',
+  }[ov.font] || '"IBM Plex Sans","Helvetica Neue",Helvetica,Arial,sans-serif';
   txt.style.fontSize = Math.max(7, ov.size * scale) + "px";
   txt.style.fontWeight = ov.bold ? "700" : "400";
   txt.style.fontStyle = ov.italic ? "italic" : "normal";
@@ -1398,6 +1411,22 @@ function toggleFmt(key) {
   if (!ov) return;
   applyActiveFmt({ [key]: !ov[key] });
 }
+
+// Document-wide font: apply to every overlay at once, then re-render.
+function applyDocumentFont(font) {
+  overlays.forEach(o => { o.font = font; });
+  document.querySelectorAll(".overlay").forEach(el => {
+    const ov = findOv(el.dataset.id);
+    const txt = el.querySelector(".ov-text");
+    if (ov && txt) applyOverlayTextStyle(txt, ov, pageScales[ov.page] || 1);
+  });
+  if (activeOverlayId) $("fmt-font").value = font;  // keep per-box selector in sync
+  dirty = true;
+}
+$("doc-font").addEventListener("change", async e => {
+  applyDocumentFont(e.target.value);
+  await saveOverlays();
+});
 
 $("fmt-font").addEventListener("change", e => applyActiveFmt({ font: e.target.value }));
 $("fmt-size").addEventListener("change", e => applyActiveFmt({ size: parseFloat(e.target.value) || 11 }));

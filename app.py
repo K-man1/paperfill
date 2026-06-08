@@ -704,7 +704,7 @@ def update():
             if page < 0 or page > max_page:
                 continue
             font = ov.get("font", "sans")
-            if font not in ("sans", "serif"):
+            if font not in ("sans", "serif", "mono"):
                 font = "sans"
             try:
                 size = float(ov.get("size", 11))

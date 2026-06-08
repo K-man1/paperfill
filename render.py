@@ -118,7 +118,7 @@ def _overlay_to_html(ov: dict) -> str | None:
     if not text:
         return None
     font = ov.get("font", "sans")
-    family = "serif" if font == "serif" else "sans-serif"
+    family = {"serif": "serif", "mono": "monospace"}.get(font, "sans-serif")
     size = float(ov.get("size", 11))
     weight = "700" if ov.get("bold") else "400"
     style_italic = "italic" if ov.get("italic") else "normal"
