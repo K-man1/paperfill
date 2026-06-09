@@ -20,7 +20,7 @@ from pathlib import Path
 
 import fitz
 from flask import (Flask, jsonify, request, send_file, render_template,
-                   abort, redirect, url_for, session)
+                   abort, redirect, url_for, session, g)
 from openai import OpenAI
 
 # Load .env file if present (no external dependency)
@@ -33,6 +33,7 @@ if _env_path.exists():
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
+import db
 from preprocess import preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
 from handwriting.client import handwriting_enabled, generate_handwriting
@@ -95,31 +96,58 @@ def get_user_password() -> str:
 def set_user_password(pw: str) -> None:
     USER_PASSWORD_PATH.write_text(pw.strip())
 
-# In-memory sign-in log persisted to disk on each write.
-SIGNIN_LOG_PATH = BASE_DIR / "signin_log.json"
-SIGNIN_LOG: list[dict] = []
+# All admin-dashboard data (sign-ins, filled assignments, devices) lives in a
+# shared Supabase Postgres database — see db.py. A shared DB is the single
+# source of truth across gunicorn workers, which is what finally kills the
+# "two different tallies on refresh" bug that per-worker memory and per-file
+# JSON both suffered from.
+VALID_RATINGS = db.VALID_RATINGS
 
-def _load_signin_log():
-    if SIGNIN_LOG_PATH.exists():
-        try:
-            SIGNIN_LOG.extend(json.loads(SIGNIN_LOG_PATH.read_text()))
-        except Exception:
-            pass
+def _client_ip() -> str:
+    return request.remote_addr or "unknown"
 
-def _save_signin_log():
-    SIGNIN_LOG_PATH.write_text(json.dumps(SIGNIN_LOG, indent=2))
+def _client_ua() -> str:
+    return (request.user_agent.string or "")[:200]
 
 def _record_signin(result: str):
-    entry = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "ip": request.remote_addr or "unknown",
-        "ua": (request.user_agent.string or "")[:200],
-        "result": result,  # 'user', 'admin', 'failed'
-    }
-    SIGNIN_LOG.append(entry)
-    _save_signin_log()
+    db.record_signin(_client_ip(), _client_ua(), result)
 
-_load_signin_log()
+def _record_fill(job_id: str, name: str, style: str | None = None):
+    db.record_fill(job_id, name, _client_ip(), style)
+
+def _style_label(style_id: str | None) -> str:
+    """Human-readable description of the handwriting setting a user picked,
+    for the admin dashboard."""
+    if not style_id:
+        return "Typed text"
+    if style_id == "custom":
+        return "Custom handwriting upload"
+    info = STYLE_PRESETS.get(style_id)
+    return f"{info['label']} handwriting" if info else str(style_id)
+
+# ---- Device tracking -----------------------------------------------------
+# A long-lived cookie identifies a browser/device. The first request without
+# the cookie is counted as a brand-new device, inserted into the shared
+# `devices` table so the count is consistent across workers and restarts.
+DEVICE_COOKIE = "pf_device"
+
+@app.before_request
+def _track_device():
+    g.new_device_id = None
+    if request.cookies.get(DEVICE_COOKIE):
+        return
+    did = secrets.token_urlsafe(16)
+    g.new_device_id = did
+    db.record_device(did, _client_ip(), _client_ua())
+
+@app.after_request
+def _set_device_cookie(resp):
+    did = getattr(g, "new_device_id", None)
+    if did:
+        resp.set_cookie(DEVICE_COOKIE, did,
+                        max_age=60 * 60 * 24 * 365 * 2,  # 2 years
+                        samesite="Lax")
+    return resp
 
 # OpenAI-compatible client. Uses the Hack Club AI proxy by default
 # (free, no credit card). Reads HCAI_API_KEY from environment / .env.
@@ -422,20 +450,49 @@ def logout():
     return redirect(url_for("login"))
 
 
+def _fmt_ts(iso: str | None) -> str:
+    """Render a Postgres ISO timestamp as 'YYYY-MM-DD HH:MM:SS UTC' to match
+    the dashboard's existing look."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError):
+        return str(iso)
+
+
 @app.route("/admin")
 def admin():
     if session.get("role") != "admin":
         return redirect(url_for("login"))
-    user_count = sum(1 for e in SIGNIN_LOG if e["result"] == "user")
-    admin_count = sum(1 for e in SIGNIN_LOG if e["result"] == "admin")
-    fail_count = sum(1 for e in SIGNIN_LOG if e["result"] == "failed")
+    # Read from the shared database so every worker shows the same numbers.
+    signin_log = db.fetch_signins()
+    activity_log = db.fetch_assignments()
+    for e in signin_log:
+        e["timestamp"] = _fmt_ts(e.get("ts"))
+    for e in activity_log:
+        e["timestamp"] = _fmt_ts(e.get("ts"))
+    user_count = sum(1 for e in signin_log if e.get("result") == "user")
+    admin_count = sum(1 for e in signin_log if e.get("result") == "admin")
+    fail_count = sum(1 for e in signin_log if e.get("result") == "failed")
+    rating_counts = {
+        "green": sum(1 for e in activity_log if e.get("rating") == "green"),
+        "yellow": sum(1 for e in activity_log if e.get("rating") == "yellow"),
+        "red": sum(1 for e in activity_log if e.get("rating") == "red"),
+    }
     return render_template(
         "admin.html",
-        logs=SIGNIN_LOG,
-        total=len(SIGNIN_LOG),
+        logs=signin_log,
+        total=len(signin_log),
         user_count=user_count,
         admin_count=admin_count,
         fail_count=fail_count,
+        activity=activity_log,
+        activity_total=len(activity_log),
+        rating_counts=rating_counts,
+        device_count=db.device_count(),
+        db_enabled=db.enabled(),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         current_user_password=get_user_password(),
         pw_status=request.args.get("pw_status"),
@@ -616,6 +673,8 @@ def fill():
         return jsonify({"error": f"render failed: {e}"}), 500
     save_job(job_id)
 
+    _record_fill(job_id, job.get("original_name"), _style_label(job.get("style_id")))
+
     return jsonify({
         "job_id": job_id,
         "answers": answers,
@@ -623,6 +682,34 @@ def fill():
         "page_count": job["page_count"],
         "page_sizes": job["page_sizes"],
     })
+
+
+@app.post("/api/rate")
+def rate():
+    """Record a user's quality rating for a filled assignment.
+    Body: {job_id, rating: 'green'|'yellow'|'red'}."""
+    data = request.get_json(silent=True) or {}
+    job_id = data.get("job_id")
+    rating = data.get("rating")
+    if rating not in VALID_RATINGS:
+        return jsonify({"error": "invalid rating"}), 400
+    if db.set_rating(str(job_id), rating):
+        return jsonify({"ok": True})
+    return jsonify({"error": "unknown job_id"}), 404
+
+
+@app.post("/api/feedback")
+def submit_feedback():
+    """Save a user's free-text feedback / bug report for a filled assignment.
+    Body: {job_id, feedback}."""
+    data = request.get_json(silent=True) or {}
+    job_id = data.get("job_id")
+    text = str(data.get("feedback", "")).strip()[:2000]
+    if not text:
+        return jsonify({"error": "empty feedback"}), 400
+    if db.set_feedback(str(job_id), text):
+        return jsonify({"ok": True})
+    return jsonify({"error": "unknown job_id"}), 404
 
 
 @app.get("/api/styles")
@@ -663,14 +750,18 @@ def upload_style():
         style_b64 = _preset_b64(preset)
         if not style_b64:
             return jsonify({"error": f"unknown preset '{preset}'"}), 400
+        style_id = preset
     elif file is not None:
         style_b64 = base64.b64encode(file.read()).decode()
+        style_id = "custom"
     else:
         style_b64 = data.get("style_b64", "")
+        style_id = "custom"
     if not style_b64:
         return jsonify({"error": "no style provided"}), 400
 
     job["style_b64"] = style_b64
+    job["style_id"] = style_id      # which handwriting the user chose (for admin)
     save_job(job_id)
     return jsonify({"ok": True, "handwriting_service": handwriting_enabled()})
 

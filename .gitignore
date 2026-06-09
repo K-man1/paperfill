@@ -5,6 +5,8 @@
 uploads/
 outputs/
 signin_log.json
+activity_log.json
+devices.json
 user_password.txt
 
 # Python / OS cruft

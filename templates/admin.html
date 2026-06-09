@@ -185,6 +185,29 @@ tr:hover td { background: var(--paper); }
   color: #c2410c;
   border: 1px solid #fed7aa;
 }
+
+/* ---- Rating faces ---- */
+.rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.rating .face { font-size: 1.15rem; line-height: 1; }
+.rating-green { color: var(--green); }
+.rating-yellow { color: #b45309; }
+.rating-red { color: var(--red); }
+.rating-none { color: var(--ink-soft); font-weight: 400; font-style: italic; }
+.rating-summary {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin: -6px 0 18px;
+  font-size: 0.9rem;
+}
+.rating-summary span { display: inline-flex; align-items: center; gap: 6px; }
+.rating-summary .face { font-size: 1.25rem; }
 .empty {
   padding: 48px;
   text-align: center;
@@ -299,7 +322,15 @@ tr:hover td { background: var(--paper); }
 
 <main>
   <h1>Sign-in Dashboard</h1>
-  <p class="page-subtitle">All access attempts recorded since server start.</p>
+  <p class="page-subtitle">Access attempts, filled assignments, and devices — stored in Supabase.</p>
+
+  {% if not db_enabled %}
+  <div class="banner banner-err" style="max-width:none;">
+    Supabase isn't configured, so no data is being recorded or shown.
+    Set <code>SUPABASE_URL</code> and <code>SUPABASE_SECRET_KEY</code> in the
+    server's <code>.env</code> and restart.
+  </div>
+  {% endif %}
 
   <div class="stats">
     <div class="stat-card">
@@ -317,6 +348,10 @@ tr:hover td { background: var(--paper); }
     <div class="stat-card">
       <div class="stat-label">Failed Attempts</div>
       <div class="stat-value" style="color:#c2410c;">{{ fail_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">New Devices</div>
+      <div class="stat-value" style="color:#2563eb;">{{ device_count }}</div>
     </div>
   </div>
 
@@ -347,6 +382,55 @@ tr:hover td { background: var(--paper); }
       </div>
       <button type="submit" class="save-btn">Update user code</button>
     </form>
+  </div>
+
+  <div class="section-title">Assignments Filled</div>
+  <div class="rating-summary">
+    <span class="rating-green"><span class="face">😀</span> {{ rating_counts.green }} perfect</span>
+    <span class="rating-yellow"><span class="face">😐</span> {{ rating_counts.yellow }} some mistakes</span>
+    <span class="rating-red"><span class="face">😞</span> {{ rating_counts.red }} screwed up</span>
+  </div>
+  <div class="table-wrap" style="margin-bottom:36px;">
+    {% if activity %}
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Assignment</th>
+          <th>Handwriting</th>
+          <th>Filled</th>
+          <th>Rating</th>
+          <th>Feedback</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in activity|reverse %}
+        <tr>
+          <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
+          <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.name }}</td>
+          <td style="font-size:0.82rem;">{{ entry.style or '—' }}</td>
+          <td class="mono">{{ entry.timestamp }}</td>
+          <td>
+            {% if entry.rating == 'green' %}
+              <span class="rating rating-green"><span class="face">😀</span> Perfect</span>
+            {% elif entry.rating == 'yellow' %}
+              <span class="rating rating-yellow"><span class="face">😐</span> Some mistakes</span>
+            {% elif entry.rating == 'red' %}
+              <span class="rating rating-red"><span class="face">😞</span> Screwed up</span>
+            {% else %}
+              <span class="rating-none">Not rated</span>
+            {% endif %}
+          </td>
+          <td style="max-width:280px;font-size:0.82rem;color:var(--ink-soft);">
+            {% if entry.feedback %}{{ entry.feedback }}{% else %}<span class="rating-none">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">No assignments filled yet.</div>
+    {% endif %}
   </div>
 
   <div class="section-title">Sign-in Log</div>
