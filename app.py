@@ -524,6 +524,7 @@ def upload():
         "page_count": page_count,
         "unit_count": structure["unit_count"],
         "slot_count": structure["slot_count"],
+        "vision_failures": structure.get("vision_failures", 0),
         "units": [
             {
                 "unit_id": u["unit_id"],

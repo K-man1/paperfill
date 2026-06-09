@@ -1088,6 +1088,10 @@ async function handleUpload(file) {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "Upload failed");
     currentJob = data;
+    if (data.vision_failures > 0) {
+      const p = data.vision_failures === 1 ? "page" : "pages";
+      toast(`Vision model couldn't read ${data.vision_failures} ${p} — they were skipped`, true);
+    }
     await uploadStyle(currentJob.job_id);   // no-op unless a style was picked
     setStatus(handwritingOn()
       ? "Filling in your handwriting… (this can take up to 2 min)"

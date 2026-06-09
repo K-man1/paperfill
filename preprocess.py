@@ -597,6 +597,7 @@ def preprocess_pdf(path: str, force_vision: bool = False) -> dict:
     counter = {"u": 0, "n": 0}  # unit, slot counters
     all_units: list[Unit] = []
     vision_client = None
+    vision_failures = 0
 
     for page_num, page in enumerate(doc):
         # Scanned (image-only) page, or vision forced for the whole document:
@@ -606,9 +607,18 @@ def preprocess_pdf(path: str, force_vision: bool = False) -> dict:
             from vision_preprocess import detect_scanned_page, _build_client
             if vision_client is None:
                 vision_client = _build_client()
-            all_units.extend(
-                detect_scanned_page(page, page_num, counter, client=vision_client)
-            )
+            # One vision call per page hits the network, so any single page can
+            # fail transiently (gateway error, timeout, rate limit). Isolate the
+            # failure to that page instead of aborting the whole document — the
+            # user still gets every page the model did manage to read.
+            try:
+                all_units.extend(
+                    detect_scanned_page(page, page_num, counter, client=vision_client)
+                )
+            except Exception as e:
+                vision_failures += 1
+                print(f"[vision] page {page_num}: detection failed, skipping "
+                      f"({type(e).__name__}: {str(e)[:200]})")
             continue
 
         # Find tables first so we can exclude their content from inline detection
@@ -688,6 +698,7 @@ def preprocess_pdf(path: str, force_vision: bool = False) -> dict:
         "source": path,
         "unit_count": len(all_units),
         "slot_count": counter["n"],
+        "vision_failures": vision_failures,
         "units": [asdict(u) for u in all_units],
     }
 
