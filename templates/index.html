@@ -221,6 +221,17 @@ header.masthead {
 .attach-btn:hover { border-color: var(--accent); }
 .attach-btn input { display: none; }
 .hw-hint { color: var(--ink-soft); font-size: 0.85em; align-self: center; }
+.vision-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.vision-toggle input { margin-top: 2px; flex: none; cursor: pointer; }
+.vision-toggle .hw-hint { align-self: auto; }
 .hw-block { margin-top: 12px; }
 .hw-block > .hw-label {
   display: block; font-family: var(--mono); font-size: 12px;
@@ -786,6 +797,12 @@ button {
           </label>
         </div>
       </div>
+      <label class="vision-toggle">
+        <input type="checkbox" id="force-vision">
+        <span>Use vision model to find blanks
+          <span class="hw-hint">— slower, but reads layouts the parser misses (e.g. bullet-list study guides with no underscores)</span>
+        </span>
+      </label>
     </div>
 
     <label class="drop" id="drop">
@@ -1057,10 +1074,13 @@ async function handleUpload(file) {
 
   const form = new FormData();
   form.append("file", file);
+  const useVision = $("force-vision")?.checked;
+  if (useVision) form.append("force_vision", "1");
   try {
     // Upload the worksheet and extract attachment context in parallel.
     const hasAttachments = refFiles.length > 0 || ytUrls.length > 0;
-    if (hasAttachments) setStatus("Uploading & reading references…");
+    if (useVision) setStatus("Uploading & reading the page with the vision model…");
+    else if (hasAttachments) setStatus("Uploading & reading references…");
     const [r, contextText] = await Promise.all([
       fetch("/api/upload", { method: "POST", body: form }),
       gatherContext(),

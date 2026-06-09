@@ -481,9 +481,13 @@ def upload():
     pdf_path = UPLOADS / f"{job_id}.pdf"
     f.save(pdf_path)
 
+    # Optional: force every page through the vision model (for text-layer PDFs
+    # whose layout the heuristics miss, e.g. bullet-list study guides).
+    force_vision = (request.form.get("force_vision") or "").lower() in ("1", "true", "on", "yes")
+
     # Quick sanity check + preprocess
     try:
-        structure = preprocess_pdf(str(pdf_path))
+        structure = preprocess_pdf(str(pdf_path), force_vision=force_vision)
     except Exception as e:
         pdf_path.unlink(missing_ok=True)
         return jsonify({"error": f"could not parse PDF: {e}"}), 400

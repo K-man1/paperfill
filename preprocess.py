@@ -583,16 +583,26 @@ def page_has_text_layer(page) -> bool:
     return False
 
 
-def preprocess_pdf(path: str) -> dict:
+def preprocess_pdf(path: str, force_vision: bool = False) -> dict:
+    """
+    Parse a PDF into fillable Units.
+
+    By default the text-layer pipeline handles digital PDFs and only
+    image-only pages fall back to the vision model. Set force_vision=True to
+    route *every* page through the vision detector — useful for documents
+    that have a text layer but a layout the heuristics miss (e.g. study
+    guides with bullet questions and no underscore blanks or answer gaps).
+    """
     doc = fitz.open(path)
     counter = {"u": 0, "n": 0}  # unit, slot counters
     all_units: list[Unit] = []
     vision_client = None
 
     for page_num, page in enumerate(doc):
-        # Scanned (image-only) page: the text-layer logic below finds nothing,
-        # so route it through the vision detector instead.
-        if not page_has_text_layer(page):
+        # Scanned (image-only) page, or vision forced for the whole document:
+        # the text-layer logic below finds nothing usable, so route it through
+        # the vision detector instead.
+        if force_vision or not page_has_text_layer(page):
             from vision_preprocess import detect_scanned_page, _build_client
             if vision_client is None:
                 vision_client = _build_client()
