@@ -63,6 +63,23 @@ def strip_bullet_prefix(text: str) -> str:
     return s
 
 
+def is_empty_bullet_line(line: dict) -> bool:
+    """
+    True if the line is just a bullet marker with no text of its own \u2014 e.g. an
+    empty '\u25cb' answer bullet sitting under a question. Zero-width characters
+    that Google Docs sprinkles into blank bullets are ignored.
+    """
+    txt = line["text"].lstrip()
+    if not txt or txt[0] not in BULLET_CHARS:
+        return False
+    return strip_bullet_prefix(line["text"]).strip() == ""
+
+
+# The four answer formats the user can ask us to detect. The scanned/vision
+# path is not listed here \u2014 it fires automatically for image-only pages.
+ALL_FORMATS = ("inline_blanks", "open_response", "bullet_answer", "table")
+
+
 @dataclass
 class Slot:
     """A single fill-in target within a unit."""
@@ -363,6 +380,68 @@ def detect_open_response_units(lines: list[dict], page_num: int,
     return units
 
 
+# ---------- bullet-answer detection ----------------------------------------
+
+def detect_bullet_answer_units(lines: list[dict], page_num: int, page_rect,
+                               counter: dict,
+                               skip_ids: set | None = None) -> tuple[list[Unit], set]:
+    """
+    Detect empty answer bullets — a sub-bullet (○, ■, …) directly beneath a
+    question or heading with no text of its own — and turn each into an
+    open_response unit whose answer is written to the right of the bullet
+    glyph, on the bullet's own line.
+
+    This is the common Google-Docs study-guide layout (`● What is X?` followed
+    by an empty `○`), where questions and their blank answer bullets are packed
+    too tightly for the vertical-gap heuristic in detect_open_response_units to
+    fire. The prompt is the nearest preceding line that has real text.
+
+    Returns (units, consumed_line_ids) so the caller can keep these lines out
+    of the inline-blank pass.
+    """
+    skip_ids = skip_ids or set()
+    content_lines = [l for l in lines if not line_is_whitespace(l)]
+    if not content_lines:
+        return [], set()
+
+    answer_right = page_rect.x1 - PAGE_RIGHT_MARGIN
+    units: list[Unit] = []
+    consumed: set = set()
+    last_prompt: str | None = None  # nearest preceding line with real text
+
+    for idx, line in enumerate(content_lines):
+        if not is_empty_bullet_line(line):
+            # A line with real text becomes the prompt for the bullets below it.
+            last_prompt = strip_bullet_prefix(line["text"])
+            continue
+        if id(line) in skip_ids:
+            continue
+
+        x0, y0, x1, y1 = line["bbox"]
+        # Writable area runs from just right of the bullet to the page margin,
+        # down to the next content line (usually the next question one line
+        # below, so this is a single line tall).
+        if idx + 1 < len(content_lines):
+            next_top = content_lines[idx + 1]["bbox"][1]
+        else:
+            next_top = page_rect.y1 - 60
+        answer_region = (x1 + 6, y0, answer_right, max(y1, next_top - 2))
+
+        prompt = re.sub(r"\s+", " ", last_prompt or "Fill in this answer.").strip()
+        counter["u"] += 1
+        units.append(Unit(
+            unit_id=f"u{counter['u']}",
+            type="open_response",
+            page=page_num,
+            bbox=(x0, y0, x1, y1),
+            prompt_text=prompt or "Fill in this answer.",
+            answer_region=answer_region,
+        ))
+        consumed.add(id(line))
+
+    return units, consumed
+
+
 # ---------- table extraction -----------------------------------------------
 
 def extract_table_unit(table, page_num: int, counter: dict) -> Unit | None:
@@ -583,67 +662,64 @@ def page_has_text_layer(page) -> bool:
     return False
 
 
-def preprocess_pdf(path: str, force_vision: bool = False) -> dict:
+def preprocess_pdf(path: str, formats=None) -> dict:
     """
-    Parse a PDF into fillable Units.
+    Build the structured representation of a worksheet.
 
-    By default the text-layer pipeline handles digital PDFs and only
-    image-only pages fall back to the vision model. Set force_vision=True to
-    route *every* page through the vision detector — useful for documents
-    that have a text layer but a layout the heuristics miss (e.g. study
-    guides with bullet questions and no underscore blanks or answer gaps).
+    `formats` selects which answer-format detectors run — any subset of
+    ALL_FORMATS ("inline_blanks", "open_response", "bullet_answer", "table").
+    The user picks these in the UI instead of us guessing. When omitted (or
+    empty after filtering), all formats run, preserving the old behaviour.
+    The scanned/vision path always runs for image-only pages regardless.
     """
+    active = set(formats) & set(ALL_FORMATS) if formats else set()
+    if not active:
+        active = set(ALL_FORMATS)
+
     doc = fitz.open(path)
     counter = {"u": 0, "n": 0}  # unit, slot counters
     all_units: list[Unit] = []
     vision_client = None
-    vision_failures = 0
 
     for page_num, page in enumerate(doc):
-        # Scanned (image-only) page, or vision forced for the whole document:
-        # the text-layer logic below finds nothing usable, so route it through
-        # the vision detector instead.
-        if force_vision or not page_has_text_layer(page):
+        # Scanned (image-only) page: the text-layer logic below finds nothing,
+        # so route it through the vision detector instead.
+        if not page_has_text_layer(page):
             from vision_preprocess import detect_scanned_page, _build_client
             if vision_client is None:
                 vision_client = _build_client()
-            # One vision call per page hits the network, so any single page can
-            # fail transiently (gateway error, timeout, rate limit). Isolate the
-            # failure to that page instead of aborting the whole document — the
-            # user still gets every page the model did manage to read.
-            try:
-                all_units.extend(
-                    detect_scanned_page(page, page_num, counter, client=vision_client)
-                )
-            except Exception as e:
-                vision_failures += 1
-                print(f"[vision] page {page_num}: detection failed, skipping "
-                      f"({type(e).__name__}: {str(e)[:200]})")
+            all_units.extend(
+                detect_scanned_page(page, page_num, counter, client=vision_client)
+            )
             continue
 
-        # Find tables first so we can exclude their content from inline detection
-        try:
-            tables = page.find_tables()
-        except Exception:
-            tables = None
-        table_bboxes = [t.bbox for t in tables.tables] if tables else []
+        # Find tables first so we can exclude their content from inline
+        # detection. Only relevant when the table format is selected; otherwise
+        # table cells are treated as ordinary lines (so e.g. underscores inside
+        # a grid still get filled).
+        table_bboxes = []
+        if "table" in active:
+            try:
+                tables = page.find_tables()
+            except Exception:
+                tables = None
+            table_bboxes = [t.bbox for t in tables.tables] if tables else []
 
-        # Extract table units
-        for t in (tables.tables if tables else []):
-            tu = extract_table_unit(t, page_num, counter)
-            if not tu:
-                continue
-            populate_table_cell_slots(tu, page, counter)
-            has_slots = any(
-                cell and cell["slots"]
-                for row in tu.table_cells for cell in row
-            )
-            if has_slots:
-                tu.prompt_text = build_table_prompt(tu)
-                all_units.append(tu)
-            else:
-                # No underscores anywhere — treat as a fill-in-the-chart grid.
-                all_units.extend(table_fill_regions(tu, page, counter))
+            for t in (tables.tables if tables else []):
+                tu = extract_table_unit(t, page_num, counter)
+                if not tu:
+                    continue
+                populate_table_cell_slots(tu, page, counter)
+                has_slots = any(
+                    cell and cell["slots"]
+                    for row in tu.table_cells for cell in row
+                )
+                if has_slots:
+                    tu.prompt_text = build_table_prompt(tu)
+                    all_units.append(tu)
+                else:
+                    # No underscores anywhere — treat as a fill-in-the-chart grid.
+                    all_units.extend(table_fill_regions(tu, page, counter))
 
         # Extract lines in reading order
         lines = lines_in_reading_order(page)
@@ -664,32 +740,42 @@ def preprocess_pdf(path: str, force_vision: bool = False) -> dict:
                     return True
             return False
 
-        non_table_lines = [l for l in lines if not in_any_table(l["bbox"])]
+        non_table_lines = ([l for l in lines if not in_any_table(l["bbox"])]
+                           if table_bboxes else lines)
 
-        # Detect open-response question units (numbered questions w/ gaps)
-        or_units = detect_open_response_units(
-            non_table_lines, page_num, page.rect, counter, obstacle_bboxes
-        )
-        all_units.extend(or_units)
+        # Lines already consumed by a detector — kept out of the inline pass.
+        covered: set = set()
 
-        # Track which line bboxes belong to open-response questions so we
-        # don't re-emit them as inline blanks.
-        or_covered = set()
-        for u in or_units:
-            for l in non_table_lines:
-                if (l["bbox"][1] >= u.bbox[1] - 1 and
-                    l["bbox"][3] <= u.bbox[3] + 1 and
-                    l["bbox"][0] >= u.bbox[0] - 1):
-                    or_covered.add(id(l))
+        # Detect open-response question units (prompts with vertical gaps).
+        if "open_response" in active:
+            or_units = detect_open_response_units(
+                non_table_lines, page_num, page.rect, counter, obstacle_bboxes
+            )
+            all_units.extend(or_units)
+            for u in or_units:
+                for l in non_table_lines:
+                    if (l["bbox"][1] >= u.bbox[1] - 1 and
+                        l["bbox"][3] <= u.bbox[3] + 1 and
+                        l["bbox"][0] >= u.bbox[0] - 1):
+                        covered.add(id(l))
+
+        # Detect empty answer bullets sitting under a question/heading.
+        if "bullet_answer" in active:
+            ba_units, ba_consumed = detect_bullet_answer_units(
+                non_table_lines, page_num, page.rect, counter, skip_ids=covered
+            )
+            all_units.extend(ba_units)
+            covered |= ba_consumed
 
         # Inline blanks: group remaining lines into logical units (bullets,
         # paragraphs), then emit one unit per group that contains underscores.
-        remaining = [l for l in non_table_lines if id(l) not in or_covered]
-        groups = group_lines_into_logical_units(remaining)
-        for grp in groups:
-            unit = extract_inline_blanks_from_group(grp, page_num, counter)
-            if unit:
-                all_units.append(unit)
+        if "inline_blanks" in active:
+            remaining = [l for l in non_table_lines if id(l) not in covered]
+            groups = group_lines_into_logical_units(remaining)
+            for grp in groups:
+                unit = extract_inline_blanks_from_group(grp, page_num, counter)
+                if unit:
+                    all_units.append(unit)
 
     doc.close()
 
@@ -698,7 +784,6 @@ def preprocess_pdf(path: str, force_vision: bool = False) -> dict:
         "source": path,
         "unit_count": len(all_units),
         "slot_count": counter["n"],
-        "vision_failures": vision_failures,
         "units": [asdict(u) for u in all_units],
     }
 

@@ -221,17 +221,6 @@ header.masthead {
 .attach-btn:hover { border-color: var(--accent); }
 .attach-btn input { display: none; }
 .hw-hint { color: var(--ink-soft); font-size: 0.85em; align-self: center; }
-.vision-toggle {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 14px;
-  font-size: 13px;
-  color: var(--ink);
-  cursor: pointer;
-}
-.vision-toggle input { margin-top: 2px; flex: none; cursor: pointer; }
-.vision-toggle .hw-hint { align-self: auto; }
 .hw-block { margin-top: 12px; }
 .hw-block > .hw-label {
   display: block; font-family: var(--mono); font-size: 12px;
@@ -249,6 +238,25 @@ header.masthead {
 .hw-card img { width: 100%; height: 38px; object-fit: contain; display: block; }
 .hw-card .hw-name { font-family: var(--mono); font-size: 11px; color: var(--ink); margin-top: 3px; }
 .hw-card .hw-sub { font-size: 10px; color: var(--ink-soft); }
+/* ---- Answer-format picker (multi-select) ---- */
+.fmt-block { margin-bottom: 16px; }
+.fmt-block > .fmt-formats-label {
+  display: block; font-family: var(--mono); font-size: 12px;
+  color: var(--ink); margin-bottom: 8px;
+}
+.fmt-cards { display: flex; flex-wrap: wrap; gap: 10px; }
+.fmt-card {
+  display: flex; flex-direction: column; gap: 1px;
+  border: 1px solid var(--rule); border-radius: 6px; background: #fff;
+  padding: 8px 12px; cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  width: 168px; position: relative;
+}
+.fmt-card:hover { border-color: var(--accent); }
+.fmt-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(255,90,31,0.18); }
+.fmt-card input { position: absolute; top: 8px; right: 8px; accent-color: var(--accent); }
+.fmt-card .fmt-card-name { font-family: var(--mono); font-size: 12px; color: var(--ink); padding-right: 18px; }
+.fmt-card .fmt-card-sub { font-size: 10px; color: var(--ink-soft); }
 .yt-add { display: flex; gap: 6px; flex: 1; min-width: 220px; }
 #yt-url {
   flex: 1;
@@ -769,6 +777,32 @@ button {
       </label>
       <textarea id="instructions" placeholder="Paste an answer key or tell the AI how to fill the sheet. e.g. 'Cult of personality: Dictators promote an idealized, heroic image of themselves…' — the AI will match your answers to the right blanks."></textarea>
 
+      <div class="fmt-block" id="fmt-block">
+        <span class="fmt-formats-label">Answer format <span class="hw-hint">— tell us what this sheet uses (pick any that apply)</span></span>
+        <div class="fmt-cards" id="fmt-cards">
+          <label class="fmt-card selected">
+            <input type="checkbox" value="inline_blanks" checked>
+            <span class="fmt-card-name">Fill-in-the-blank</span>
+            <span class="fmt-card-sub">underscored blanks ____</span>
+          </label>
+          <label class="fmt-card selected">
+            <input type="checkbox" value="open_response" checked>
+            <span class="fmt-card-name">Open response</span>
+            <span class="fmt-card-sub">question + blank space below</span>
+          </label>
+          <label class="fmt-card selected">
+            <input type="checkbox" value="bullet_answer" checked>
+            <span class="fmt-card-name">Bullet list</span>
+            <span class="fmt-card-sub">empty • bullet under a question</span>
+          </label>
+          <label class="fmt-card selected">
+            <input type="checkbox" value="table" checked>
+            <span class="fmt-card-name">Table / chart</span>
+            <span class="fmt-card-sub">grid of cells to fill in</span>
+          </label>
+        </div>
+      </div>
+
       <div class="attach-row">
         <label class="attach-btn">
           + Reference files
@@ -797,12 +831,6 @@ button {
           </label>
         </div>
       </div>
-      <label class="vision-toggle">
-        <input type="checkbox" id="force-vision">
-        <span>Use vision model to find blanks
-          <span class="hw-hint">— slower, but reads layouts the parser misses (e.g. bullet-list study guides with no underscores)</span>
-        </span>
-      </label>
     </div>
 
     <label class="drop" id="drop">
@@ -911,6 +939,19 @@ function clearError() {
 function setStatus(msg) { $("status-line").textContent = msg; }
 
 let currentJob = null;
+
+// ---- Answer-format picker ----
+// Keep each card's .selected outline in sync with its checkbox.
+document.querySelectorAll("#fmt-cards input[type=checkbox]").forEach(cb => {
+  cb.addEventListener("change", () => {
+    cb.closest(".fmt-card").classList.toggle("selected", cb.checked);
+  });
+});
+function selectedFormats() {
+  return Array.from(
+    document.querySelectorAll("#fmt-cards input[type=checkbox]:checked")
+  ).map(cb => cb.value);
+}
 
 // ---- Stage 1: Drop zone ----
 const drop = $("drop");
@@ -1067,6 +1108,12 @@ async function gatherContext() {
 
 async function handleUpload(file) {
   if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
+  const formats = selectedFormats();
+  if (formats.length === 0) {
+    toast("Pick at least one answer format", true);
+    fileInput.value = "";
+    return;
+  }
   clearError();
   setStatus("Uploading…");
   drop.style.opacity = "0.5";
@@ -1074,13 +1121,11 @@ async function handleUpload(file) {
 
   const form = new FormData();
   form.append("file", file);
-  const useVision = $("force-vision")?.checked;
-  if (useVision) form.append("force_vision", "1");
+  form.append("formats", JSON.stringify(formats));
   try {
     // Upload the worksheet and extract attachment context in parallel.
     const hasAttachments = refFiles.length > 0 || ytUrls.length > 0;
-    if (useVision) setStatus("Uploading & reading the page with the vision model…");
-    else if (hasAttachments) setStatus("Uploading & reading references…");
+    if (hasAttachments) setStatus("Uploading & reading references…");
     const [r, contextText] = await Promise.all([
       fetch("/api/upload", { method: "POST", body: form }),
       gatherContext(),
@@ -1088,10 +1133,6 @@ async function handleUpload(file) {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "Upload failed");
     currentJob = data;
-    if (data.vision_failures > 0) {
-      const p = data.vision_failures === 1 ? "page" : "pages";
-      toast(`Vision model couldn't read ${data.vision_failures} ${p} — they were skipped`, true);
-    }
     await uploadStyle(currentJob.job_id);   // no-op unless a style was picked
     setStatus(handwritingOn()
       ? "Filling in your handwriting… (this can take up to 2 min)"

@@ -481,13 +481,21 @@ def upload():
     pdf_path = UPLOADS / f"{job_id}.pdf"
     f.save(pdf_path)
 
-    # Optional: force every page through the vision model (for text-layer PDFs
-    # whose layout the heuristics miss, e.g. bullet-list study guides).
-    force_vision = (request.form.get("force_vision") or "").lower() in ("1", "true", "on", "yes")
+    # Which answer formats to detect — chosen by the user in the UI. A JSON
+    # array of format ids; absent/invalid means "detect all".
+    formats = None
+    raw_formats = request.form.get("formats")
+    if raw_formats:
+        try:
+            parsed = json.loads(raw_formats)
+            if isinstance(parsed, list):
+                formats = [str(x) for x in parsed]
+        except (TypeError, json.JSONDecodeError):
+            formats = None
 
     # Quick sanity check + preprocess
     try:
-        structure = preprocess_pdf(str(pdf_path), force_vision=force_vision)
+        structure = preprocess_pdf(str(pdf_path), formats=formats)
     except Exception as e:
         pdf_path.unlink(missing_ok=True)
         return jsonify({"error": f"could not parse PDF: {e}"}), 400
@@ -524,7 +532,6 @@ def upload():
         "page_count": page_count,
         "unit_count": structure["unit_count"],
         "slot_count": structure["slot_count"],
-        "vision_failures": structure.get("vision_failures", 0),
         "units": [
             {
                 "unit_id": u["unit_id"],
