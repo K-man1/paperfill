@@ -547,6 +547,7 @@ button {
 .editor-toolbar button { flex: 0 0 auto; padding: 12px 18px; min-width: 0; }
 .editor-toolbar .spacer { flex: 1; }
 .editor-toolbar #add-box-btn.active,
+.editor-toolbar #snip-btn.active,
 .editor-toolbar .fmt-btn.active {
   background: var(--accent);
   color: var(--paper);
@@ -712,7 +713,7 @@ button {
   background: #fff;
   max-width: 100%;
 }
-.editor-page.adding { cursor: crosshair; }
+.editor-page.adding { cursor: crosshair; touch-action: none; }
 .editor-page img {
   display: block;
   width: 100%;
@@ -753,6 +754,7 @@ button {
   justify-content: center;
   z-index: 5;
   user-select: none;
+  touch-action: none;            /* don't scroll the page while dragging a handle */
 }
 .overlay:hover .ov-drag,
 .overlay.selected .ov-drag,
@@ -770,6 +772,7 @@ button {
   cursor: nwse-resize;
   display: none;
   z-index: 5;
+  touch-action: none;
 }
 .overlay:hover .ov-resize, .overlay.selected .ov-resize { display: block; }
 .draw-rect {
@@ -834,10 +837,35 @@ button {
 .error-banner strong { display: block; margin-bottom: 4px; font-size: 13px; }
 
 @media (max-width: 760px) {
+  main { padding: 24px 16px 64px; }
   .split { grid-template-columns: 1fr; }
   .compare { grid-template-columns: 1fr; }
   .steps { grid-template-columns: 1fr; gap: 16px; }
   .info-pane { position: static; }
+  header.masthead { margin-bottom: 24px; }
+  /* Toolbar: let everything wrap and stretch the primary actions full-width. */
+  .editor-toolbar { gap: 8px; padding: 12px; top: 0; }
+  .editor-toolbar button { padding: 12px 14px; }
+  .fmt-group { padding: 0 6px; }
+  #add-box-btn, #snip-btn, #save-btn { flex: 1 1 auto; }
+  .editor-toolbar #download-btn { flex: 1 1 100%; min-width: 0 !important; order: 99; }
+  .editor-toolbar .spacer { display: none; }
+  .fmt-cards .fmt-card, .hw-presets .hw-card { width: 100%; }
+}
+
+/* Touch devices have no hover, so an overlay's handles only appear once it's
+   selected (tapping its text selects it). Make the handles big enough to hit
+   with a finger. */
+@media (pointer: coarse) {
+  .ov-drag, .ov-delete { width: 26px; height: 26px; font-size: 15px; }
+  .ov-drag { left: -13px; top: -13px; }
+  .ov-delete { right: -13px; top: -13px; }
+  .ov-resize { width: 20px; height: 20px; right: -11px; bottom: -11px; }
+  /* Keep handles reachable even mid-edit: show them on the focused/selected box. */
+  .overlay.selected .ov-drag,
+  .overlay.selected .ov-delete,
+  .overlay.selected .ov-resize { display: flex; }
+  .overlay.selected .ov-resize { display: block; }
 }
 </style>
 </head>
@@ -986,6 +1014,7 @@ button {
         <button class="fmt-btn u" id="fmt-underline" disabled title="Underline (⌘U)">U</button>
       </div>
       <button class="btn-ghost" id="add-box-btn">+ Add box</button>
+      <button class="btn-ghost" id="snip-btn" title="Snip a question the AI missed and let it answer">✦ Ask AI for a question</button>
       <button class="btn-ghost" id="save-btn">Save</button>
       <div class="spacer"></div>
       <button class="btn-primary" id="download-btn" style="min-width:180px">↓ Download PDF</button>
@@ -994,6 +1023,7 @@ button {
     <div class="editor-help">
       Click any text to edit. Drag the black handle to move a box, the red × to delete.
       Click <b>+ Add box</b>, then drag on the page to draw a new field.
+      Missed answer? Click <b>✦ Ask AI for a question</b>, then drag a box around it — the AI reads it and drops in the answer.
     </div>
     <div class="rate-bar" id="rate-bar">
       <span class="rate-prompt">How did the AI do?</span>
@@ -1284,6 +1314,7 @@ let overlays = [];           // [{id, page, bbox:[x0,y0,x1,y1], text, mode, font
 let pageSizes = [];          // [{width, height}] in PDF points
 let pageScales = [];         // px-per-point for each page (after image load)
 let addMode = false;
+let snipMode = false;        // drag a box → AI answers the snipped question
 let dirty = false;
 let nextOvId = 0;
 let activeOverlayId = null;  // currently focused overlay (drives the format toolbar)
@@ -1300,9 +1331,8 @@ function renderResult(data) {
   pageSizes = data.page_sizes || [];
   pageScales = new Array(data.page_count).fill(1);
   dirty = false;
-  addMode = false;
   resetRateBar();
-  $("add-box-btn").classList.remove("active");
+  exitDrawModes();
   // Reflect the document's current font (all overlays share one unless individually overridden).
   const ovFonts = new Set(overlays.map(o => o.font));
   $("doc-font").value = ovFonts.size === 1 ? [...ovFonts][0] : "sans";
@@ -1395,7 +1425,7 @@ function createOverlayEl(ov, scale) {
   del.className = "ov-delete";
   del.textContent = "×";
   del.title = "Delete";
-  del.addEventListener("mousedown", e => e.stopPropagation());
+  del.addEventListener("pointerdown", e => e.stopPropagation());
   del.addEventListener("click", e => {
     e.stopPropagation();
     overlays = overlays.filter(o => o.id !== ov.id);
@@ -1428,9 +1458,10 @@ function applyOverlayTextStyle(txt, ov, scale) {
 }
 
 function attachResize(handle, overlayEl, ov) {
-  handle.addEventListener("mousedown", e => {
+  handle.addEventListener("pointerdown", e => {
     e.preventDefault();
     e.stopPropagation();
+    handle.setPointerCapture?.(e.pointerId);
     const scale = pageScales[ov.page] || 1;
     const startX = e.clientX, startY = e.clientY;
     const origBbox = [...ov.bbox];
@@ -1443,14 +1474,18 @@ function attachResize(handle, overlayEl, ov) {
                  Math.max(origBbox[1] + 8, origBbox[3] + dy)];
       applyOverlayPosition(overlayEl, ov, scale);
     }
-    function onUp() {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      overlayEl.classList.remove("selected");
+    function onUp(ev) {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      // On touch (no hover) keep the box selected so its handles stay reachable.
+      if (ev.pointerType === "mouse") overlayEl.classList.remove("selected");
+      else setActiveOverlay(ov.id);
       dirty = true;
     }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
   });
 }
 
@@ -1463,9 +1498,10 @@ function applyOverlayPosition(el, ov, scale) {
 }
 
 function attachDragMove(handle, overlayEl, ov) {
-  handle.addEventListener("mousedown", e => {
+  handle.addEventListener("pointerdown", e => {
     e.preventDefault();
     e.stopPropagation();
+    handle.setPointerCapture?.(e.pointerId);
     const scale = pageScales[ov.page] || 1;
     const startX = e.clientX, startY = e.clientY;
     const origBbox = [...ov.bbox];
@@ -1476,22 +1512,27 @@ function attachDragMove(handle, overlayEl, ov) {
       ov.bbox = [origBbox[0]+dx, origBbox[1]+dy, origBbox[2]+dx, origBbox[3]+dy];
       applyOverlayPosition(overlayEl, ov, scale);
     }
-    function onUp() {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      overlayEl.classList.remove("selected");
+    function onUp(ev) {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      // On touch (no hover) keep the box selected so its handles stay reachable.
+      if (ev.pointerType === "mouse") overlayEl.classList.remove("selected");
+      else setActiveOverlay(ov.id);
       dirty = true;
     }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
   });
 }
 
 function attachPageDrawHandlers(wrap, pageIdx) {
-  wrap.addEventListener("mousedown", e => {
-    if (!addMode) return;
+  wrap.addEventListener("pointerdown", e => {
+    if (!addMode && !snipMode) return;
     if (e.target.closest(".overlay")) return;
     e.preventDefault();
+    wrap.setPointerCapture?.(e.pointerId);
     const scale = pageScales[pageIdx] || 1;
     const wrapRect = wrap.getBoundingClientRect();
     const sx = e.clientX - wrapRect.left;
@@ -1512,43 +1553,109 @@ function attachPageDrawHandlers(wrap, pageIdx) {
       rect.style.height = h + "px";
     }
     function onUp(ev) {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
+      wrap.removeEventListener("pointermove", onMove);
+      wrap.removeEventListener("pointerup", onUp);
+      wrap.removeEventListener("pointercancel", onUp);
       const cx = ev.clientX - wrapRect.left;
       const cy = ev.clientY - wrapRect.top;
       const x = Math.min(sx, cx), y = Math.min(sy, cy);
       const w = Math.abs(cx - sx), h = Math.abs(cy - sy);
       rect.remove();
-      let bbox;
-      if (w < 8 || h < 8) {
-        bbox = [sx/scale, sy/scale, (sx+90)/scale, (sy+18)/scale];
-      } else {
-        bbox = [x/scale, y/scale, (x+w)/scale, (y+h)/scale];
+      const tiny = (w < 8 || h < 8);
+
+      // Snip mode: the box marks a question the AI missed. Send the region to
+      // the AI and let it drop the answer into a new editable box.
+      if (snipMode) {
+        exitDrawModes();
+        if (tiny) { toast("Draw a box around the question you want answered", true); return; }
+        handleSnip(pageIdx, [x/scale, y/scale, (x+w)/scale, (y+h)/scale]);
+        return;
       }
-      const ov = { ...ovDefaults(), id: newOvId(), page: pageIdx, bbox, text: "" };
-      overlays.push(ov);
-      positionOverlaysOnPage(pageIdx);
-      dirty = true;
-      addMode = false;
-      $("add-box-btn").classList.remove("active");
-      document.querySelectorAll(".editor-page").forEach(p => p.classList.remove("adding"));
-      // Focus newly added overlay
-      setTimeout(() => {
-        const els = wrap.querySelectorAll(".overlay");
-        const last = els[els.length - 1];
-        if (last) last.querySelector(".ov-text").focus();
-      }, 0);
+
+      // Add mode: draw a blank editable box (a tiny click gets a default size).
+      const bbox = tiny
+        ? [sx/scale, sy/scale, (sx+90)/scale, (sy+18)/scale]
+        : [x/scale, y/scale, (x+w)/scale, (y+h)/scale];
+      exitDrawModes();
+      addOverlayAt(pageIdx, bbox, "", { focus: true });
     }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    wrap.addEventListener("pointermove", onMove);
+    wrap.addEventListener("pointerup", onUp);
+    wrap.addEventListener("pointercancel", onUp);
   });
 }
 
-$("add-box-btn").addEventListener("click", () => {
-  addMode = !addMode;
+// Append a new overlay (optionally prefilled) and, if asked, focus it for
+// editing. Used by both the manual "+ Add box" and the AI snip flow.
+function addOverlayAt(pageIdx, bbox, text, { focus = false } = {}) {
+  const ov = { ...ovDefaults(), id: newOvId(), page: pageIdx, bbox, text: text || "" };
+  ov.font = $("doc-font").value || ov.font;   // adopt the document font
+  overlays.push(ov);
+  positionOverlaysOnPage(pageIdx);
+  dirty = true;
+  if (focus) {
+    setTimeout(() => {
+      const el = findOvEl(ov.id);
+      if (!el) return;
+      el.querySelector(".ov-text").focus();
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 0);
+  }
+  return ov;
+}
+
+// Turn off both draw modes and clear the crosshair cursor / button states.
+function exitDrawModes() {
+  addMode = false;
+  snipMode = false;
+  $("add-box-btn").classList.remove("active");
+  $("snip-btn").classList.remove("active");
+  document.querySelectorAll(".editor-page").forEach(p => p.classList.remove("adding"));
+}
+
+function setDrawMode(mode) {  // mode: "add" | "snip" | null
+  addMode = (mode === "add");
+  snipMode = (mode === "snip");
   $("add-box-btn").classList.toggle("active", addMode);
-  document.querySelectorAll(".editor-page").forEach(p => p.classList.toggle("adding", addMode));
-});
+  $("snip-btn").classList.toggle("active", snipMode);
+  const on = addMode || snipMode;
+  document.querySelectorAll(".editor-page").forEach(p => p.classList.toggle("adding", on));
+}
+
+$("add-box-btn").addEventListener("click", () => setDrawMode(addMode ? null : "add"));
+$("snip-btn").addEventListener("click", () => setDrawMode(snipMode ? null : "snip"));
+
+// Ask the AI to answer a snipped (hand-selected) question, then drop the
+// answer into a new editable box just below the selection.
+async function handleSnip(pageIdx, snipBbox) {
+  if (!currentJob) return;
+  const saving = $("saving");
+  saving.textContent = "Reading the question with AI…";
+  saving.classList.add("active");
+  setStatus("Asking AI…");
+  try {
+    const r = await fetch("/api/snip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: currentJob.job_id, page: pageIdx, bbox: snipBbox }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Couldn't get an answer");
+    const answer = (data.answer || "").trim();
+    if (!answer) { toast("The AI couldn't find an answer for that selection", true); return; }
+    // Place the answer box just under the snipped region so it doesn't cover
+    // the question; the user drags it onto the blank and edits if needed.
+    const [bx0, , bx1, by1] = snipBbox;
+    addOverlayAt(pageIdx, [bx0, by1 + 2, bx1, by1 + 20], answer, { focus: true });
+    toast("Answer added — drag it onto the blank and edit if needed");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    saving.classList.remove("active");
+    saving.textContent = "Re-rendering PDF…";
+    setStatus("Ready to edit");
+  }
+}
 
 // ---- Format toolbar ----
 function setActiveOverlay(id) {

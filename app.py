@@ -36,6 +36,7 @@ if _env_path.exists():
 import db
 from preprocess import preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
+from vision_preprocess import VISION_MODEL
 from handwriting.client import handwriting_enabled, generate_handwriting
 from context_sources import (extract_file_text, fetch_youtube_transcript,
                              assemble_context)
@@ -320,7 +321,7 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict
         user = structure_json
 
     response = get_openai_client().chat.completions.create(
-        model=os.environ.get("OPENAI_MODEL", "qwen/qwen3-32b"),
+        model=os.environ.get("OPENAI_MODEL", "openai/gpt-5.5"),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -422,6 +423,55 @@ def _extract_json_object(text: str) -> dict:
                 except json.JSONDecodeError:
                     break
     return {}
+
+
+def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
+    """
+    Ask the vision model to answer a single worksheet item from a cropped
+    screenshot — used when the AI left a question blank and the user snips it
+    by hand. Returns just the answer string (no restated question).
+
+    `instructions` is the same answer-key / reference text the original fill
+    used (stored on the job), so a snipped answer stays consistent with the
+    rest of the sheet.
+    """
+    system = (
+        "You are helping a student fill in a worksheet. You are shown a cropped "
+        "screenshot of ONE worksheet item (a fill-in-the-blank, a short "
+        "question, or a prompt) that was left unanswered. Read it and return "
+        "ONLY the answer that should be written in — do not restate the "
+        "question, add a label, or explain. For a fill-in-the-blank give just "
+        "the word or phrase; for a short-answer question give a concise answer "
+        "(a few sentences at most). If the user supplied an answer key or notes, "
+        "prefer them over your own knowledge. Return ONLY a JSON object: "
+        "{\"answer\": \"<text>\"}. No prose, no markdown, no <think> tags. /no_think"
+    )
+    data_uri = "data:image/png;base64," + base64.b64encode(png_bytes).decode()
+    user_content: list[dict] = [
+        {"type": "text", "text": "Answer this worksheet item."},
+        {"type": "image_url", "image_url": {"url": data_uri}},
+    ]
+    instructions = (instructions or "").strip()
+    if instructions:
+        user_content.insert(0, {
+            "type": "text",
+            "text": ("Answer key / reference material the user provided "
+                     "(prefer it over your own knowledge):\n" + instructions[:12000]),
+        })
+
+    response = get_openai_client().chat.completions.create(
+        model=VISION_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ],
+        response_format={"type": "json_object"},
+    )
+    content = response.choices[0].message.content or "{}"
+    ans = _extract_json_object(content).get("answer", "")
+    if isinstance(ans, (int, float)):
+        ans = str(ans)
+    return ans.strip() if isinstance(ans, str) else ""
 
 
 # ---- Routes --------------------------------------------------------------
@@ -664,6 +714,9 @@ def fill():
     overlays = build_overlays_from_structure(job["structure"], answers)
     job["answers"] = answers
     job["overlays"] = overlays
+    # Keep the answer key / reference text around so a hand-snipped question
+    # (see /api/snip) is answered from the same source material.
+    job["fill_instructions"] = instructions[:30000]
 
     _generate_hw_for_job(job_id)          # no-op unless a style is attached
 
@@ -837,6 +890,63 @@ def update():
     save_job(job_id)
 
     return jsonify({"ok": True, "overlay_count": len(cleaned)})
+
+
+@app.post("/api/snip")
+def snip():
+    """
+    Answer a single question the user snipped by hand (a region the AI left
+    blank). Body: {job_id, page, bbox:[x0,y0,x1,y1] in PDF points}.
+
+    The selected region of the original page is rendered to a high-DPI crop and
+    sent to the vision model, which returns just the answer text. The frontend
+    drops that into a new, editable text box the user positions over the blank.
+    """
+    data = request.get_json(silent=True) or {}
+    job = load_job(data.get("job_id"))
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+
+    try:
+        bbox = [float(x) for x in data.get("bbox", [])]
+    except (TypeError, ValueError):
+        bbox = []
+    if len(bbox) != 4:
+        return jsonify({"error": "bbox must be [x0,y0,x1,y1]"}), 400
+    try:
+        page_idx = int(data.get("page", 0))
+    except (TypeError, ValueError):
+        page_idx = -1
+    if page_idx < 0 or page_idx >= job["page_count"]:
+        return jsonify({"error": "page out of range"}), 400
+
+    x0, y0, x1, y1 = bbox
+    x0, x1 = sorted((x0, x1))
+    y0, y1 = sorted((y0, y1))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return jsonify({"error": "selection too small"}), 400
+
+    # Render just the selected region of the original page, padded a little so
+    # edge text isn't clipped, at a DPI high enough for the model to read it.
+    try:
+        doc = fitz.open(job["pdf_path"])
+        page = doc[page_idx]
+        pad = 4
+        clip = fitz.Rect(
+            max(0, x0 - pad), max(0, y0 - pad),
+            min(page.rect.width, x1 + pad), min(page.rect.height, y1 + pad),
+        )
+        png_bytes = page.get_pixmap(dpi=200, clip=clip).tobytes("png")
+        doc.close()
+    except Exception as e:
+        return jsonify({"error": f"could not crop page: {e}"}), 500
+
+    try:
+        answer = call_vision_for_answer(png_bytes, job.get("fill_instructions", ""))
+    except Exception as e:
+        return jsonify({"error": f"vision call failed: {e}"}), 502
+
+    return jsonify({"answer": answer})
 
 
 @app.get("/api/download/<job_id>")

@@ -21,7 +21,7 @@ import fitz
 from preprocess import Slot, Unit
 
 
-VISION_MODEL = os.environ.get("VISION_MODEL", "google/gemini-3.5-flash")
+VISION_MODEL = os.environ.get("VISION_MODEL", "openai/gpt-5.5")
 VISION_DPI = int(os.environ.get("VISION_DPI", "200"))
 
 _BLANK_TOKEN = "___"
