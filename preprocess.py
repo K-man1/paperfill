@@ -662,6 +662,31 @@ def page_has_text_layer(page) -> bool:
     return False
 
 
+# Fraction of the page a single image must cover for the page to be treated as
+# a scan. A genuine digital worksheet never rasterizes its whole body into one
+# image; a scanned page (with or without a baked-in OCR text layer) does.
+SCAN_IMAGE_COVERAGE = 0.8
+
+
+def page_is_scanned(page) -> bool:
+    """
+    True if the page is a scan, even when it carries a (often garbled) OCR text
+    layer. Detected by a single image block covering most of the page. Such
+    pages must go through the vision detector — the text-layer parser would
+    otherwise run on OCR noise and emit junk units.
+    """
+    page_area = page.rect.width * page.rect.height
+    if page_area <= 0:
+        return False
+    for block in page.get_text("rawdict")["blocks"]:
+        if block.get("type") != 1:  # image block
+            continue
+        x0, y0, x1, y1 = block["bbox"]
+        if (x1 - x0) * (y1 - y0) >= SCAN_IMAGE_COVERAGE * page_area:
+            return True
+    return False
+
+
 def preprocess_pdf(path: str, formats=None) -> dict:
     """
     Build the structured representation of a worksheet.
@@ -682,9 +707,10 @@ def preprocess_pdf(path: str, formats=None) -> dict:
     vision_client = None
 
     for page_num, page in enumerate(doc):
-        # Scanned (image-only) page: the text-layer logic below finds nothing,
-        # so route it through the vision detector instead.
-        if not page_has_text_layer(page):
+        # Scanned page: either no text layer at all, or a full-page image with a
+        # baked-in OCR text layer that would feed the text parser pure noise.
+        # Either way, route it through the vision detector.
+        if page_is_scanned(page) or not page_has_text_layer(page):
             from vision_preprocess import detect_scanned_page, _build_client
             if vision_client is None:
                 vision_client = _build_client()
