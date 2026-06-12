@@ -37,6 +37,7 @@ if _env_path.exists():
 import db
 from json_utils import extract_json_object
 from preprocess import preprocess_pdf
+from multimodal_preprocess import multimodal_preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
 from vision_preprocess import VISION_MODEL, VISION_DPI
 from handwriting.client import handwriting_enabled, generate_handwriting
@@ -579,9 +580,20 @@ def upload():
         except (TypeError, json.JSONDecodeError):
             formats = None
 
+    # Detector selection: deterministic (preprocess.py, default) vs the
+    # multimodal vision path. Chosen per-request via the `detector` form field
+    # or globally via the PAPERFILL_DETECTOR env var.
+    detector_mode = (request.form.get("detector")
+                     or os.environ.get("PAPERFILL_DETECTOR")
+                     or "deterministic").strip().lower()
+    use_multimodal = detector_mode in ("multimodal", "mm", "vision2")
+
     # Quick sanity check + preprocess
     try:
-        structure = preprocess_pdf(str(pdf_path), formats=formats)
+        if use_multimodal:
+            structure = multimodal_preprocess_pdf(str(pdf_path), formats=formats)
+        else:
+            structure = preprocess_pdf(str(pdf_path), formats=formats)
     except Exception as e:
         pdf_path.unlink(missing_ok=True)
         return jsonify({"error": f"could not parse PDF: {e}"}), 400
