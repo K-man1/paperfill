@@ -113,35 +113,45 @@ ANSWER_SPACE_SCHEMA = {
 
 
 _SYSTEM = (
-    "You read a worksheet (provided as a PDF) and list every place a student "
-    "is expected to WRITE an answer. Do not solve anything; only locate blanks.\n"
+    "You read a worksheet and list every place a student is expected to WRITE "
+    "an answer. Do not solve anything; only locate blanks.\n"
     "\n"
     "For each answer space return:\n"
     "  - page: the 0-based page index it appears on.\n"
     "  - kind: 'inline' for a short fill-in sitting inside a printed line "
     "(a blank line, an underscore run, or empty space after a prompt word/"
     "dash); 'open' for a question answered in the large empty area beneath it.\n"
-    "  - anchor_text: the printed text the blank attaches to, transcribed "
-    "VERBATIM (exact words, casing, punctuation, accents) so it can be found "
-    "again in the page. For inline, give the whole printed phrase on the blank's "
-    "side of it (typically 3+ words, e.g. 'The capital of France is') — NOT a "
-    "single common word like 'the', which is ambiguous. Do NOT include the "
-    "blank itself. For open, give the question.\n"
-    "  - blank_position: for inline, whether the blank falls 'after' or "
-    "'before' the anchor_text; for open use 'none'.\n"
+    "  - anchor_text: the printed text DIRECTLY TOUCHING this blank, transcribed "
+    "VERBATIM (exact words, casing, punctuation, accents). It is used to find "
+    "the blank again by exact text search, so it must be the real words next to "
+    "THIS blank and unique enough to land on it.\n"
+    "  - blank_position: for inline, whether the blank is 'after' or 'before' "
+    "the anchor_text; for open use 'none'.\n"
     "\n"
-    "Rules:\n"
-    "- A term or prompt followed by a dash or colon and then empty space "
-    "(e.g. 'photosynthesis -' or 'Capital:') IS an inline blank: the student "
-    "writes the answer in that space, even when no line is printed. Use the "
-    "term+dash/colon as anchor_text with blank_position 'after'.\n"
-    "- A hyphenated or compound word inside running text (e.g. 'single-eyed', "
-    "'well-being', 'follow-up') is NOT a blank. Only list a space where a "
-    "student actually writes.\n"
-    "- Section headings, titles and instructions are not answer spaces unless "
-    "they are themselves a labelled fill-in.\n"
-    "- Transcribe anchor_text exactly as printed; a paraphrase will fail to "
-    "match and the blank will be dropped.\n"
+    "Choosing anchor_text (this is the part models get wrong):\n"
+    "- Use the words IMMEDIATELY beside the blank — the word/phrase the blank "
+    "physically abuts. If the blank is to the LEFT of a word (numbered lists, "
+    "matching columns, '____ Epididymis'), the anchor is THAT word and "
+    "blank_position='before'. If the blank follows text ('The capital is ___'), "
+    "the anchor is the text before it and blank_position='after'.\n"
+    "- NEVER use a shared column header, title, row label, or generic word "
+    "(e.g. 'Structure', 'Order', 'Answer', 'Name', 'the') as the anchor for a "
+    "blank that actually sits next to specific content. Each row/item has its "
+    "OWN distinct text — use that.\n"
+    "- Every item's anchor_text MUST be DIFFERENT. If two blanks would get the "
+    "same anchor, lengthen each to include neighbouring words until unique. A "
+    "good anchor is typically 2-6 words.\n"
+    "- Copy the text exactly as printed (a paraphrase will fail to match and the "
+    "blank is dropped). For 'open', anchor_text is the full question text.\n"
+    "\n"
+    "What counts:\n"
+    "- A term/prompt followed by a dash or colon then empty space "
+    "('photosynthesis -', 'Capital:') IS an inline blank (write in the space, "
+    "no printed line needed); anchor='photosynthesis -', position='after'.\n"
+    "- A hyphenated/compound word in running text ('single-eyed', 'well-being') "
+    "is NOT a blank.\n"
+    "- Headings, titles and instructions are not answer spaces unless they are "
+    "themselves a labelled fill-in.\n"
     "- Each distinct blank is its own item, even when several share a line."
 )
 
@@ -236,6 +246,7 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
 
     resp = client.chat.completions.create(
         model=model,
+        temperature=0,
         messages=[
             {"role": "system", "content": _SYSTEM},
             {"role": "user", "content": [
@@ -265,8 +276,35 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
 # Anchor -> bbox resolver.
 # --------------------------------------------------------------------------
 
+# Canonicalize characters before matching so the model's transcription and the
+# PDF's char map line up despite cosmetic differences. All dash variants (hyphen,
+# en/em dash, minus) fold to '-', smart quotes to ASCII, zero-width junk is
+# dropped. This is the #1 cause of "anchor_not_found" on dash/colon blanks.
+_DASHES = "‐‑‒–—―−﹘﹣－·•"
+_ZERO_WIDTH = "​‌‍﻿­"
+
+
+def _canon_char(ch: str) -> str:
+    if ch in _ZERO_WIDTH:
+        return ""
+    if ch in _DASHES:
+        return "-"
+    if ch in "‘’ʼ`´":
+        return "'"
+    if ch in "“”":
+        return '"'
+    return ch
+
+
 def _normalize(s: str) -> str:
-    return re.sub(r"\s+", " ", s or "").strip().lower()
+    s = "".join(_canon_char(ch) for ch in (s or ""))
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _alnum(s: str) -> str:
+    """Letters/digits only, lowercased — a punctuation/space-insensitive form
+    used as a fuzzy fallback when exact text matching fails."""
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
 def _flatten_chars(lines: list[dict]) -> list[dict]:
@@ -287,8 +325,8 @@ def _flatten_chars(lines: list[dict]) -> list[dict]:
 
 
 def _norm_index(flat: list[dict]) -> tuple[str, list[int]]:
-    """Build a whitespace-collapsed lowercase string of the page plus a map
-    from each normalized-string position back to its index in `flat`."""
+    """Build a canonicalized, whitespace-collapsed lowercase string of the page
+    plus a map from each string position back to its index in `flat`."""
     norm: list[str] = []
     idx_map: list[int] = []
     prev_space = True
@@ -300,13 +338,29 @@ def _norm_index(flat: list[dict]) -> tuple[str, list[int]]:
                 idx_map.append(i)
                 prev_space = True
             continue
-        norm.append(ch.lower())
+        cc = _canon_char(ch)
+        if not cc:  # zero-width: contributes nothing
+            continue
+        norm.append(cc.lower())
         idx_map.append(i)
         prev_space = False
     while norm and norm[-1] == " ":
         norm.pop()
         idx_map.pop()
     return "".join(norm), idx_map
+
+
+def _alnum_index(flat: list[dict]) -> tuple[str, list[int]]:
+    """Letters/digits-only string of the page plus a map back to `flat`, for
+    punctuation-insensitive fuzzy fallback matching."""
+    alnum: list[str] = []
+    idx_map: list[int] = []
+    for i, c in enumerate(flat):
+        ch = c["c"].lower()
+        if ch.isalnum():
+            alnum.append(ch)
+            idx_map.append(i)
+    return "".join(alnum), idx_map
 
 
 def _find_occurrences(haystack: str, needle: str) -> list[tuple[int, int]]:
@@ -331,43 +385,46 @@ class _PageIndex:
         self.page = page
         self.lines = lines
         self.flat = _flatten_chars(lines)
-        self.norm, self.idx_map = _norm_index(self.flat)
-        self.used_spans: set[tuple[int, int]] = set()
-        self.cursor_src = -1  # last consumed source-char index (reading order)
+        self.norm, self.norm_map = _norm_index(self.flat)
+        self.alnum, self.alnum_map = _alnum_index(self.flat)
+        self.used_src: set[int] = set()      # chosen source start indices
+        self.cursor_src = -1                 # reading-order cursor (source idx)
+
+    def _spans(self, needle: str, hay: str, idx_map: list[int]):
+        """All source-index spans (start, end_inclusive) where `needle` occurs
+        in `hay`."""
+        return [(idx_map[s], idx_map[e - 1])
+                for (s, e) in _find_occurrences(hay, needle)]
 
     def resolve(self, anchor: str) -> tuple[int, int] | None:
-        """Return the source-char index span (start, end_inclusive) of the
-        chosen occurrence of `anchor`, or None if it isn't on the page.
+        """Return the source-char index span (start, end_inclusive) for the
+        chosen occurrence of `anchor`, or None if it can't be located.
 
-        Disambiguation: prefer the earliest not-yet-used occurrence at or after
-        the reading-order cursor; otherwise the earliest unused occurrence
-        anywhere; mark it used so the next identical anchor picks a later one.
+        Tries an exact (canonicalized) text match first, then a punctuation-
+        insensitive alphanumeric fallback. Disambiguation: prefer the earliest
+        not-yet-used occurrence at or after the reading-order cursor; otherwise
+        the earliest unused one; mark it used so a repeated anchor advances.
         """
-        na = _normalize(anchor)
-        occ = _find_occurrences(self.norm, na)
-        if not occ:
+        spans = self._spans(_normalize(anchor), self.norm, self.norm_map)
+        if not spans:
+            a = _alnum(anchor)
+            if len(a) >= 3:  # too-short fuzzy matches are noise
+                spans = self._spans(a, self.alnum, self.alnum_map)
+        if not spans:
             return None
+        spans.sort()
 
-        chosen = None
-        for (s, e) in occ:
-            if (s, e) in self.used_spans:
-                continue
-            if self.idx_map[s] >= self.cursor_src:
-                chosen = (s, e)
-                break
+        chosen = next((sp for sp in spans
+                       if sp[0] not in self.used_src and sp[0] >= self.cursor_src),
+                      None)
         if chosen is None:
-            for (s, e) in occ:
-                if (s, e) not in self.used_spans:
-                    chosen = (s, e)
-                    break
+            chosen = next((sp for sp in spans if sp[0] not in self.used_src), None)
         if chosen is None:
             return None
 
-        self.used_spans.add(chosen)
-        src_start = self.idx_map[chosen[0]]
-        src_end = self.idx_map[chosen[1] - 1]
-        self.cursor_src = max(self.cursor_src, src_end)
-        return (src_start, src_end)
+        self.used_src.add(chosen[0])
+        self.cursor_src = max(self.cursor_src, chosen[1])
+        return chosen
 
 
 def _anchor_bbox(flat, src_start, src_end):
