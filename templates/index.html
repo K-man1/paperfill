@@ -1630,6 +1630,7 @@ $("snip-btn").addEventListener("click", () => setDrawMode(snipMode ? null : "sni
 async function handleSnip(pageIdx, snipBbox) {
   if (!currentJob) return;
   const saving = $("saving");
+  const prevSavingText = saving.textContent;
   saving.textContent = "Reading the question with AI…";
   saving.classList.add("active");
   setStatus("Asking AI…");
@@ -1652,7 +1653,7 @@ async function handleSnip(pageIdx, snipBbox) {
     toast(err.message, true);
   } finally {
     saving.classList.remove("active");
-    saving.textContent = "Re-rendering PDF…";
+    saving.textContent = prevSavingText;
     setStatus("Ready to edit");
   }
 }

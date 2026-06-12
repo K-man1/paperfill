@@ -12,12 +12,12 @@ a scan are emitted as their individual blank slots.
 """
 
 import base64
-import json
 import os
 import re
 
 import fitz
 
+from json_utils import extract_json_object
 from preprocess import Slot, Unit
 
 
@@ -69,52 +69,6 @@ def _build_client():
     )
 
 
-def _extract_json_object(text: str) -> dict:
-    """Pull a JSON object out of a model response (handles fences / prose)."""
-    if not text:
-        return {}
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
-    try:
-        obj = json.loads(cleaned)
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
-    start = cleaned.find("{")
-    if start < 0:
-        return {}
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(cleaned)):
-        ch = cleaned[i]
-        if esc:
-            esc = False
-            continue
-        if ch == "\\":
-            esc = True
-            continue
-        if ch == '"':
-            in_str = not in_str
-            continue
-        if in_str:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    obj = json.loads(cleaned[start:i + 1])
-                    if isinstance(obj, dict):
-                        return obj
-                except json.JSONDecodeError:
-                    break
-    return {}
-
-
 def _clean_norm_box(box):
     """Sorted normalized [x0,y0,x1,y1] floats, or None if malformed."""
     try:
@@ -163,7 +117,7 @@ def _call_vision(page, client) -> dict:
         response_format={"type": "json_object"},
     )
     content = resp.choices[0].message.content or "{}"
-    return _extract_json_object(content)
+    return extract_json_object(content)
 
 
 def detect_scanned_page(page, page_num: int, counter: dict, client=None) -> list[Unit]:

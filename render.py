@@ -9,9 +9,7 @@ import fitz
 
 # Tunables
 HANDWRITING_FONT = "helv"  # built-in PDF font
-DEFAULT_FONT_SIZE = 11
 MIN_FONT_SIZE = 6
-SLOT_VERTICAL_OFFSET = -1  # negative = move up (text baseline sits ABOVE the underscore)
 
 # One-DM handwriting is generated at 64px tall; squeezing it into a ~14px slot
 # turns legible cursive into an illegible scratch. Render it noticeably taller
@@ -28,38 +26,6 @@ _OV_DEFAULTS = {
     "italic": False,
     "underline": False,
 }
-
-
-def fit_text_in_bbox(text: str, bbox, font: str = HANDWRITING_FONT,
-                     max_size: float = DEFAULT_FONT_SIZE,
-                     min_size: float = MIN_FONT_SIZE) -> tuple[str, float]:
-    """
-    Find the largest font size that fits `text` horizontally within the
-    bbox width. If even min_size doesn't fit, returns text truncated with
-    an ellipsis at min_size.
-    """
-    width = bbox[2] - bbox[0]
-    size = max_size
-    while size >= min_size:
-        if fitz.get_text_length(text, fontname=font, fontsize=size) <= width:
-            return text, size
-        size -= 0.5
-    # Truncate to fit at minimum size
-    while text and fitz.get_text_length(text + "…", fontname=font, fontsize=min_size) > width:
-        text = text[:-1]
-    return text + "…", min_size
-
-
-def insert_text_in_slot(page, slot_bbox, text: str) -> None:
-    """Place text inside an inline-blank slot, baseline just above the underscore."""
-    text = text.strip()
-    if not text:
-        return
-    fitted, size = fit_text_in_bbox(text, slot_bbox)
-    x = slot_bbox[0] + 1  # small left padding
-    y = slot_bbox[3] + SLOT_VERTICAL_OFFSET
-    page.insert_text((x, y), fitted, fontname=HANDWRITING_FONT,
-                     fontsize=size, color=(0, 0, 0))
 
 
 def wrap_text_to_width(text: str, width: float, font: str, size: float) -> list[str]:
@@ -246,83 +212,3 @@ def build_overlays_from_structure(structure: dict, answers: dict) -> list[dict]:
                         })
                         nid += 1
     return overlays
-
-
-def render_filled_pdf(pdf_path: str, structure: dict,
-                      answers: dict[str, str], out_path: str) -> None:
-    """
-    Direct (non-overlay) render — used by the CLI demo only.
-    answers: maps slot_id (inline_blanks / table) and unit_id (open_response) → answer.
-    """
-    doc = fitz.open(pdf_path)
-    for unit in structure["units"]:
-        page = doc[unit["page"]]
-        if unit["type"] == "inline_blanks":
-            for slot in unit["slots"]:
-                ans = answers.get(slot["slot_id"], "")
-                if ans:
-                    insert_text_in_slot(page, slot["bbox"], ans)
-        elif unit["type"] == "open_response":
-            ans = answers.get(unit["unit_id"], "")
-            if ans:
-                insert_text_in_region(page, unit["answer_region"], ans)
-        elif unit["type"] == "table":
-            for row in unit["table_cells"]:
-                for cell in row:
-                    if cell is None:
-                        continue
-                    for slot in cell["slots"]:
-                        ans = answers.get(slot["slot_id"], "")
-                        if ans:
-                            insert_text_in_slot(page, slot["bbox"], ans)
-    doc.save(out_path)
-    doc.close()
-
-
-# ---------- demo CLI ---------------------------------------------------------
-
-def _make_demo_answers(structure: dict) -> dict[str, str]:
-    """Generate plausible filler text for every slot to eyeball placement."""
-    pool_short = ["risk", "loss", "death", "fire", "theft", "house", "auto"]
-    pool_med = ["premium", "policy", "coverage", "insurance", "deductible"]
-    pool_long = ["risk management", "actual cash value", "comprehensive coverage"]
-    demo: dict[str, str] = {}
-    i = 0
-    for u in structure["units"]:
-        if u["type"] == "inline_blanks":
-            for slot in u["slots"]:
-                ul = slot["underscore_length"]
-                if ul < 12:
-                    word = pool_short[i % len(pool_short)]
-                elif ul < 22:
-                    word = pool_med[i % len(pool_med)]
-                else:
-                    word = pool_long[i % len(pool_long)]
-                demo[slot["slot_id"]] = word
-                i += 1
-        elif u["type"] == "open_response":
-            demo[u["unit_id"]] = (
-                "This is a placeholder answer demonstrating how a multi-line "
-                "response flows inside the detected answer region."
-            )
-        elif u["type"] == "table":
-            for row in u["table_cells"]:
-                for cell in row:
-                    if cell is None:
-                        continue
-                    for slot in cell["slots"]:
-                        demo[slot["slot_id"]] = pool_short[i % len(pool_short)]
-                        i += 1
-    return demo
-
-
-if __name__ == "__main__":
-    import sys
-    from preprocess import preprocess_pdf
-
-    for path in sys.argv[1:]:
-        structure = preprocess_pdf(path)
-        answers = _make_demo_answers(structure)
-        out_path = "/tmp/" + path.rsplit("/", 1)[-1].replace(".pdf", ".filled.pdf")
-        render_filled_pdf(path, structure, answers, out_path)
-        print(f"{path} → {out_path}")

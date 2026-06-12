@@ -15,9 +15,10 @@ import json
 import os
 import re
 import secrets
+import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-
 import fitz
 from flask import (Flask, jsonify, request, send_file, render_template,
                    abort, redirect, url_for, session, g)
@@ -34,9 +35,10 @@ if _env_path.exists():
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 import db
+from json_utils import extract_json_object
 from preprocess import preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
-from vision_preprocess import VISION_MODEL
+from vision_preprocess import VISION_MODEL, VISION_DPI
 from handwriting.client import handwriting_enabled, generate_handwriting
 from context_sources import (extract_file_text, fetch_youtube_transcript,
                              assemble_context)
@@ -52,6 +54,11 @@ OUTPUTS.mkdir(exist_ok=True)
 
 MAX_UPLOAD_MB = 10
 ALLOWED_EXT = {".pdf"}
+
+# Finished jobs are kept (on disk and in memory) this many days after their
+# last activity, then swept so neither outputs/ nor the in-memory JOBS dict
+# grows without bound. A re-render or handwriting pass refreshes the clock.
+JOB_RETENTION_DAYS = 7
 
 # Curated handwriting style presets. These are real in-distribution IAM word
 # images (the data One-DM was trained on), which produce far more consistent
@@ -76,7 +83,11 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
-PASSWORD_ADMIN = "alien"
+PASSWORD_ADMIN = os.environ.get("ADMIN_PASSWORD", "alien")
+
+# How much of the stored answer-key / reference text to feed the vision model
+# when answering a hand-snipped question (see /api/snip).
+SNIP_REF_MAX = 12000
 
 # The user access code is changeable from the admin panel and persisted to
 # disk so it survives restarts and is shared across all gunicorn workers. It
@@ -240,6 +251,27 @@ def load_job(job_id: str) -> dict | None:
     return job
 
 
+def sweep_old_jobs() -> None:
+    """Best-effort: drop jobs older than JOB_RETENTION_DAYS from disk and
+    memory so outputs/ and the JOBS dict can't grow forever. A job's
+    outputs/<id> mtime is bumped by every re-render/handwriting write, so this
+    evicts by *last activity*, not creation time. Never raises."""
+    cutoff = time.time() - JOB_RETENTION_DAYS * 86400
+    try:
+        dirs = [d for d in OUTPUTS.iterdir() if d.is_dir()]
+    except OSError:
+        return
+    for d in dirs:
+        try:
+            if d.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        (UPLOADS / f"{d.name}.pdf").unlink(missing_ok=True)
+        JOBS.pop(d.name, None)
+
+
 # ---- Helpers -------------------------------------------------------------
 
 def new_job_id() -> str:
@@ -329,7 +361,7 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict
         response_format={"type": "json_object"},
     )
     content = response.choices[0].message.content or "{}"
-    parsed = _extract_json_object(content)
+    parsed = extract_json_object(content)
     flat = _flatten_answers(parsed)
     if not flat:
         print(f"[fill] WARNING: LLM returned no usable answers. Raw (first 800 chars):\n{content[:800]}")
@@ -370,61 +402,6 @@ def _flatten_answers(obj: dict) -> dict[str, str]:
     return out
 
 
-def _extract_json_object(text: str) -> dict:
-    """
-    Robustly pull a JSON object out of a model response. Handles:
-      - <think>...</think> blocks (qwen3 reasoning models)
-      - ```json fenced code blocks
-      - leading/trailing prose
-    Falls back to the first {...} balanced span if direct parse fails.
-    """
-    if not text:
-        return {}
-    # Strip reasoning blocks
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    # Strip markdown fences
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
-    try:
-        obj = json.loads(cleaned)
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
-    # Last resort: find the first balanced { ... } and try that
-    start = cleaned.find("{")
-    if start < 0:
-        return {}
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(cleaned)):
-        ch = cleaned[i]
-        if esc:
-            esc = False
-            continue
-        if ch == "\\":
-            esc = True
-            continue
-        if ch == '"':
-            in_str = not in_str
-            continue
-        if in_str:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    obj = json.loads(cleaned[start:i+1])
-                    if isinstance(obj, dict):
-                        return obj
-                except json.JSONDecodeError:
-                    break
-    return {}
-
-
 def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
     """
     Ask the vision model to answer a single worksheet item from a cropped
@@ -456,7 +433,7 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
         user_content.insert(0, {
             "type": "text",
             "text": ("Answer key / reference material the user provided "
-                     "(prefer it over your own knowledge):\n" + instructions[:12000]),
+                     "(prefer it over your own knowledge):\n" + instructions[:SNIP_REF_MAX]),
         })
 
     response = get_openai_client().chat.completions.create(
@@ -468,7 +445,7 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
         response_format={"type": "json_object"},
     )
     content = response.choices[0].message.content or "{}"
-    ans = _extract_json_object(content).get("answer", "")
+    ans = extract_json_object(content).get("answer", "")
     if isinstance(ans, (int, float)):
         ans = str(ans)
     return ans.strip() if isinstance(ans, str) else ""
@@ -583,6 +560,8 @@ def upload():
     ext = Path(f.filename).suffix.lower()
     if ext not in ALLOWED_EXT:
         return jsonify({"error": "only PDF files allowed"}), 400
+
+    sweep_old_jobs()  # opportunistic cleanup of stale jobs
 
     job_id = new_job_id()
     pdf_path = UPLOADS / f"{job_id}.pdf"
@@ -716,7 +695,7 @@ def fill():
     job["overlays"] = overlays
     # Keep the answer key / reference text around so a hand-snipped question
     # (see /api/snip) is answered from the same source material.
-    job["fill_instructions"] = instructions[:30000]
+    job["fill_instructions"] = instructions[:SNIP_REF_MAX]
 
     _generate_hw_for_job(job_id)          # no-op unless a style is attached
 
@@ -931,12 +910,12 @@ def snip():
     try:
         doc = fitz.open(job["pdf_path"])
         page = doc[page_idx]
-        pad = 4
+        pad_pts = 4
         clip = fitz.Rect(
-            max(0, x0 - pad), max(0, y0 - pad),
-            min(page.rect.width, x1 + pad), min(page.rect.height, y1 + pad),
+            max(0, x0 - pad_pts), max(0, y0 - pad_pts),
+            min(page.rect.width, x1 + pad_pts), min(page.rect.height, y1 + pad_pts),
         )
-        png_bytes = page.get_pixmap(dpi=200, clip=clip).tobytes("png")
+        png_bytes = page.get_pixmap(dpi=VISION_DPI, clip=clip).tobytes("png")
         doc.close()
     except Exception as e:
         return jsonify({"error": f"could not crop page: {e}"}), 500

@@ -220,30 +220,6 @@ def extract_inline_blanks_from_group(group: list[dict], page_num: int,
     )
 
 
-# ---------- multi-line unit grouping ---------------------------------------
-
-def group_continuation_lines(lines_data: list[dict]) -> list[list[dict]]:
-    """
-    Group consecutive lines that belong to the same logical sentence/bullet.
-    Heuristic: lines belong together if vertically close (<= ~1.5 line heights)
-    AND the next line doesn't start with a new bullet/number marker.
-    """
-    if not lines_data:
-        return []
-    groups = [[lines_data[0]]]
-    for prev, curr in zip(lines_data, lines_data[1:]):
-        prev_y1 = prev["bbox"][3]
-        curr_y0 = curr["bbox"][1]
-        gap = curr_y0 - prev_y1
-        # If the gap is small, treat as continuation.
-        # Otherwise start a new group.
-        if gap < 8:  # tuned by inspection; lines are ~14pt
-            groups[-1].append(curr)
-        else:
-            groups.append([curr])
-    return groups
-
-
 def lines_in_reading_order(page) -> list[dict]:
     """
     Extract lines from a page in reading order with their bboxes & chars.
@@ -277,8 +253,6 @@ def lines_in_reading_order(page) -> list[dict]:
 
 # ---------- open-response detection ----------------------------------------
 
-NUMBERED_Q_RE = re.compile(r"^\s*(\d+)\s*[\.\)]\s")
-
 # Minimum vertical blank space (in points) below a prompt for it to count as
 # a writable answer region. ~2 blank text lines; less than this is ordinary
 # paragraph spacing.
@@ -290,7 +264,7 @@ PAGE_RIGHT_MARGIN = 40
 
 def is_question_start(line: dict) -> bool:
     """True if line starts with a question number like '1.' or '2)'."""
-    return bool(NUMBERED_Q_RE.match(line["text"]))
+    return bool(NUMBERED_LIST_RE.match(line["text"]))
 
 
 def group_prompt_lines(content_lines: list[dict]) -> list[list[dict]]:

@@ -29,7 +29,7 @@ TEXT_EXTS = {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".rtf"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 PDF_EXTS = {".pdf"}
 
-VISION_MODEL = os.environ.get("VISION_MODEL", "google/gemini-3.5-flash")
+VISION_MODEL = os.environ.get("VISION_MODEL", "openai/gpt-5.5")
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -116,17 +116,6 @@ def extract_youtube_id(url: str) -> str | None:
     """
     Pull the 11-character video id out of any common YouTube URL form, or
     return None if this doesn't look like a YouTube link.
-
-    TODO(human): implement this. You need to handle the forms users actually
-    paste, e.g.:
-        https://www.youtube.com/watch?v=dQw4w9WgXcQ
-        https://youtu.be/dQw4w9WgXcQ
-        https://www.youtube.com/embed/dQw4w9WgXcQ
-        https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=42s
-        https://www.youtube.com/shorts/dQw4w9WgXcQ
-        dQw4w9WgXcQ                      (a bare id)
-    Video ids are exactly 11 chars from the set [A-Za-z0-9_-]. Return the id
-    string, or None if no valid id is present.
     """
     if not url:
         return None
