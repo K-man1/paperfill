@@ -974,10 +974,14 @@ button {
 
     <label class="drop" id="drop">
       <div class="drop-icon">↓</div>
-      <h2>Drop a PDF here</h2>
-      <p>or click to browse · max 10 MB</p>
+      <h2 id="drop-title">Drop a PDF here</h2>
+      <p id="drop-sub">or click to browse · max 10 MB</p>
       <input type="file" id="file-input" accept="application/pdf">
     </label>
+
+    <div class="fill-row" id="fill-row" style="display:none; text-align:center; margin-top:16px;">
+      <button class="btn-primary" id="fill-btn" style="min-width:220px">Fill worksheet →</button>
+    </div>
 
     <div class="steps">
       <div class="step">
@@ -1111,17 +1115,25 @@ function selectedFormats() {
 }
 
 // ---- Detection-method picker ----
+function selectedDetector() {
+  const r = document.querySelector("#detector-cards input[type=radio]:checked");
+  return r ? r.value : "deterministic";
+}
+// The answer-format picker only drives the rule-based detector; AI vision
+// works out the layout itself, so hide it when AI vision is chosen.
+function syncFormatVisibility() {
+  $("fmt-block").style.display =
+    selectedDetector() === "multimodal" ? "none" : "";
+}
 document.querySelectorAll("#detector-cards input[type=radio]").forEach(rb => {
   rb.addEventListener("change", () => {
     document.querySelectorAll("#detector-cards .fmt-card")
       .forEach(c => c.classList.toggle(
         "selected", c.querySelector("input").checked));
+    syncFormatVisibility();
   });
 });
-function selectedDetector() {
-  const r = document.querySelector("#detector-cards input[type=radio]:checked");
-  return r ? r.value : "deterministic";
-}
+syncFormatVisibility();
 
 // ---- Stage 1: Drop zone ----
 const drop = $("drop");
@@ -1133,13 +1145,26 @@ const fileInput = $("file-input");
 ["dragleave","drop"].forEach(ev =>
   drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("dragover"); })
 );
+// A file is staged on drop/select; processing starts only when the user
+// clicks "Fill worksheet".
+let stagedFile = null;
+function stageFile(f) {
+  if (f.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
+  stagedFile = f;
+  $("drop-title").textContent = f.name;
+  $("drop-sub").textContent = "click to choose a different file";
+  $("fill-row").style.display = "";
+}
 drop.addEventListener("drop", e => {
   const f = e.dataTransfer.files[0];
-  if (f) handleUpload(f);
+  if (f) stageFile(f);
 });
 fileInput.addEventListener("change", e => {
   const f = e.target.files[0];
-  if (f) handleUpload(f);
+  if (f) stageFile(f);
+});
+$("fill-btn").addEventListener("click", () => {
+  if (stagedFile) handleUpload(stagedFile);
 });
 
 // ---- Attachments (reference files + YouTube videos) ----
@@ -1279,7 +1304,9 @@ async function gatherContext() {
 async function handleUpload(file) {
   if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
   const formats = selectedFormats();
-  if (formats.length === 0) {
+  // The format picker only applies to the rule-based detector; AI vision
+  // ignores it and finds the layout itself.
+  if (selectedDetector() !== "multimodal" && formats.length === 0) {
     toast("Pick at least one answer format", true);
     fileInput.value = "";
     return;
@@ -1288,6 +1315,7 @@ async function handleUpload(file) {
   setStatus("Uploading…");
   drop.style.opacity = "0.5";
   drop.style.pointerEvents = "none";
+  $("fill-btn").disabled = true;
 
   const form = new FormData();
   form.append("file", file);
@@ -1334,6 +1362,7 @@ async function handleUpload(file) {
   } finally {
     drop.style.opacity = "";
     drop.style.pointerEvents = "";
+    $("fill-btn").disabled = false;
     fileInput.value = "";
   }
 }
@@ -1847,6 +1876,11 @@ $("restart-btn").addEventListener("click", () => {
   if (dirty && !confirm("Discard unsaved edits?")) return;
   currentJob = null;
   overlays = [];
+  // Reset the staged-file UI back to its empty state.
+  stagedFile = null;
+  $("drop-title").textContent = "Drop a PDF here";
+  $("drop-sub").textContent = "or click to browse · max 10 MB";
+  $("fill-row").style.display = "none";
   showStage("upload");
   setStatus("Ready");
 });
