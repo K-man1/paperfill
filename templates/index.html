@@ -926,6 +926,22 @@ button {
         </div>
       </div>
 
+      <div class="fmt-block" id="detector-block">
+        <span class="fmt-formats-label">Detection method <span class="hw-hint">— how we find the blanks</span></span>
+        <div class="fmt-cards" id="detector-cards">
+          <label class="fmt-card selected">
+            <input type="radio" name="detector" value="deterministic" checked>
+            <span class="fmt-card-name">Standard</span>
+            <span class="fmt-card-sub">fast, rule-based</span>
+          </label>
+          <label class="fmt-card">
+            <input type="radio" name="detector" value="multimodal">
+            <span class="fmt-card-name">Smart — AI vision</span>
+            <span class="fmt-card-sub">reads the page like a human (beta)</span>
+          </label>
+        </div>
+      </div>
+
       <div class="attach-row">
         <label class="attach-btn">
           + Reference files
@@ -1092,6 +1108,19 @@ function selectedFormats() {
   return Array.from(
     document.querySelectorAll("#fmt-cards input[type=checkbox]:checked")
   ).map(cb => cb.value);
+}
+
+// ---- Detection-method picker ----
+document.querySelectorAll("#detector-cards input[type=radio]").forEach(rb => {
+  rb.addEventListener("change", () => {
+    document.querySelectorAll("#detector-cards .fmt-card")
+      .forEach(c => c.classList.toggle(
+        "selected", c.querySelector("input").checked));
+  });
+});
+function selectedDetector() {
+  const r = document.querySelector("#detector-cards input[type=radio]:checked");
+  return r ? r.value : "deterministic";
 }
 
 // ---- Stage 1: Drop zone ----
@@ -1263,6 +1292,7 @@ async function handleUpload(file) {
   const form = new FormData();
   form.append("file", file);
   form.append("formats", JSON.stringify(formats));
+  form.append("detector", selectedDetector());
   try {
     // Upload the worksheet and extract attachment context in parallel.
     const hasAttachments = refFiles.length > 0 || ytUrls.length > 0;
