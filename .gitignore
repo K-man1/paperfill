@@ -15,3 +15,6 @@ __pycache__/
 .DS_Store
 venv/
 .venv/
+ab_samples/dle*.pdf
+ab_samples/dle*.png
+ab_samples/dle_p01*

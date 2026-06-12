@@ -413,6 +413,81 @@ def detect_bullet_answer_units(lines: list[dict], page_num: int, page_rect,
         ))
         consumed.add(id(line))
 
+    # Sibling bullets that share one prompt (a question with several empty
+    # answer bullets, e.g. the 5 parts of SMART or the functions of the Federal
+    # Reserve) are consecutive here with identical prompt_text. Number them so
+    # the fill model writes a DISTINCT point in each instead of repeating one
+    # answer across all of them.
+    i = 0
+    while i < len(units):
+        j = i
+        while j < len(units) and units[j].prompt_text == units[i].prompt_text:
+            j += 1
+        n = j - i
+        if n > 1:
+            for k in range(i, j):
+                units[k].prompt_text = (
+                    f"{units[k].prompt_text} [multi-part answer: give point "
+                    f"{k - i + 1} of {n}, distinct from the other points]"
+                )
+        i = j
+
+    return units, consumed
+
+
+# ---------- trailing dash/colon blanks -------------------------------------
+
+# A label line that ends in a dash with the rest of the line left blank — e.g.
+# "Short-term goals -", "Home files -". The student writes the answer to the
+# right on the same line. We deliberately don't trigger on a trailing colon:
+# "A good budget is:" is usually answered in sub-bullets below, not to the right.
+TRAILING_DASH_RE = re.compile(r"[-‐‑‒–—―]\s*$")
+# Zero-width chars Google Docs sprinkles after blanks; str.strip() leaves them.
+_ZERO_WIDTH_RE = re.compile("[​‌‍﻿­]")
+
+
+def detect_trailing_dash_blanks(lines: list[dict], page_num: int, page_rect,
+                                counter: dict,
+                                skip_ids: set | None = None) -> tuple[list[Unit], set]:
+    """
+    Detect label lines ending in a dash followed by empty space and turn each
+    into an open_response whose answer is written to the right of the dash, on
+    the same line. Catches the common "<label> - " fill pattern that has no
+    underscore run (so the inline pass misses it) and no vertical gap below it
+    (so detect_open_response_units misses it too).
+    """
+    skip_ids = skip_ids or set()
+    answer_right = page_rect.x1 - PAGE_RIGHT_MARGIN
+    units: list[Unit] = []
+    consumed: set = set()
+
+    for line in lines:
+        if id(line) in skip_ids or line_is_whitespace(line):
+            continue
+        text = _ZERO_WIDTH_RE.sub("", strip_bullet_prefix(line["text"])).strip()
+        if "_" in text or not TRAILING_DASH_RE.search(text) or len(text) < 3:
+            continue
+
+        real = [c for c in line["chars"]
+                if not c["c"].isspace() and not _ZERO_WIDTH_RE.match(c["c"])]
+        if not real:
+            continue
+        last_x1 = real[-1]["bbox"][2]
+        x0, y0, x1, y1 = line["bbox"]
+        if answer_right - last_x1 < 25:
+            continue  # no room to the right of the dash
+
+        counter["u"] += 1
+        units.append(Unit(
+            unit_id=f"u{counter['u']}",
+            type="open_response",
+            page=page_num,
+            bbox=(x0, y0, x1, y1),
+            prompt_text=re.sub(r"\s+", " ", text).strip(),
+            answer_region=(last_x1 + 6, y0, answer_right, y1),
+        ))
+        consumed.add(id(line))
+
     return units, consumed
 
 
@@ -766,6 +841,14 @@ def preprocess_pdf(path: str, formats=None) -> dict:
             )
             all_units.extend(ba_units)
             covered |= ba_consumed
+
+        # Detect "<label> -" lines whose answer goes to the right of the dash.
+        if "open_response" in active or "inline_blanks" in active:
+            td_units, td_consumed = detect_trailing_dash_blanks(
+                non_table_lines, page_num, page.rect, counter, skip_ids=covered
+            )
+            all_units.extend(td_units)
+            covered |= td_consumed
 
         # Inline blanks: group remaining lines into logical units (bullets,
         # paragraphs), then emit one unit per group that contains underscores.
