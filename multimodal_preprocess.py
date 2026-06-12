@@ -41,6 +41,7 @@ from preprocess import (
     find_underscore_runs,
     bbox_of_chars,
     line_is_whitespace,
+    is_empty_bullet_line,
     lines_in_reading_order,
     MIN_ANSWER_SPACE,
     PAGE_RIGHT_MARGIN,
@@ -519,6 +520,30 @@ def _open_region_for_anchor(anchor_bbox, page, lines, obstacle_bboxes):
     return (p_x0 + 4, p_bottom + 4, max(p_x1, answer_right), next_top - 6)
 
 
+def _empty_bullet_regions_below(page, lines, q_bottom, boundary_top):
+    """
+    Answer regions for empty answer bullets (○/■/•) that sit between a question
+    (q_bottom) and the next detected question (boundary_top). Each empty bullet's
+    answer is written to the right of the glyph on its own line — the standard
+    Google-Docs study-guide layout where an empty bullet IS the answer space and
+    there is no printed text to anchor to. Mirrors detect_bullet_answer_units.
+    """
+    answer_right = page.rect.x1 - PAGE_RIGHT_MARGIN
+    span = sorted(
+        (l for l in lines
+         if q_bottom - 1 < l["bbox"][1] < boundary_top - 1),
+        key=lambda l: l["bbox"][1],
+    )
+    regions = []
+    for i, l in enumerate(span):
+        if not is_empty_bullet_line(l):
+            continue
+        x0, y0, x1, y1 = l["bbox"]
+        nxt = span[i + 1]["bbox"][1] if i + 1 < len(span) else boundary_top
+        regions.append((x1 + 6, y0, answer_right, max(y1, nxt - 2)))
+    return regions
+
+
 # --------------------------------------------------------------------------
 # Main entry point.
 # --------------------------------------------------------------------------
@@ -592,8 +617,10 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
     indexed = [(i, it) for i, it in enumerate(raw_items) if isinstance(it, dict)]
     indexed.sort(key=lambda t: (t[1].get("page", 0), t[0]))
 
+    # Pass 1: resolve every anchor to geometry (disambiguation state lives here).
+    resolved: list[dict] = []
     for _, item in indexed:
-        kind = item.get("kind", "inline")
+        kind = "open" if item.get("kind") == "open" else "inline"
         anchor = str(item.get("anchor_text", "")).strip()
         pn = int(item.get("page", 0) or 0)
         if not anchor:
@@ -601,25 +628,65 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
             continue
         if kind == "open" and not want_open:
             continue
-        if kind != "open" and not want_inline:
+        if kind == "inline" and not want_inline:
             continue
-
         pidx = page_index(pn)
         if pidx is None:
             drop(item, "bad_page")
             continue
-
         span = pidx.resolve(anchor)
         if span is None:
             drop(item, "anchor_not_found")
             continue
-        src_start, src_end = span
-        abbox = _anchor_bbox(pidx.flat, src_start, src_end)
+        abbox = _anchor_bbox(pidx.flat, *span)
         if abbox is None:
             drop(item, "no_anchor_bbox")
             continue
+        resolved.append({"item": item, "kind": kind, "anchor": anchor, "pn": pn,
+                         "pidx": pidx, "span": span, "abbox": abbox})
+
+    # Per-page sorted anchor tops — used to scope a question's empty answer
+    # bullets to the vertical band before the NEXT detected question.
+    anchor_tops: dict[int, list[float]] = {}
+    for r in resolved:
+        anchor_tops.setdefault(r["pn"], []).append(r["abbox"][1])
+    for pn in anchor_tops:
+        anchor_tops[pn].sort()
+
+    def boundary_below(pn: int, y: float) -> float:
+        for t in anchor_tops.get(pn, []):
+            if t > y + 1:
+                return t
+        return page_index(pn).page.rect.y1 - 40
+
+    # Pass 2: build units.
+    for r in resolved:
+        item, kind, anchor, pn, pidx, abbox = (
+            r["item"], r["kind"], r["anchor"], r["pn"], r["pidx"], r["abbox"])
+        src_start, src_end = r["span"]
 
         if kind == "open":
+            # First try empty answer bullets beneath the question (study-guide
+            # layout). Each empty bullet has no text to anchor to, so the model
+            # only flags the question — we place the answers on the bullets here.
+            bullets = _empty_bullet_regions_below(
+                pidx.page, pidx.lines, abbox[3], boundary_below(pn, abbox[3])
+            )
+            if bullets:
+                n = len(bullets)
+                for k, reg in enumerate(bullets):
+                    ptext = _normalize(anchor)
+                    if n > 1:  # multi-bullet question -> distinct points
+                        ptext = (f"{ptext} [multi-part answer: give point "
+                                 f"{k + 1} of {n}, distinct from the others]")
+                    counter["u"] += 1
+                    units.append(Unit(
+                        unit_id=f"u{counter['u']}", type="open_response",
+                        page=pn, bbox=abbox, prompt_text=ptext,
+                        answer_region=reg,
+                    ))
+                continue
+            # Otherwise an open answer area (a vertical gap below the prompt).
             region = _open_region_for_anchor(
                 abbox, pidx.page, pidx.lines, obstacle_cache.get(pn, [])
             )
@@ -628,11 +695,8 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
                 continue
             counter["u"] += 1
             units.append(Unit(
-                unit_id=f"u{counter['u']}",
-                type="open_response",
-                page=pn,
-                bbox=abbox,
-                prompt_text=_normalize(anchor),
+                unit_id=f"u{counter['u']}", type="open_response",
+                page=pn, bbox=abbox, prompt_text=_normalize(anchor),
                 answer_region=region,
             ))
             continue
