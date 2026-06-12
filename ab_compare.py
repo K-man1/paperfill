@@ -174,8 +174,16 @@ def main():
     synth = os.path.join(OUT, "synthetic_worksheet.pdf")
     make_synth_worksheet(synth)
 
+    # MULTIMODAL_LIVE=1 calls the real vision model (needs a valid key + the
+    # OpenRouter/OpenAI env vars); otherwise the recorded response drives the
+    # resolver/renderer offline.
+    live = os.environ.get("MULTIMODAL_LIVE") == "1"
     det_struct = preprocess_pdf(synth)
-    mm_struct = multimodal_preprocess_pdf(synth, detector=synth_recorded_detector)
+    if live:
+        print(f"[ab] LIVE multimodal via {os.environ.get('MULTIMODAL_MODEL','(default)')}")
+        mm_struct = multimodal_preprocess_pdf(synth)
+    else:
+        mm_struct = multimodal_preprocess_pdf(synth, detector=synth_recorded_detector)
 
     det_score = score(synth, det_struct)
     mm_score = score(synth, mm_struct)

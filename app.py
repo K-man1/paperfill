@@ -163,23 +163,14 @@ def _set_device_cookie(resp):
     return resp
 
 # OpenAI-compatible client. Uses the Hack Club AI proxy by default
-# (free, no credit card). Reads HCAI_API_KEY from environment / .env.
+# (free, no credit card), with an OpenRouter fallback on any failure. Reads
+# HCAI_API_KEY / OPENROUTER_API_KEY from environment / .env.
 _openai_client = None
 def get_openai_client():
     global _openai_client
     if _openai_client is None:
-        api_key = os.environ.get("HCAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "No API key found. Set HCAI_API_KEY in .env or environment."
-            )
-        _openai_client = OpenAI(
-            api_key=api_key,
-            base_url=os.environ.get(
-                "OPENAI_BASE_URL",
-                "https://ai.hackclub.com/proxy/v1",
-            ),
-        )
+        from llm_client import build_client
+        _openai_client = build_client()
     return _openai_client
 
 # Job store. Kept in-memory for speed but mirrored to disk so that every

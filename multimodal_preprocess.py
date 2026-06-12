@@ -123,14 +123,21 @@ _SYSTEM = (
     "dash); 'open' for a question answered in the large empty area beneath it.\n"
     "  - anchor_text: the printed text the blank attaches to, transcribed "
     "VERBATIM (exact words, casing, punctuation, accents) so it can be found "
-    "again in the page. For inline, give the printed words immediately next to "
-    "the blank (do NOT include the blank itself). For open, give the question.\n"
+    "again in the page. For inline, give the whole printed phrase on the blank's "
+    "side of it (typically 3+ words, e.g. 'The capital of France is') — NOT a "
+    "single common word like 'the', which is ambiguous. Do NOT include the "
+    "blank itself. For open, give the question.\n"
     "  - blank_position: for inline, whether the blank falls 'after' or "
     "'before' the anchor_text; for open use 'none'.\n"
     "\n"
     "Rules:\n"
-    "- A hyphenated or compound word (e.g. 'single-eyed', 'well-being') is NOT "
-    "a blank. Only list a space if a student actually writes there.\n"
+    "- A term or prompt followed by a dash or colon and then empty space "
+    "(e.g. 'photosynthesis -' or 'Capital:') IS an inline blank: the student "
+    "writes the answer in that space, even when no line is printed. Use the "
+    "term+dash/colon as anchor_text with blank_position 'after'.\n"
+    "- A hyphenated or compound word inside running text (e.g. 'single-eyed', "
+    "'well-being', 'follow-up') is NOT a blank. Only list a space where a "
+    "student actually writes.\n"
     "- Section headings, titles and instructions are not answer spaces unless "
     "they are themselves a labelled fill-in.\n"
     "- Transcribe anchor_text exactly as printed; a paraphrase will fail to "
@@ -157,20 +164,52 @@ def _page_texts(doc) -> list[dict]:
     return [{"page": i, "text": page.get_text()} for i, page in enumerate(doc)]
 
 
-def _upload_pdf(client, pdf_path: str) -> str:
-    """Upload the whole PDF once via the Files API; return the file id."""
-    with open(pdf_path, "rb") as fh:
-        up = client.files.create(file=fh, purpose="user_data")
-    return up.id
+# How the worksheet reaches the model. "image" (default) renders each page and
+# sends them as vision inputs — the page-image+text approach, which works with
+# any vision model. "pdf" uploads the document itself once (Files API, with an
+# inline-base64 fallback) for providers with native multi-page PDF support.
+MULTIMODAL_INPUT = os.environ.get("MULTIMODAL_INPUT", "image").lower()
+MULTIMODAL_DPI = int(os.environ.get("MULTIMODAL_DPI", "150"))
+
+
+def _upload_pdf(client, pdf_path: str) -> dict:
+    """Whole-PDF content part: Files API reference if supported, else an inline
+    base64 part so the multi-page document is still sent in one request."""
+    try:
+        with open(pdf_path, "rb") as fh:
+            up = client.files.create(file=fh, purpose="user_data")
+        return {"type": "file", "file": {"file_id": up.id}}
+    except Exception as e:  # provider has no Files API (e.g. OpenRouter)
+        print(f"[multimodal] files API unavailable ({e!r}); inlining PDF")
+        with open(pdf_path, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode()
+        return {"type": "file", "file": {
+            "filename": os.path.basename(pdf_path),
+            "file_data": f"data:application/pdf;base64,{b64}",
+        }}
+
+
+def _page_image_parts(pdf_path: str) -> list[dict]:
+    """Render each page to a PNG and return interleaved page-marker + image
+    content parts (all pages in one message)."""
+    doc = fitz.open(pdf_path)
+    parts: list[dict] = []
+    for i, page in enumerate(doc):
+        pix = page.get_pixmap(dpi=MULTIMODAL_DPI)
+        uri = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
+        parts.append({"type": "text", "text": f"--- PAGE {i} IMAGE ---"})
+        parts.append({"type": "image_url", "image_url": {"url": uri}})
+    doc.close()
+    return parts
 
 
 def _default_detector(pdf_path: str, pages: list[dict], *,
                       client=None, model: str | None = None) -> list[dict]:
     """
-    Live vision call. Uploads the PDF once, sends per-page text as context, and
-    returns the raw `items` list under the structured schema. Falls back from
-    a Files-API reference to an inline base64 PDF part if the provider rejects
-    file ids. Isolated so a different provider/model can be dropped in.
+    Live vision call. Sends the worksheet (page images by default, or the PDF
+    itself when MULTIMODAL_INPUT='pdf') plus per-page extracted text as a
+    transcription aid, and returns the raw `items` list under the structured
+    JSON schema. Isolated so a different provider/model can be dropped in.
     """
     if client is None:
         client = _build_client()
@@ -180,27 +219,20 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
         f"--- PAGE {p['page']} TEXT ---\n{p['text']}" for p in pages
     )
     user_text = (
-        "Locate every answer blank in this worksheet. Use the page text below "
-        "only to transcribe anchor_text accurately; the PDF is authoritative "
-        "for layout.\n\n" + text_context
+        "Locate every answer blank in this worksheet. Pages are 0-indexed; use "
+        "the page numbers shown below. Use the extracted page text only to "
+        "transcribe anchor_text accurately; the images are authoritative for "
+        "layout.\n\n" + text_context
     )
 
-    # Primary: Files API reference so the multi-page PDF is sent once.
-    file_part = None
-    try:
-        file_id = _upload_pdf(client, pdf_path)
-        file_part = {"type": "file", "file": {"file_id": file_id}}
-    except Exception as e:  # provider may not support the Files API
-        print(f"[multimodal] files API unavailable ({e!r}); inlining PDF")
-        with open(pdf_path, "rb") as fh:
-            b64 = base64.b64encode(fh.read()).decode()
-        file_part = {
-            "type": "file",
-            "file": {
-                "filename": os.path.basename(pdf_path),
-                "file_data": f"data:application/pdf;base64,{b64}",
-            },
-        }
+    extra_body = {}
+    if MULTIMODAL_INPUT == "pdf":
+        doc_parts = [_upload_pdf(client, pdf_path)]
+        # Ask OpenRouter-style providers to rasterize the PDF for vision.
+        extra_body = {"plugins": [{"id": "file-parser",
+                                   "pdf": {"engine": "pdf-text"}}]}
+    else:
+        doc_parts = _page_image_parts(pdf_path)
 
     resp = client.chat.completions.create(
         model=model,
@@ -208,7 +240,7 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
             {"role": "system", "content": _SYSTEM},
             {"role": "user", "content": [
                 {"type": "text", "text": user_text},
-                file_part,
+                *doc_parts,
             ]},
         ],
         response_format={
@@ -219,6 +251,7 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
                 "strict": True,
             },
         },
+        extra_body=extra_body or None,
     )
     content = resp.choices[0].message.content or "{}"
     from json_utils import extract_json_object
@@ -458,6 +491,18 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
     if detector is None:
         detector = _default_detector
     raw_items = detector(path, pages) or []
+
+    # Some models number pages 1..N despite the 0-indexed instruction. If every
+    # returned page is >=1 and the max equals the page count (not count-1),
+    # treat the whole batch as 1-based and shift it down.
+    page_vals = [int(it.get("page", 0) or 0) for it in raw_items
+                 if isinstance(it, dict)]
+    if (page_vals and min(page_vals) >= 1 and max(page_vals) == len(doc)
+            and len(doc) >= 1):
+        print("[multimodal] 1-based page indices detected; shifting to 0-based")
+        for it in raw_items:
+            if isinstance(it, dict) and "page" in it:
+                it["page"] = int(it.get("page", 1) or 1) - 1
 
     # Per-page index, built lazily and cached.
     page_idx_cache: dict[int, _PageIndex] = {}

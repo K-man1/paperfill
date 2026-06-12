@@ -58,15 +58,9 @@ _SYSTEM = (
 
 
 def _build_client():
-    from openai import OpenAI
-
-    api_key = os.environ.get("HCAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("No API key found. Set HCAI_API_KEY in .env or environment.")
-    return OpenAI(
-        api_key=api_key,
-        base_url=os.environ.get("OPENAI_BASE_URL", "https://ai.hackclub.com/proxy/v1"),
-    )
+    # Hack Club proxy primary, OpenRouter fallback (see llm_client).
+    from llm_client import build_client
+    return build_client()
 
 
 def _clean_norm_box(box):
