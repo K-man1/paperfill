@@ -1631,23 +1631,22 @@ async function handleUpload(file) {
   form.append("formats", JSON.stringify(formats));
   form.append("detector", selectedDetector());
   try {
-    // Upload the worksheet and extract attachment context in parallel.
-    const hasAttachments = refFiles.length > 0 || ytUrls.length > 0;
-    if (hasAttachments) setStatus("Uploading & reading references…");
-    const [r, contextText] = await Promise.all([
-      fetch("/api/upload", { method: "POST", body: form }),
-      gatherContext(),
-    ]);
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || "Upload failed");
-    currentJob = data;
-    await uploadStyle(currentJob.job_id);   // no-op unless a style was picked
-    setStatus(handwritingOn()
-      ? "Filling in your handwriting… (this can take up to 2 min)"
-      : "Filling with AI… (this can take up to 60 s)");
-    // The fill is the ~30s wait. Wrap it as a promise so an ad can play over
-    // it; runFillWithAd is a pass-through when ads are off.
-    const fillPromise = (async () => {
+    // The ad overlay should appear the moment Submit is pressed, so the WHOLE
+    // pipeline (upload → references → fill) runs as one promise underneath it.
+    const workPromise = (async () => {
+      const hasAttachments = refFiles.length > 0 || ytUrls.length > 0;
+      if (hasAttachments) setStatus("Uploading & reading references…");
+      const [r, contextText] = await Promise.all([
+        fetch("/api/upload", { method: "POST", body: form }),
+        gatherContext(),
+      ]);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Upload failed");
+      currentJob = data;
+      await uploadStyle(currentJob.job_id);   // no-op unless a style was picked
+      setStatus(handwritingOn()
+        ? "Filling in your handwriting… (this can take up to 2 min)"
+        : "Filling with AI… (this can take up to 60 s)");
       const r2 = await fetch("/api/fill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1666,7 +1665,8 @@ async function handleUpload(file) {
       if (!r2.ok) throw new Error(fillData.error || "Fill failed");
       return fillData;
     })();
-    const fillData = await runFillWithAd(fillPromise);
+    // Show the overlay now (synchronously), gated on the whole pipeline.
+    const fillData = await runFillWithAd(workPromise);
     showStage("result");
     // renderResult AFTER stage is visible, so img.clientWidth is non-zero
     renderResult(fillData);
