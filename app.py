@@ -560,8 +560,9 @@ def login():
             return redirect(url_for("index"))
         else:
             _record_signin("failed")
-            return render_template("login.html", error="Incorrect access code. Please try again.")
-    return render_template("login.html", error=None)
+            return render_template("login.html", error="Incorrect access code. Please try again.",
+                                   adsense_client=get_adsense_client())
+    return render_template("login.html", error=None, adsense_client=get_adsense_client())
 
 
 @app.route("/logout")

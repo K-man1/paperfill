@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Paperfill — AI worksheet filler</title>
+{% if adsense_client %}<!-- Google AdSense site loader -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}" crossorigin="anonymous"></script>{% endif %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
@@ -1495,7 +1497,6 @@ let _adState = null;
 let _barTimer = null;
 let _adTimer = null;
 let _adEndsAt = 0;
-let _adsScriptLoaded = false;
 
 function showAdOverlay() {
   const o = $("ad-overlay");
@@ -1564,24 +1565,10 @@ function onAdFinished() {
   maybeReveal();
 }
 
-// Load the AdSense library once (best-effort). The <ins> is processed off the
+// The AdSense library is loaded once in <head>; the <ins> is processed off the
 // adsbygoogle queue, so a slow/blocked script never holds up the fixed timer.
-function ensureAdSenseScript() {
-  if (_adsScriptLoaded) return;
-  _adsScriptLoaded = true;
-  try {
-    const s = document.createElement("script");
-    s.async = true;
-    s.crossOrigin = "anonymous";
-    s.src = "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client="
-            + encodeURIComponent(window.ADSENSE_CLIENT);
-    document.head.appendChild(s);
-  } catch (_) { /* timer still drives the gate */ }
-}
-
 function initAd() {
   try {
-    ensureAdSenseScript();
     const container = $("ad-container");
     container.innerHTML = "";
     const ins = document.createElement("ins");
