@@ -799,7 +799,7 @@ button {
 .saving-overlay.active { display: flex; }
 
 /* ---- Full-screen ad overlay (shown while the worksheet fills) ---- */
-.ad-overlay {
+.fill-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -807,8 +807,8 @@ button {
   flex-direction: column;
   background: #0c0b0a;
 }
-.ad-overlay.active { display: flex; }
-.ad-stage {
+.fill-overlay.active { display: flex; }
+.fill-stage {
   position: relative;
   flex: 1;
   min-height: 0;
@@ -819,13 +819,13 @@ button {
   overflow: hidden;
 }
 /* AdSense renders its <ins> here; cap it to a sensible centered block. */
-#ad-container {
+#fill-slot {
   width: 100%;
   max-width: 728px;
   max-height: 90%;
 }
-#ad-container .adsbygoogle { display: block; width: 100%; }
-.ad-skip {
+#fill-slot .adsbygoogle { display: block; width: 100%; }
+.fill-skip {
   position: absolute;
   right: 20px;
   bottom: 20px;
@@ -837,16 +837,16 @@ button {
   padding: 12px 20px;
   border-radius: 2px;
 }
-.ad-skip.show { display: inline-block; }
-.ad-skip:hover { background: var(--accent); border-color: var(--accent-deep); }
+.fill-skip.show { display: inline-block; }
+.fill-skip:hover { background: var(--accent); border-color: var(--accent-deep); }
 /* Bottom progress strip — the real-ish fill progress, pinned under the ad. */
-.ad-progress {
+.fill-progress {
   flex: 0 0 auto;
   background: var(--ink);
   color: var(--paper);
   padding: 14px 24px 18px;
 }
-.ad-progress-label {
+.fill-progress-label {
   font-family: var(--mono);
   font-size: 11px;
   text-transform: uppercase;
@@ -857,14 +857,14 @@ button {
   align-items: baseline;
   gap: 12px;
 }
-.ad-progress-label .ad-note { color: rgba(245,241,232,0.55); }
-.ad-progress-track {
+.fill-progress-label .fill-note { color: rgba(245,241,232,0.55); }
+.fill-progress-track {
   height: 8px;
   background: rgba(245,241,232,0.18);
   border-radius: 999px;
   overflow: hidden;
 }
-.ad-progress-fill {
+.fill-progress-fill {
   height: 100%;
   width: 0%;
   background: var(--accent);
@@ -1209,18 +1209,18 @@ button {
 <div class="saving-overlay" id="saving">Re-rendering PDF…</div>
 
 <!-- Full-screen ad shown while the worksheet fills. Hidden unless ads are on. -->
-<div class="ad-overlay" id="ad-overlay" aria-hidden="true">
-  <div class="ad-stage" id="ad-stage">
-    <div id="ad-container"></div>
-    <button type="button" class="ad-skip" id="ad-skip">Skip &amp; view worksheet →</button>
+<div class="fill-overlay" id="fill-overlay" aria-hidden="true">
+  <div class="fill-stage" id="fill-stage">
+    <div id="fill-slot"></div>
+    <button type="button" class="fill-skip" id="fill-skip">Skip &amp; view worksheet →</button>
   </div>
-  <div class="ad-progress">
-    <div class="ad-progress-label">
-      <span id="ad-progress-text">Filling your worksheet…</span>
-      <span class="ad-note">Powered by Paperfill</span>
+  <div class="fill-progress">
+    <div class="fill-progress-label">
+      <span id="fill-progress-text">Filling your worksheet…</span>
+      <span class="fill-note">Powered by Paperfill</span>
     </div>
-    <div class="ad-progress-track">
-      <div class="ad-progress-fill" id="ad-progress-fill"></div>
+    <div class="fill-progress-track">
+      <div class="fill-progress-fill" id="fill-progress-fill"></div>
     </div>
   </div>
 </div>
@@ -1499,22 +1499,22 @@ let _adTimer = null;
 let _adEndsAt = 0;
 
 function showAdOverlay() {
-  const o = $("ad-overlay");
+  const o = $("fill-overlay");
   o.classList.add("active");
   o.setAttribute("aria-hidden", "false");
-  $("ad-progress-text").textContent = "Filling your worksheet…";
+  $("fill-progress-text").textContent = "Filling your worksheet…";
 }
 function hideAdOverlay() {
-  const o = $("ad-overlay");
+  const o = $("fill-overlay");
   o.classList.remove("active");
   o.setAttribute("aria-hidden", "true");
 }
-function showSkip() { $("ad-skip").classList.add("show"); }
-function hideSkip() { $("ad-skip").classList.remove("show"); }
+function showSkip() { $("fill-skip").classList.add("show"); }
+function hideSkip() { $("fill-skip").classList.remove("show"); }
 
 // Eased fake progress bar: creeps toward ~90%, snaps to 100% on real fill-done.
 function startFakeBar() {
-  const fill = $("ad-progress-fill");
+  const fill = $("fill-progress-fill");
   fill.style.width = "0%";
   let pct = 0;
   _barTimer = setInterval(() => {
@@ -1522,7 +1522,7 @@ function startFakeBar() {
     fill.style.width = pct.toFixed(1) + "%";
   }, 400);
 }
-function snapBarTo100() { $("ad-progress-fill").style.width = "100%"; }
+function snapBarTo100() { $("fill-progress-fill").style.width = "100%"; }
 function stopFakeBar() {
   if (_barTimer) { clearInterval(_barTimer); _barTimer = null; }
 }
@@ -1530,7 +1530,7 @@ function stopFakeBar() {
 function teardownAd() {
   stopFakeBar();
   if (_adTimer) { clearTimeout(_adTimer); _adTimer = null; }
-  $("ad-container").innerHTML = "";
+  $("fill-slot").innerHTML = "";
   hideSkip();
   hideAdOverlay();
 }
@@ -1561,7 +1561,7 @@ function onAdFinished() {
   if (st) st.adDone = true;
   if (_adTimer) { clearTimeout(_adTimer); _adTimer = null; }
   hideSkip();
-  if (st && !st.fillDone) $("ad-progress-text").textContent = "Finishing up…";
+  if (st && !st.fillDone) $("fill-progress-text").textContent = "Finishing up…";
   maybeReveal();
 }
 
@@ -1569,7 +1569,7 @@ function onAdFinished() {
 // adsbygoogle queue, so a slow/blocked script never holds up the fixed timer.
 function initAd() {
   try {
-    const container = $("ad-container");
+    const container = $("fill-slot");
     container.innerHTML = "";
     const ins = document.createElement("ins");
     ins.className = "adsbygoogle";
@@ -1608,7 +1608,7 @@ function runFillWithAd(fillPromise) {
   });
 }
 
-$("ad-skip").addEventListener("click", onAdFinished);
+$("fill-skip").addEventListener("click", onAdFinished);
 
 async function handleUpload(file) {
   if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
