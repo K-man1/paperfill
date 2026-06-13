@@ -109,6 +109,31 @@ def get_user_password() -> str:
 def set_user_password(pw: str) -> None:
     USER_PASSWORD_PATH.write_text(pw.strip())
 
+# ---- Ad settings (file-backed, same pattern as the user password) -----------
+# "Include Ads" shows a full-screen ad (Google IMA serving a VAST tag) while the
+# worksheet fills. Both default to off/empty so nothing changes until an admin
+# opts in and supplies a tag.
+ADS_ENABLED_PATH = BASE_DIR / "ads_enabled.txt"
+VAST_TAG_PATH = BASE_DIR / "vast_tag.txt"
+
+def get_ads_enabled() -> bool:
+    try:
+        return ADS_ENABLED_PATH.read_text().strip() == "1"
+    except OSError:
+        return False
+
+def set_ads_enabled(enabled: bool) -> None:
+    ADS_ENABLED_PATH.write_text("1" if enabled else "0")
+
+def get_vast_tag() -> str:
+    try:
+        return VAST_TAG_PATH.read_text().strip()
+    except OSError:
+        return ""
+
+def set_vast_tag(url: str) -> None:
+    VAST_TAG_PATH.write_text(url.strip())
+
 # All admin-dashboard data (sign-ins, filled assignments, devices) lives in a
 # shared Supabase Postgres database — see db.py. A shared DB is the single
 # source of truth across gunicorn workers, which is what finally kills the
@@ -452,6 +477,63 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
     return ans.strip() if isinstance(ans, str) else ""
 
 
+def call_openai_to_refine(text: str, mode: str, instruction: str = "",
+                          ref: str = "") -> str:
+    """
+    Rewrite a single box's text per a quick edit request from the floating
+    toolbar: 'shorten', 'lengthen', or 'else' (a free-text instruction the user
+    typed). Returns just the replacement text.
+
+    `ref` is the same answer-key / reference text the original fill used (stored
+    on the job as `fill_instructions`), so a rewrite — especially "lengthen" —
+    stays consistent with the source material instead of inventing new facts.
+    """
+    directive = {
+        "shorten": "Make this text shorter and more concise while keeping the "
+                   "same meaning and the same answer.",
+        "lengthen": "Make this text longer and more detailed while keeping it "
+                    "accurate and on-topic. Do not invent facts that aren't "
+                    "supported by the text or the reference material.",
+    }.get(mode)
+    if not directive:
+        directive = (instruction or "").strip() or "Rewrite this text."
+
+    system = (
+        "You are editing a single answer a student wrote in one box of a "
+        "worksheet. You are given the current text and an instruction for how "
+        "to change it. Apply the instruction and return ONLY the rewritten "
+        "text that should replace what's in the box — do not restate the "
+        "question, add a label or quotes, or explain. Keep it factually "
+        "correct. If the user supplied an answer key or notes, prefer them "
+        "over your own knowledge. Return ONLY a JSON object: "
+        "{\"text\": \"<rewritten text>\"}. No prose, no markdown, no <think> "
+        "tags. /no_think"
+    )
+
+    parts = []
+    ref = (ref or "").strip()
+    if ref:
+        parts.append("Answer key / reference material the answer is based on "
+                     "(stay consistent with it):\n" + ref[:SNIP_REF_MAX])
+    parts.append("Instruction: " + directive)
+    parts.append("Current text:\n" + text)
+    user = "\n\n".join(parts)
+
+    response = get_openai_client().chat.completions.create(
+        model=os.environ.get("OPENAI_MODEL", "openai/gpt-5.5"),
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        response_format={"type": "json_object"},
+    )
+    content = response.choices[0].message.content or "{}"
+    out = extract_json_object(content).get("text", "")
+    if isinstance(out, (int, float)):
+        out = str(out)
+    return out.strip() if isinstance(out, str) else ""
+
+
 # ---- Routes --------------------------------------------------------------
 
 @app.route("/login", methods=["GET", "POST"])
@@ -524,6 +606,9 @@ def admin():
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         current_user_password=get_user_password(),
         pw_status=request.args.get("pw_status"),
+        ads_enabled=get_ads_enabled(),
+        vast_tag=get_vast_tag(),
+        ads_status=request.args.get("ads_status"),
     )
 
 
@@ -543,12 +628,28 @@ def change_user_password():
     return redirect(url_for("admin", pw_status="ok"))
 
 
+@app.post("/admin/ads")
+def change_ads():
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    # Unchecked checkboxes don't submit, so absence means "off".
+    set_ads_enabled(request.form.get("ads_enabled") == "on")
+    set_vast_tag((request.form.get("vast_tag") or "").strip())
+    return redirect(url_for("admin", ads_status="ok"))
+
+
 @app.route("/")
 def index():
     # Gated: require a sign-in (user or admin) before the filler is shown.
     if not session.get("role"):
         return redirect(url_for("login"))
-    return render_template("index.html")
+    # Ads only run when enabled AND a VAST tag is configured; the template
+    # treats an empty tag as "off" regardless of the flag.
+    return render_template(
+        "index.html",
+        ads_enabled=get_ads_enabled(),
+        vast_tag=get_vast_tag(),
+    )
 
 
 @app.post("/api/upload")
@@ -938,6 +1039,41 @@ def snip():
         return jsonify({"error": f"vision call failed: {e}"}), 502
 
     return jsonify({"answer": answer})
+
+
+@app.post("/api/refine")
+def refine():
+    """
+    Rewrite a single box's text per a quick edit from the floating toolbar.
+    Body: {job_id, text, mode: 'shorten'|'lengthen'|'else', instruction?}.
+
+    Returns {text} — the replacement. The frontend drops it back into the box
+    and marks the job dirty; nothing is saved/re-rendered until the user saves.
+    """
+    data = request.get_json(silent=True) or {}
+    job = load_job(data.get("job_id"))
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+
+    text = str(data.get("text", "")).strip()
+    if not text:
+        return jsonify({"error": "no text to edit"}), 400
+    mode = str(data.get("mode", "")).strip().lower()
+    instruction = str(data.get("instruction", ""))[:2000]
+    if mode not in ("shorten", "lengthen", "else"):
+        return jsonify({"error": "invalid mode"}), 400
+    if mode == "else" and not instruction.strip():
+        return jsonify({"error": "describe how to edit the text"}), 400
+
+    try:
+        new_text = call_openai_to_refine(
+            text, mode, instruction, job.get("fill_instructions", ""))
+    except Exception as e:
+        return jsonify({"error": f"LLM call failed: {e}"}), 502
+    if not new_text:
+        return jsonify({"error": "couldn't rewrite that text"}), 502
+
+    return jsonify({"text": new_text})
 
 
 @app.get("/api/download/<job_id>")

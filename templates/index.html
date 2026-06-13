@@ -7,6 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<!-- Google IMA SDK — only used when ads are enabled with a VAST tag configured. -->
+<script src="//imasdk.googleapis.com/js/sdkloader/ima3.js" async></script>
 <style>
 :root {
   --paper: #f5f1e8;
@@ -796,6 +798,142 @@ button {
 }
 .saving-overlay.active { display: flex; }
 
+/* ---- Full-screen ad overlay (shown while the worksheet fills) ---- */
+.ad-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  flex-direction: column;
+  background: #0c0b0a;
+}
+.ad-overlay.active { display: flex; }
+.ad-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+}
+/* IMA paints the ad into this container; it fills the stage. */
+#ad-container, #ad-container > div, #ad-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+#ad-video { object-fit: contain; background: #000; }
+.ad-skip {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2;
+  display: none;
+  background: rgba(0,0,0,0.65);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.5);
+  padding: 12px 20px;
+  border-radius: 2px;
+}
+.ad-skip.show { display: inline-block; }
+.ad-skip:hover { background: var(--accent); border-color: var(--accent-deep); }
+/* Bottom progress strip — the real-ish fill progress, pinned under the ad. */
+.ad-progress {
+  flex: 0 0 auto;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 14px 24px 18px;
+}
+.ad-progress-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.ad-progress-label .ad-note { color: rgba(245,241,232,0.55); }
+.ad-progress-track {
+  height: 8px;
+  background: rgba(245,241,232,0.18);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ad-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+
+/* ---- Floating "refine box" toolbar (shorten / lengthen / custom) ---- */
+.refine-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(10px);
+  display: none;
+  align-items: center;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 6px;
+  box-shadow: var(--shadow-deep);
+  z-index: 300;
+  opacity: 0;
+  transition: opacity .12s ease, transform .12s ease;
+}
+.refine-bar.show { display: flex; opacity: 1; transform: translateX(-50%) translateY(0); }
+.refine-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  border: none;
+  border-radius: 999px;
+  padding: 9px 14px;
+  font-family: var(--sans);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.refine-bar button:hover { background: var(--paper-deep); color: var(--ink); }
+.refine-bar button:disabled { opacity: 0.5; cursor: default; }
+.refine-bar button .ico { font-size: 15px; line-height: 1; }
+.refine-bar .refine-sep { width: 1px; align-self: stretch; margin: 4px 2px; background: var(--rule-soft); }
+.refine-bar.busy { pointer-events: none; opacity: 0.7; }
+/* The "Else" custom-instruction row, shown after the pencil is pressed. */
+.refine-else { display: none; align-items: center; gap: 6px; padding-left: 4px; }
+.refine-bar.else-open .refine-main { display: none; }
+.refine-bar.else-open .refine-else { display: flex; }
+.refine-else input {
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 9px 14px;
+  font-family: var(--sans);
+  font-size: 13px;
+  width: 280px;
+  max-width: 50vw;
+  color: var(--ink);
+  background: var(--paper);
+}
+.refine-else input:focus { outline: none; border-color: var(--accent); }
+.refine-else .refine-apply {
+  background: var(--accent);
+  color: #fff;
+}
+.refine-else .refine-apply:hover { background: var(--accent-deep); color: #fff; }
+@media (max-width: 640px) {
+  .refine-bar { left: 8px; right: 8px; bottom: 12px; transform: translateY(10px); width: auto; justify-content: center; flex-wrap: wrap; }
+  .refine-bar.show { transform: translateY(0); }
+  .refine-else input { width: 160px; }
+}
+
 /* ---- Error / toast ---- */
 .toast {
   position: fixed;
@@ -1044,6 +1182,7 @@ button {
       Click any text to edit. Drag the black handle to move a box, the red × to delete.
       Click <b>+ Add box</b>, then drag on the page to draw a new field.
       Missed answer? Click <b>✦ Ask AI for a question</b>, then drag a box around it — the AI reads it and drops in the answer.
+      Select any box and use the floating bar to <b>Shorten</b>, <b>Lengthen</b>, or tell the AI exactly how to rewrite it.
     </div>
     <div class="rate-bar" id="rate-bar">
       <span class="rate-prompt">How did the AI do?</span>
@@ -1066,9 +1205,51 @@ button {
 </main>
 <div class="saving-overlay" id="saving">Re-rendering PDF…</div>
 
+<!-- Full-screen ad shown while the worksheet fills. Hidden unless ads are on. -->
+<div class="ad-overlay" id="ad-overlay" aria-hidden="true">
+  <div class="ad-stage" id="ad-stage">
+    <video id="ad-video" playsinline muted></video>
+    <div id="ad-container"></div>
+    <button type="button" class="ad-skip" id="ad-skip">Skip &amp; view worksheet →</button>
+  </div>
+  <div class="ad-progress">
+    <div class="ad-progress-label">
+      <span id="ad-progress-text">Filling your worksheet…</span>
+      <span class="ad-note">Powered by Paperfill</span>
+    </div>
+    <div class="ad-progress-track">
+      <div class="ad-progress-fill" id="ad-progress-fill"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Floating bar shown whenever a box is selected: AI rewrites the box's text. -->
+<div class="refine-bar" id="refine-bar">
+  <div class="refine-main">
+    <button type="button" id="refine-shorten" title="AI: make this shorter">
+      <span class="ico">↧</span> Shorten</button>
+    <button type="button" id="refine-lengthen" title="AI: make this longer">
+      <span class="ico">↥</span> Lengthen</button>
+    <span class="refine-sep"></span>
+    <button type="button" id="refine-else-toggle" title="Tell the AI how to change it">
+      <span class="ico">✎</span> Else</button>
+  </div>
+  <div class="refine-else">
+    <button type="button" id="refine-else-back" title="Back">←</button>
+    <input type="text" id="refine-else-input" maxlength="2000"
+           placeholder="How should the AI change this box?">
+    <button type="button" class="refine-apply" id="refine-else-apply">Apply</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"><span id="toast-msg"></span><span class="toast-dismiss">×</span></div>
 
 <script>
+// ---- Ad config (injected by the server) ----
+window.ADS_ENABLED = {{ ads_enabled|tojson }};
+window.VAST_TAG = {{ vast_tag|tojson }};
+const adsOn = () => !!window.ADS_ENABLED && !!window.VAST_TAG;
+
 const $ = (id) => document.getElementById(id);
 const stages = ["upload", "result"];
 function showStage(name) {
@@ -1301,6 +1482,161 @@ async function gatherContext() {
   return data.context || "";
 }
 
+// ---- Full-screen ad while filling -----------------------------------------
+// Ad and fill start together. The worksheet only reveals once the fill is
+// actually done; a "skip" is offered only in the rare case where the fill
+// finishes while the ad is still playing. Any ad failure falls back to the
+// plain no-ad flow so it can never cost the user their result.
+let _adState = null;
+let _adsLoader = null;
+let _adsManager = null;
+let _adDisplayContainer = null;
+let _barTimer = null;
+let _adLoadTimeout = null;
+
+function showAdOverlay() {
+  const o = $("ad-overlay");
+  o.classList.add("active");
+  o.setAttribute("aria-hidden", "false");
+  $("ad-progress-text").textContent = "Filling your worksheet…";
+}
+function hideAdOverlay() {
+  const o = $("ad-overlay");
+  o.classList.remove("active");
+  o.setAttribute("aria-hidden", "true");
+}
+function showSkip() { $("ad-skip").classList.add("show"); }
+function hideSkip() { $("ad-skip").classList.remove("show"); }
+
+// Eased fake progress bar: creeps toward ~90%, snaps to 100% on real fill-done.
+function startFakeBar() {
+  const fill = $("ad-progress-fill");
+  fill.style.width = "0%";
+  let pct = 0;
+  _barTimer = setInterval(() => {
+    pct += (90 - pct) * 0.06;
+    fill.style.width = pct.toFixed(1) + "%";
+  }, 400);
+}
+function snapBarTo100() { $("ad-progress-fill").style.width = "100%"; }
+function stopFakeBar() {
+  if (_barTimer) { clearInterval(_barTimer); _barTimer = null; }
+}
+
+function teardownAd() {
+  stopFakeBar();
+  if (_adLoadTimeout) { clearTimeout(_adLoadTimeout); _adLoadTimeout = null; }
+  try { if (_adsManager) { _adsManager.destroy(); } } catch (_) {}
+  try { if (_adsLoader) { _adsLoader.destroy(); } } catch (_) {}
+  _adsManager = null; _adsLoader = null; _adDisplayContainer = null;
+  hideSkip();
+  hideAdOverlay();
+}
+
+// Resolve the gate only when BOTH the fill is done and the ad is done. The
+// only way adDone flips early is the conditional skip, which is offered only
+// after fillDone — so we can never reveal an unfinished worksheet.
+function maybeReveal() {
+  const st = _adState;
+  if (!st || st.settled) return;
+  if (st.fillDone && st.adDone) {
+    st.settled = true;
+    teardownAd();
+    st.resolve(st.fillData);
+    return;
+  }
+  if (st.fillDone && !st.adDone) {
+    // Rounding: if the ad is about to end anyway, let it finish — don't flash
+    // a skip button for a fraction of a second.
+    let remaining = -1;
+    try { remaining = _adsManager ? _adsManager.getRemainingTime() : -1; } catch (_) {}
+    if (remaining >= 0 && remaining <= 1.5) return;
+    showSkip();
+  }
+}
+
+function onAdFinished() {
+  const st = _adState;
+  if (st) st.adDone = true;
+  if (_adLoadTimeout) { clearTimeout(_adLoadTimeout); _adLoadTimeout = null; }
+  hideSkip();
+  if (st && !st.fillDone) $("ad-progress-text").textContent = "Finishing up…";
+  maybeReveal();
+}
+
+function onAdsManagerLoaded(e) {
+  const container = $("ad-container");
+  const video = $("ad-video");
+  try {
+    _adsManager = e.getAdsManager(video, new google.ima.AdsRenderingSettings());
+    _adsManager.addEventListener(google.ima.AdErrorEvent.Type.AD_ERROR, onAdFinished);
+    _adsManager.addEventListener(google.ima.AdEvent.Type.ALL_ADS_COMPLETED, onAdFinished);
+    _adsManager.addEventListener(google.ima.AdEvent.Type.CONTENT_RESUME_REQUESTED, onAdFinished);
+    _adsManager.init(container.clientWidth, container.clientHeight, google.ima.ViewMode.NORMAL);
+    _adsManager.start();
+    if (_adLoadTimeout) { clearTimeout(_adLoadTimeout); _adLoadTimeout = null; }
+  } catch (_) {
+    onAdFinished();
+  }
+}
+
+function initAd() {
+  const container = $("ad-container");
+  const video = $("ad-video");
+  try {
+    _adDisplayContainer = new google.ima.AdDisplayContainer(container, video);
+    _adDisplayContainer.initialize();   // unlocks playback (we're in a click chain)
+    _adsLoader = new google.ima.AdsLoader(_adDisplayContainer);
+    _adsLoader.addEventListener(
+      google.ima.AdsManagerLoadedEvent.Type.ADS_MANAGER_LOADED, onAdsManagerLoaded, false);
+    _adsLoader.addEventListener(
+      google.ima.AdErrorEvent.Type.AD_ERROR, onAdFinished, false);
+    const req = new google.ima.AdsRequest();
+    req.adTagUrl = window.VAST_TAG;
+    req.linearAdSlotWidth = container.clientWidth;
+    req.linearAdSlotHeight = container.clientHeight;
+    req.nonLinearAdSlotWidth = container.clientWidth;
+    req.nonLinearAdSlotHeight = container.clientHeight;
+    _adsLoader.requestAds(req);
+    // If the network never answers, don't trap the user behind the ad.
+    _adLoadTimeout = setTimeout(onAdFinished, 6000);
+  } catch (_) {
+    onAdFinished();
+  }
+}
+
+// Wrap the fill so an ad can play over it. Returns the fill data once the gate
+// opens. With ads off (or the SDK unavailable) it's a transparent pass-through.
+function runFillWithAd(fillPromise) {
+  if (!adsOn() || !(window.google && window.google.ima)) return fillPromise;
+  return new Promise((resolve, reject) => {
+    const st = { fillDone: false, fillData: null, adDone: false,
+                 settled: false, resolve, reject };
+    _adState = st;
+    showAdOverlay();
+    startFakeBar();
+    initAd();
+    fillPromise.then(d => {
+      st.fillDone = true; st.fillData = d;
+      snapBarTo100();
+      maybeReveal();
+    }).catch(err => {
+      teardownAd();
+      if (!st.settled) { st.settled = true; reject(err); }
+    });
+  });
+}
+
+$("ad-skip").addEventListener("click", () => {
+  try { if (_adsManager) _adsManager.destroy(); } catch (_) {}
+  onAdFinished();
+});
+window.addEventListener("resize", () => {
+  if (!_adsManager) return;
+  const c = $("ad-container");
+  try { _adsManager.resize(c.clientWidth, c.clientHeight, google.ima.ViewMode.NORMAL); } catch (_) {}
+});
+
 async function handleUpload(file) {
   if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
   const formats = selectedFormats();
@@ -1336,22 +1672,28 @@ async function handleUpload(file) {
     setStatus(handwritingOn()
       ? "Filling in your handwriting… (this can take up to 2 min)"
       : "Filling with AI… (this can take up to 60 s)");
-    const r2 = await fetch("/api/fill", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        job_id: currentJob.job_id,
-        instructions: $("instructions").value,
-        context: contextText,
-      }),
-    });
-    let fillData;
-    try {
-      fillData = await r2.json();
-    } catch (_) {
-      throw new Error("Server timed out or returned an unreadable response. Try again.");
-    }
-    if (!r2.ok) throw new Error(fillData.error || "Fill failed");
+    // The fill is the ~30s wait. Wrap it as a promise so an ad can play over
+    // it; runFillWithAd is a pass-through when ads are off.
+    const fillPromise = (async () => {
+      const r2 = await fetch("/api/fill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_id: currentJob.job_id,
+          instructions: $("instructions").value,
+          context: contextText,
+        }),
+      });
+      let fillData;
+      try {
+        fillData = await r2.json();
+      } catch (_) {
+        throw new Error("Server timed out or returned an unreadable response. Try again.");
+      }
+      if (!r2.ok) throw new Error(fillData.error || "Fill failed");
+      return fillData;
+    })();
+    const fillData = await runFillWithAd(fillPromise);
     showStage("result");
     // renderResult AFTER stage is visible, so img.clientWidth is non-zero
     renderResult(fillData);
@@ -1360,6 +1702,7 @@ async function handleUpload(file) {
     showError(err.message);
     setStatus("Ready");
   } finally {
+    teardownAd();   // idempotent — guarantees the overlay never gets stuck
     drop.style.opacity = "";
     drop.style.pointerEvents = "";
     $("fill-btn").disabled = false;
@@ -1392,6 +1735,7 @@ function renderResult(data) {
   dirty = false;
   resetRateBar();
   exitDrawModes();
+  hideRefineBar();
   // Reflect the document's current font (all overlays share one unless individually overridden).
   const ovFonts = new Set(overlays.map(o => o.font));
   $("doc-font").value = ovFonts.size === 1 ? [...ovFonts][0] : "sans";
@@ -1460,10 +1804,12 @@ function createOverlayEl(ov, scale) {
   txt.addEventListener("focus", () => {
     el.classList.add("selected");
     setActiveOverlay(ov.id);
+    showRefineBar();
   });
   txt.addEventListener("blur", () => {
     el.classList.remove("selected");
     // Keep activeOverlayId so the toolbar stays usable until another box gains focus.
+    hideRefineBarSoon();
   });
   // Hotkeys: ⌘B / ⌘I / ⌘U
   txt.addEventListener("keydown", e => {
@@ -1489,7 +1835,7 @@ function createOverlayEl(ov, scale) {
     e.stopPropagation();
     overlays = overlays.filter(o => o.id !== ov.id);
     el.remove();
-    if (activeOverlayId === ov.id) setActiveOverlay(null);
+    if (activeOverlayId === ov.id) { setActiveOverlay(null); hideRefineBar(); }
     dirty = true;
   });
 
@@ -1781,6 +2127,90 @@ $("fmt-underline").addEventListener("click", () => toggleFmt("underline"));
 // Initialize disabled
 setActiveOverlay(null);
 
+// ---- Floating "refine box" toolbar (AI shorten / lengthen / custom) ----
+const refineBar = $("refine-bar");
+
+function showRefineBar() {
+  refineBar.classList.add("show");
+}
+function hideRefineBar() {
+  refineBar.classList.remove("show", "else-open");
+  $("refine-else-input").value = "";
+}
+// Hide shortly after a box loses focus — unless focus moved into the bar
+// itself (e.g. the user clicked into the "Else" input) or to another box.
+function hideRefineBarSoon() {
+  setTimeout(() => {
+    const ae = document.activeElement;
+    if (ae && (ae.closest?.("#refine-bar") || ae.classList?.contains("ov-text"))) return;
+    hideRefineBar();
+  }, 120);
+}
+
+// Keep the box focused when the three icon buttons are pressed (so the
+// selection / active overlay survives the click). The "Else" input is exempt
+// because it needs to take focus for typing.
+refineBar.addEventListener("mousedown", e => {
+  if (!e.target.closest("#refine-else-input")) e.preventDefault();
+});
+
+async function refineActiveBox(mode, instruction = "") {
+  const ov = activeOverlayId ? findOv(activeOverlayId) : null;
+  if (!ov) return;
+  const text = (ov.text || "").trim();
+  if (!text) { toast("This box is empty — nothing to rewrite", true); return; }
+  refineBar.classList.add("busy");
+  setStatus("Asking AI…");
+  try {
+    const r = await fetch("/api/refine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: currentJob.job_id, text, mode, instruction }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Couldn't rewrite that");
+    const newText = (data.text || "").trim();
+    if (!newText) { toast("The AI didn't return any text", true); return; }
+    ov.text = newText;
+    const el = findOvEl(ov.id);
+    if (el) {
+      const t = el.querySelector(".ov-text");
+      if (t) { t.textContent = newText; t.focus(); }   // refocus → keep box selected
+    }
+    dirty = true;
+    // Collapse the "Else" input but leave the bar open so edits can be chained.
+    refineBar.classList.remove("else-open");
+    $("refine-else-input").value = "";
+    toast("Box rewritten — Save to re-render the PDF");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    refineBar.classList.remove("busy");
+    setStatus("Ready to edit");
+  }
+}
+
+$("refine-shorten").addEventListener("click", () => refineActiveBox("shorten"));
+$("refine-lengthen").addEventListener("click", () => refineActiveBox("lengthen"));
+$("refine-else-toggle").addEventListener("click", () => {
+  refineBar.classList.add("else-open");
+  $("refine-else-input").focus();
+});
+$("refine-else-back").addEventListener("click", () => {
+  refineBar.classList.remove("else-open");
+  $("refine-else-input").value = "";
+});
+function applyElse() {
+  const instruction = $("refine-else-input").value.trim();
+  if (!instruction) { $("refine-else-input").focus(); return; }
+  refineActiveBox("else", instruction);
+}
+$("refine-else-apply").addEventListener("click", applyElse);
+$("refine-else-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); applyElse(); }
+  else if (e.key === "Escape") { refineBar.classList.remove("else-open"); }
+});
+
 async function saveOverlays() {
   if (!currentJob) return false;
   $("saving").classList.add("active");
@@ -1874,6 +2304,7 @@ $("rate-bar").querySelectorAll(".rate-btn").forEach(btn => {
 
 $("restart-btn").addEventListener("click", () => {
   if (dirty && !confirm("Discard unsaved edits?")) return;
+  hideRefineBar();
   currentJob = null;
   overlays = [];
   // Reset the staged-file UI back to its empty state.

@@ -261,6 +261,25 @@ tr:hover td { background: var(--paper); }
   outline: none;
   border-color: var(--accent);
 }
+/* Checkboxes shouldn't stretch to full width like text inputs do. */
+.field.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.field.checkbox input[type=checkbox] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+.field.checkbox label {
+  margin: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
 .save-btn {
   padding: 9px 20px;
   background: var(--accent);
@@ -381,6 +400,34 @@ tr:hover td { background: var(--paper); }
         <input type="text" id="confirm_password" name="confirm_password" required autocomplete="off" />
       </div>
       <button type="submit" class="save-btn">Update user code</button>
+    </form>
+  </div>
+
+  <div class="section-title">Ads</div>
+  <div class="settings-card">
+    {% if ads_status == 'ok' %}
+      <div class="banner banner-ok">Ad settings updated.</div>
+    {% endif %}
+    <p class="hint">
+      When enabled, a full-screen ad plays while the worksheet fills, with a
+      progress bar at the bottom. Paste a Google Ad Manager / IMA
+      <strong>VAST tag URL</strong> below — ads stay off until a tag is set.
+      Configure sensitive-category exclusions and traffic creatives
+      <em>non-skippable</em> on the ad server itself.
+    </p>
+    <form method="post" action="/admin/ads" autocomplete="off">
+      <div class="field checkbox">
+        <input type="checkbox" id="ads_enabled" name="ads_enabled"
+               {% if ads_enabled %}checked{% endif %} />
+        <label for="ads_enabled">Include Ads</label>
+      </div>
+      <div class="field">
+        <label for="vast_tag">VAST tag URL</label>
+        <input type="text" id="vast_tag" name="vast_tag"
+               value="{{ vast_tag }}" placeholder="https://pubads.g.doubleclick.net/gampad/ads?..."
+               autocomplete="off" />
+      </div>
+      <button type="submit" class="save-btn">Save ad settings</button>
     </form>
   </div>
 
