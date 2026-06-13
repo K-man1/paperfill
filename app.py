@@ -499,11 +499,10 @@ def call_openai_to_refine(text: str, mode: str, instruction: str = "",
     stays consistent with the source material instead of inventing new facts.
     """
     directive = {
-        "shorten": "Make this text shorter and more concise while keeping the "
+        "shorten": "Make this text much more shorter and more concise while keeping the "
                    "same meaning and the same answer.",
         "lengthen": "Make this text longer and more detailed while keeping it "
-                    "accurate and on-topic. Do not invent facts that aren't "
-                    "supported by the text or the reference material.",
+                    "accurate and on-topic.",
     }.get(mode)
     if not directive:
         directive = (instruction or "").strip() or "Rewrite this text."
