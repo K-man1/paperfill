@@ -7,8 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
-<!-- Google IMA SDK — only used when ads are enabled with a VAST tag configured. -->
-<script src="//imasdk.googleapis.com/js/sdkloader/ima3.js" async></script>
 <style>
 :root {
   --paper: #f5f1e8;
@@ -812,16 +810,19 @@ button {
   position: relative;
   flex: 1;
   min-height: 0;
-  background: #000;
+  background: #0c0b0a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
 }
-/* IMA paints the ad into this container; it fills the stage. */
-#ad-container, #ad-container > div, #ad-video {
-  position: absolute;
-  inset: 0;
+/* AdSense renders its <ins> here; cap it to a sensible centered block. */
+#ad-container {
   width: 100%;
-  height: 100%;
+  max-width: 728px;
+  max-height: 90%;
 }
-#ad-video { object-fit: contain; background: #000; }
+#ad-container .adsbygoogle { display: block; width: 100%; }
 .ad-skip {
   position: absolute;
   right: 20px;
@@ -1208,7 +1209,6 @@ button {
 <!-- Full-screen ad shown while the worksheet fills. Hidden unless ads are on. -->
 <div class="ad-overlay" id="ad-overlay" aria-hidden="true">
   <div class="ad-stage" id="ad-stage">
-    <video id="ad-video" playsinline muted></video>
     <div id="ad-container"></div>
     <button type="button" class="ad-skip" id="ad-skip">Skip &amp; view worksheet →</button>
   </div>
@@ -1247,8 +1247,9 @@ button {
 <script>
 // ---- Ad config (injected by the server) ----
 window.ADS_ENABLED = {{ ads_enabled|tojson }};
-window.VAST_TAG = {{ vast_tag|tojson }};
-const adsOn = () => !!window.ADS_ENABLED && !!window.VAST_TAG;
+window.ADSENSE_CLIENT = {{ adsense_client|tojson }};
+window.ADSENSE_SLOT = {{ adsense_slot|tojson }};
+const adsOn = () => !!window.ADS_ENABLED && !!window.ADSENSE_CLIENT && !!window.ADSENSE_SLOT;
 
 const $ = (id) => document.getElementById(id);
 const stages = ["upload", "result"];
@@ -1487,12 +1488,14 @@ async function gatherContext() {
 // actually done; a "skip" is offered only in the rare case where the fill
 // finishes while the ad is still playing. Any ad failure falls back to the
 // plain no-ad flow so it can never cost the user their result.
+// AdSense display has no "ad finished" event, so the ad's lifetime is a fixed
+// timer (kept in the 10–20s band). The fill (~30s) almost always outlasts it.
+const AD_DURATION_MS = 18000;
 let _adState = null;
-let _adsLoader = null;
-let _adsManager = null;
-let _adDisplayContainer = null;
 let _barTimer = null;
-let _adLoadTimeout = null;
+let _adTimer = null;
+let _adEndsAt = 0;
+let _adsScriptLoaded = false;
 
 function showAdOverlay() {
   const o = $("ad-overlay");
@@ -1525,10 +1528,8 @@ function stopFakeBar() {
 
 function teardownAd() {
   stopFakeBar();
-  if (_adLoadTimeout) { clearTimeout(_adLoadTimeout); _adLoadTimeout = null; }
-  try { if (_adsManager) { _adsManager.destroy(); } } catch (_) {}
-  try { if (_adsLoader) { _adsLoader.destroy(); } } catch (_) {}
-  _adsManager = null; _adsLoader = null; _adDisplayContainer = null;
+  if (_adTimer) { clearTimeout(_adTimer); _adTimer = null; }
+  $("ad-container").innerHTML = "";
   hideSkip();
   hideAdOverlay();
 }
@@ -1548,9 +1549,8 @@ function maybeReveal() {
   if (st.fillDone && !st.adDone) {
     // Rounding: if the ad is about to end anyway, let it finish — don't flash
     // a skip button for a fraction of a second.
-    let remaining = -1;
-    try { remaining = _adsManager ? _adsManager.getRemainingTime() : -1; } catch (_) {}
-    if (remaining >= 0 && remaining <= 1.5) return;
+    const remaining = (_adEndsAt - Date.now()) / 1000;
+    if (remaining <= 1.5) return;
     showSkip();
   }
 }
@@ -1558,57 +1558,51 @@ function maybeReveal() {
 function onAdFinished() {
   const st = _adState;
   if (st) st.adDone = true;
-  if (_adLoadTimeout) { clearTimeout(_adLoadTimeout); _adLoadTimeout = null; }
+  if (_adTimer) { clearTimeout(_adTimer); _adTimer = null; }
   hideSkip();
   if (st && !st.fillDone) $("ad-progress-text").textContent = "Finishing up…";
   maybeReveal();
 }
 
-function onAdsManagerLoaded(e) {
-  const container = $("ad-container");
-  const video = $("ad-video");
+// Load the AdSense library once (best-effort). The <ins> is processed off the
+// adsbygoogle queue, so a slow/blocked script never holds up the fixed timer.
+function ensureAdSenseScript() {
+  if (_adsScriptLoaded) return;
+  _adsScriptLoaded = true;
   try {
-    _adsManager = e.getAdsManager(video, new google.ima.AdsRenderingSettings());
-    _adsManager.addEventListener(google.ima.AdErrorEvent.Type.AD_ERROR, onAdFinished);
-    _adsManager.addEventListener(google.ima.AdEvent.Type.ALL_ADS_COMPLETED, onAdFinished);
-    _adsManager.addEventListener(google.ima.AdEvent.Type.CONTENT_RESUME_REQUESTED, onAdFinished);
-    _adsManager.init(container.clientWidth, container.clientHeight, google.ima.ViewMode.NORMAL);
-    _adsManager.start();
-    if (_adLoadTimeout) { clearTimeout(_adLoadTimeout); _adLoadTimeout = null; }
-  } catch (_) {
-    onAdFinished();
-  }
+    const s = document.createElement("script");
+    s.async = true;
+    s.crossOrigin = "anonymous";
+    s.src = "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client="
+            + encodeURIComponent(window.ADSENSE_CLIENT);
+    document.head.appendChild(s);
+  } catch (_) { /* timer still drives the gate */ }
 }
 
 function initAd() {
-  const container = $("ad-container");
-  const video = $("ad-video");
   try {
-    _adDisplayContainer = new google.ima.AdDisplayContainer(container, video);
-    _adDisplayContainer.initialize();   // unlocks playback (we're in a click chain)
-    _adsLoader = new google.ima.AdsLoader(_adDisplayContainer);
-    _adsLoader.addEventListener(
-      google.ima.AdsManagerLoadedEvent.Type.ADS_MANAGER_LOADED, onAdsManagerLoaded, false);
-    _adsLoader.addEventListener(
-      google.ima.AdErrorEvent.Type.AD_ERROR, onAdFinished, false);
-    const req = new google.ima.AdsRequest();
-    req.adTagUrl = window.VAST_TAG;
-    req.linearAdSlotWidth = container.clientWidth;
-    req.linearAdSlotHeight = container.clientHeight;
-    req.nonLinearAdSlotWidth = container.clientWidth;
-    req.nonLinearAdSlotHeight = container.clientHeight;
-    _adsLoader.requestAds(req);
-    // If the network never answers, don't trap the user behind the ad.
-    _adLoadTimeout = setTimeout(onAdFinished, 6000);
-  } catch (_) {
-    onAdFinished();
-  }
+    ensureAdSenseScript();
+    const container = $("ad-container");
+    container.innerHTML = "";
+    const ins = document.createElement("ins");
+    ins.className = "adsbygoogle";
+    ins.style.display = "block";
+    ins.setAttribute("data-ad-client", window.ADSENSE_CLIENT);
+    ins.setAttribute("data-ad-slot", window.ADSENSE_SLOT);
+    ins.setAttribute("data-ad-format", "auto");
+    ins.setAttribute("data-full-width-responsive", "true");
+    container.appendChild(ins);
+    (window.adsbygoogle = window.adsbygoogle || []).push({});
+  } catch (_) { /* a missing ad just means a blank slot; gate still runs */ }
+  // The ad's lifetime is this fixed timer.
+  _adEndsAt = Date.now() + AD_DURATION_MS;
+  _adTimer = setTimeout(onAdFinished, AD_DURATION_MS);
 }
 
-// Wrap the fill so an ad can play over it. Returns the fill data once the gate
-// opens. With ads off (or the SDK unavailable) it's a transparent pass-through.
+// Wrap the fill so an ad can show over it. Returns the fill data once the gate
+// opens. With ads off it's a transparent pass-through.
 function runFillWithAd(fillPromise) {
-  if (!adsOn() || !(window.google && window.google.ima)) return fillPromise;
+  if (!adsOn()) return fillPromise;
   return new Promise((resolve, reject) => {
     const st = { fillDone: false, fillData: null, adDone: false,
                  settled: false, resolve, reject };
@@ -1627,15 +1621,7 @@ function runFillWithAd(fillPromise) {
   });
 }
 
-$("ad-skip").addEventListener("click", () => {
-  try { if (_adsManager) _adsManager.destroy(); } catch (_) {}
-  onAdFinished();
-});
-window.addEventListener("resize", () => {
-  if (!_adsManager) return;
-  const c = $("ad-container");
-  try { _adsManager.resize(c.clientWidth, c.clientHeight, google.ima.ViewMode.NORMAL); } catch (_) {}
-});
+$("ad-skip").addEventListener("click", onAdFinished);
 
 async function handleUpload(file) {
   if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }

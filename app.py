@@ -110,11 +110,12 @@ def set_user_password(pw: str) -> None:
     USER_PASSWORD_PATH.write_text(pw.strip())
 
 # ---- Ad settings (file-backed, same pattern as the user password) -----------
-# "Include Ads" shows a full-screen ad (Google IMA serving a VAST tag) while the
-# worksheet fills. Both default to off/empty so nothing changes until an admin
-# opts in and supplies a tag.
+# "Include Ads" shows a full-screen Google AdSense display ad while the worksheet
+# fills. Needs the AdSense client (ca-pub-…) and an ad-unit slot ID. All default
+# to off/empty so nothing changes until an admin opts in and supplies both.
 ADS_ENABLED_PATH = BASE_DIR / "ads_enabled.txt"
-VAST_TAG_PATH = BASE_DIR / "vast_tag.txt"
+ADSENSE_CLIENT_PATH = BASE_DIR / "adsense_client.txt"
+ADSENSE_SLOT_PATH = BASE_DIR / "adsense_slot.txt"
 
 def get_ads_enabled() -> bool:
     try:
@@ -125,14 +126,23 @@ def get_ads_enabled() -> bool:
 def set_ads_enabled(enabled: bool) -> None:
     ADS_ENABLED_PATH.write_text("1" if enabled else "0")
 
-def get_vast_tag() -> str:
+def get_adsense_client() -> str:
     try:
-        return VAST_TAG_PATH.read_text().strip()
+        return ADSENSE_CLIENT_PATH.read_text().strip()
     except OSError:
         return ""
 
-def set_vast_tag(url: str) -> None:
-    VAST_TAG_PATH.write_text(url.strip())
+def set_adsense_client(client: str) -> None:
+    ADSENSE_CLIENT_PATH.write_text(client.strip())
+
+def get_adsense_slot() -> str:
+    try:
+        return ADSENSE_SLOT_PATH.read_text().strip()
+    except OSError:
+        return ""
+
+def set_adsense_slot(slot: str) -> None:
+    ADSENSE_SLOT_PATH.write_text(slot.strip())
 
 # All admin-dashboard data (sign-ins, filled assignments, devices) lives in a
 # shared Supabase Postgres database — see db.py. A shared DB is the single
@@ -607,7 +617,8 @@ def admin():
         current_user_password=get_user_password(),
         pw_status=request.args.get("pw_status"),
         ads_enabled=get_ads_enabled(),
-        vast_tag=get_vast_tag(),
+        adsense_client=get_adsense_client(),
+        adsense_slot=get_adsense_slot(),
         ads_status=request.args.get("ads_status"),
     )
 
@@ -634,7 +645,8 @@ def change_ads():
         return redirect(url_for("login"))
     # Unchecked checkboxes don't submit, so absence means "off".
     set_ads_enabled(request.form.get("ads_enabled") == "on")
-    set_vast_tag((request.form.get("vast_tag") or "").strip())
+    set_adsense_client((request.form.get("adsense_client") or "").strip())
+    set_adsense_slot((request.form.get("adsense_slot") or "").strip())
     return redirect(url_for("admin", ads_status="ok"))
 
 
@@ -643,12 +655,13 @@ def index():
     # Gated: require a sign-in (user or admin) before the filler is shown.
     if not session.get("role"):
         return redirect(url_for("login"))
-    # Ads only run when enabled AND a VAST tag is configured; the template
-    # treats an empty tag as "off" regardless of the flag.
+    # Ads only run when enabled AND a client+slot are configured; the template
+    # treats missing values as "off" regardless of the flag.
     return render_template(
         "index.html",
         ads_enabled=get_ads_enabled(),
-        vast_tag=get_vast_tag(),
+        adsense_client=get_adsense_client(),
+        adsense_slot=get_adsense_slot(),
     )
 
 

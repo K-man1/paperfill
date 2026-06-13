@@ -9,7 +9,8 @@ activity_log.json
 devices.json
 user_password.txt
 ads_enabled.txt
-vast_tag.txt
+adsense_client.txt
+adsense_slot.txt
 
 # Python / OS cruft
 __pycache__/
