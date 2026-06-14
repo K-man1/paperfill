@@ -668,6 +668,14 @@ def hilltopads_verify():
     return send_file(BASE_DIR / "2d7883f358a775fc1a8f.txt", mimetype="text/plain")
 
 
+@app.route("/0efb70ed5ecb5409945db6f7bb100589.html")
+def site_verify_html():
+    # Public (no login gate) so the verifying crawler can fetch it directly.
+    return send_file(
+        BASE_DIR / "0efb70ed5ecb5409945db6f7bb100589.html", mimetype="text/html"
+    )
+
+
 @app.post("/api/upload")
 def upload():
     if "file" not in request.files:
