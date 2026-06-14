@@ -409,12 +409,12 @@ tr:hover td { background: var(--paper); }
       <div class="banner banner-ok">Ad settings updated.</div>
     {% endif %}
     <p class="hint">
-      When enabled, a full-screen Google AdSense ad shows while the worksheet
-      fills, with a progress bar at the bottom. Ads stay off until both fields
-      below are set. The <strong>client</strong> is your AdSense publisher ID
-      (<code>ca-pub-…</code>); the <strong>slot ID</strong> comes from a Display
-      ad unit (AdSense → Ads → By ad unit → Display ads → create → copy its
-      <code>data-ad-slot</code> number).
+      When enabled, a full-screen HilltopAds <strong>VAST</strong> video ad plays
+      while the worksheet fills, with a progress bar at the bottom. The worksheet
+      reveals once the video finishes (or is skipped after its skip offset). Ads
+      stay off until at least one tag is set. Paste your HilltopAds
+      <strong>VAST tag URL(s)</strong>, one per line — they're tried in order, so
+      the second acts as a fallback if the first fails to load.
     </p>
     <form method="post" action="/admin/ads" autocomplete="off">
       <div class="field checkbox">
@@ -423,16 +423,11 @@ tr:hover td { background: var(--paper); }
         <label for="ads_enabled">Include Ads</label>
       </div>
       <div class="field">
-        <label for="adsense_client">AdSense client</label>
-        <input type="text" id="adsense_client" name="adsense_client"
-               value="{{ adsense_client }}" placeholder="ca-pub-XXXXXXXXXXXXXXXX"
-               autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="adsense_slot">AdSense ad slot ID</label>
-        <input type="text" id="adsense_slot" name="adsense_slot"
-               value="{{ adsense_slot }}" placeholder="1234567890"
-               autocomplete="off" />
+        <label for="vast_tags">VAST tag URLs (one per line)</label>
+        <textarea id="vast_tags" name="vast_tags" rows="4"
+                  placeholder="https://…/vast-tag-1&#10;https://…/vast-tag-2"
+                  autocomplete="off" spellcheck="false"
+                  style="width:100%;font-family:var(--mono,monospace);">{{ vast_tags }}</textarea>
       </div>
       <button type="submit" class="save-btn">Save ad settings</button>
     </form>

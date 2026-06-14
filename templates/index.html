@@ -5,8 +5,6 @@
   <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Paperfill — AI worksheet filler</title>
-{% if adsense_client %}<!-- Google AdSense site loader -->
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}" crossorigin="anonymous"></script>{% endif %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
@@ -819,13 +817,28 @@ button {
   justify-content: center;
   overflow: hidden;
 }
-/* AdSense renders its <ins> here; cap it to a sensible centered block. */
+/* The VAST video ad renders here; cap it to a sensible centered block. */
 #fill-slot {
+  position: relative;
   width: 100%;
-  max-width: 728px;
+  max-width: 960px;
   max-height: 90%;
 }
-#fill-slot .adsbygoogle { display: block; width: 100%; }
+#fill-slot video { display: block; width: 100%; height: 100%; max-height: 80vh; object-fit: contain; background: #000; }
+.fill-unmute {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 2;
+  background: rgba(0,0,0,0.65);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.5);
+  padding: 8px 14px;
+  border-radius: 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.fill-unmute:hover { background: var(--accent); border-color: var(--accent-deep); }
 .fill-skip {
   position: absolute;
   right: 20px;
@@ -1249,10 +1262,11 @@ button {
 
 <script>
 // ---- Ad config (injected by the server) ----
+// VAST_TAGS is a list of HilltopAds VAST tag URLs, tried in order.
 window.ADS_ENABLED = {{ ads_enabled|tojson }};
-window.ADSENSE_CLIENT = {{ adsense_client|tojson }};
-window.ADSENSE_SLOT = {{ adsense_slot|tojson }};
-const adsOn = () => !!window.ADS_ENABLED && !!window.ADSENSE_CLIENT && !!window.ADSENSE_SLOT;
+window.VAST_TAGS = {{ vast_tags|tojson }};
+const VAST_TAGS = Array.isArray(window.VAST_TAGS) ? window.VAST_TAGS : [];
+const adsOn = () => !!window.ADS_ENABLED && VAST_TAGS.length > 0;
 
 const $ = (id) => document.getElementById(id);
 const stages = ["upload", "result"];
@@ -1566,25 +1580,152 @@ function onAdFinished() {
   maybeReveal();
 }
 
-// The AdSense library is loaded once in <head>; the <ins> is processed off the
-// adsbygoogle queue, so a slow/blocked script never holds up the fixed timer.
-function initAd() {
+// ---- VAST 3.0 video ad player ----
+// HilltopAds serves VAST tags. We fetch a tag, parse the first InLine ad with a
+// playable MediaFile, play it in the gate, and fire the standard tracking
+// beacons (impression, quartiles, complete, click). The video's own length
+// drives the gate. A fixed fallback timer is armed first so a blocked fetch,
+// missing media, or autoplay rejection can never trap the user's worksheet.
+function adBeacon(url) {
+  if (!url) return;
+  try { (new Image()).src = url.replace(/\[CACHEBUSTING\]/g, Date.now())
+                              .replace(/\[TIMESTAMP\]/g, Date.now()); } catch (_) {}
+}
+function vastHmsToSec(str) {
+  const m = /(\d+):(\d+):(\d+)(?:\.\d+)?/.exec(str || "");
+  return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : 0;
+}
+function vastSkipOffset(str, durSec) {
+  if (!str) return null;
+  if (str.indexOf("%") >= 0) { const p = parseFloat(str); return isFinite(p) ? durSec * p / 100 : null; }
+  return vastHmsToSec(str) || null;
+}
+function vastText(node, sel) {
+  const el = node && node.querySelector(sel);
+  return el ? (el.textContent || "").trim() : "";
+}
+// Parse the first InLine ad that has a MediaFile this browser can play.
+function parseVast(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+  if (doc.querySelector("parsererror")) return null;
+  const probe = document.createElement("video");
+  for (const ad of doc.querySelectorAll("Ad InLine")) {
+    const linear = ad.querySelector("Creative Linear, Linear");
+    if (!linear) continue;
+    let best = null;
+    for (const mf of linear.querySelectorAll("MediaFile")) {
+      const type = (mf.getAttribute("type") || "").toLowerCase();
+      const url = (mf.textContent || "").trim();
+      if (!url) continue;
+      const can = probe.canPlayType(type);
+      if (can === "probably") { best = url; break; }
+      if (!best && (can === "maybe" || type === "video/mp4" || type === "video/webm")) best = url;
+    }
+    if (!best) continue;
+    const tracking = {};
+    for (const t of linear.querySelectorAll("Tracking")) {
+      const ev = t.getAttribute("event");
+      (tracking[ev] = tracking[ev] || []).push((t.textContent || "").trim());
+    }
+    return {
+      media: best,
+      duration: vastHmsToSec(vastText(linear, "Duration")),
+      skipOffsetRaw: linear.getAttribute("skipoffset"),
+      impressions: [...ad.querySelectorAll("Impression")].map(n => (n.textContent || "").trim()),
+      error: vastText(ad, "Error"),
+      clickThrough: vastText(linear, "VideoClicks ClickThrough"),
+      clickTracking: [...linear.querySelectorAll("VideoClicks ClickTracking")].map(n => (n.textContent || "").trim()),
+      tracking,
+    };
+  }
+  return null;
+}
+async function fetchVast(url) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 6000);
   try {
-    const container = $("fill-slot");
-    container.innerHTML = "";
-    const ins = document.createElement("ins");
-    ins.className = "adsbygoogle";
-    ins.style.display = "block";
-    ins.setAttribute("data-ad-client", window.ADSENSE_CLIENT);
-    ins.setAttribute("data-ad-slot", window.ADSENSE_SLOT);
-    ins.setAttribute("data-ad-format", "auto");
-    ins.setAttribute("data-full-width-responsive", "true");
-    container.appendChild(ins);
-    (window.adsbygoogle = window.adsbygoogle || []).push({});
-  } catch (_) { /* a missing ad just means a blank slot; gate still runs */ }
-  // The ad's lifetime is this fixed timer.
+    const r = await fetch(url, { credentials: "omit", signal: ctrl.signal });
+    if (!r.ok) throw new Error("vast http " + r.status);
+    return parseVast(await r.text());
+  } finally { clearTimeout(to); }
+}
+function armAdFallbackTimer() {
+  if (_adTimer) return;
   _adEndsAt = Date.now() + AD_DURATION_MS;
   _adTimer = setTimeout(onAdFinished, AD_DURATION_MS);
+}
+
+async function initAd() {
+  const container = $("fill-slot");
+  container.innerHTML = "";
+  // Fixed fallback first: covers a hung fetch or an unplayable/blocked ad.
+  armAdFallbackTimer();
+
+  let ad = null;
+  for (const tag of VAST_TAGS) {
+    try { ad = await fetchVast(tag); if (ad) break; } catch (_) { /* try next tag */ }
+  }
+  // Gate already resolved (e.g. user skipped) or no playable ad: keep fallback.
+  if (!ad || !_adState || _adState.settled || _adState.adDone) return;
+
+  // Real ad: drop the fixed timer and let the video drive the gate.
+  if (_adTimer) { clearTimeout(_adTimer); _adTimer = null; }
+
+  const v = document.createElement("video");
+  v.setAttribute("playsinline", "");
+  v.muted = true;        // muted is required for autoplay
+  v.autoplay = true;
+  v.controls = false;
+  v.src = ad.media;
+  container.appendChild(v);
+
+  const unmute = document.createElement("button");
+  unmute.type = "button";
+  unmute.className = "fill-unmute";
+  unmute.textContent = "🔇 Tap for sound";
+  unmute.addEventListener("click", () => {
+    v.muted = !v.muted;
+    unmute.textContent = v.muted ? "🔇 Tap for sound" : "🔊 Sound on";
+  });
+  container.appendChild(unmute);
+
+  if (ad.clickThrough) {
+    v.style.cursor = "pointer";
+    v.addEventListener("click", () => {
+      ad.clickTracking.forEach(adBeacon);
+      window.open(ad.clickThrough, "_blank", "noopener");
+    });
+  }
+
+  const fired = {};
+  const fire = (ev) => { if (fired[ev]) return; fired[ev] = 1; (ad.tracking[ev] || []).forEach(adBeacon); };
+  let skipAt = null;
+
+  v.addEventListener("loadedmetadata", () => {
+    const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : (ad.duration || AD_DURATION_MS / 1000);
+    _adEndsAt = Date.now() + dur * 1000;
+    skipAt = vastSkipOffset(ad.skipOffsetRaw, dur);
+    // Safety watchdog in case 'ended' never fires.
+    _adTimer = setTimeout(onAdFinished, dur * 1000 + 8000);
+  });
+  v.addEventListener("playing", () => { ad.impressions.forEach(adBeacon); fire("start"); }, { once: true });
+  v.addEventListener("timeupdate", () => {
+    const d = v.duration; if (!d) return;
+    const p = v.currentTime / d;
+    if (p >= 0.25) fire("firstQuartile");
+    if (p >= 0.50) fire("midpoint");
+    if (p >= 0.75) fire("thirdQuartile");
+    if (skipAt != null && v.currentTime >= skipAt) showSkip();
+  });
+  v.addEventListener("ended", () => { fire("complete"); onAdFinished(); });
+  v.addEventListener("error", () => {
+    adBeacon((ad.error || "").replace("[ERRORCODE]", "405"));
+    armAdFallbackTimer();
+  });
+
+  // Autoplay can still be rejected; fall back to the timer if so.
+  const p = v.play();
+  if (p && p.catch) p.catch(() => armAdFallbackTimer());
 }
 
 // Wrap the fill so an ad can show over it. Returns the fill data once the gate

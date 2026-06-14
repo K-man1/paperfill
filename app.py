@@ -114,8 +114,14 @@ def set_user_password(pw: str) -> None:
 # fills. Needs the AdSense client (ca-pub-…) and an ad-unit slot ID. All default
 # to off/empty so nothing changes until an admin opts in and supplies both.
 ADS_ENABLED_PATH = BASE_DIR / "ads_enabled.txt"
-ADSENSE_CLIENT_PATH = BASE_DIR / "adsense_client.txt"
-ADSENSE_SLOT_PATH = BASE_DIR / "adsense_slot.txt"
+VAST_TAGS_PATH = BASE_DIR / "vast_tags.txt"
+
+# HilltopAds VAST tag URLs, tried in order. Used as the default until/unless
+# overridden from the admin dashboard (one URL per line in vast_tags.txt).
+DEFAULT_VAST_TAGS = [
+    "https://surefootedpause.com/dgmwFAztd.G/NbvQZ/GEUY/Cecme9TuPZAUylMk/PtTccIxcMGzOc/3uOjDXkxtzNSzHEfz/NRz-cg5EMUwU",
+    "https://surefootedpause.com/d.maFKz/dYG/NYv_ZKG/UY/pedmE9cuTZdUPlVkcPnTTc/xoMXz/cV3fO/Dpk-tXNnzHEXz/NEzpcc5/MjyyZLsIajWM1/p_d/DU0/xn",
+]
 
 def get_ads_enabled() -> bool:
     try:
@@ -126,23 +132,17 @@ def get_ads_enabled() -> bool:
 def set_ads_enabled(enabled: bool) -> None:
     ADS_ENABLED_PATH.write_text("1" if enabled else "0")
 
-def get_adsense_client() -> str:
+def get_vast_tags() -> list[str]:
+    """VAST tag URLs (one per line). Falls back to the built-in defaults."""
     try:
-        return ADSENSE_CLIENT_PATH.read_text().strip()
+        tags = [ln.strip() for ln in VAST_TAGS_PATH.read_text().splitlines() if ln.strip()]
     except OSError:
-        return ""
+        tags = []
+    return tags or list(DEFAULT_VAST_TAGS)
 
-def set_adsense_client(client: str) -> None:
-    ADSENSE_CLIENT_PATH.write_text(client.strip())
-
-def get_adsense_slot() -> str:
-    try:
-        return ADSENSE_SLOT_PATH.read_text().strip()
-    except OSError:
-        return ""
-
-def set_adsense_slot(slot: str) -> None:
-    ADSENSE_SLOT_PATH.write_text(slot.strip())
+def set_vast_tags(raw: str) -> None:
+    tags = [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
+    VAST_TAGS_PATH.write_text("\n".join(tags))
 
 # All admin-dashboard data (sign-ins, filled assignments, devices) lives in a
 # shared Supabase Postgres database — see db.py. A shared DB is the single
@@ -559,9 +559,8 @@ def login():
             return redirect(url_for("index"))
         else:
             _record_signin("failed")
-            return render_template("login.html", error="Incorrect access code. Please try again.",
-                                   adsense_client=get_adsense_client())
-    return render_template("login.html", error=None, adsense_client=get_adsense_client())
+            return render_template("login.html", error="Incorrect access code. Please try again.")
+    return render_template("login.html", error=None)
 
 
 @app.route("/logout")
@@ -617,8 +616,7 @@ def admin():
         current_user_password=get_user_password(),
         pw_status=request.args.get("pw_status"),
         ads_enabled=get_ads_enabled(),
-        adsense_client=get_adsense_client(),
-        adsense_slot=get_adsense_slot(),
+        vast_tags="\n".join(get_vast_tags()),
         ads_status=request.args.get("ads_status"),
     )
 
@@ -645,8 +643,7 @@ def change_ads():
         return redirect(url_for("login"))
     # Unchecked checkboxes don't submit, so absence means "off".
     set_ads_enabled(request.form.get("ads_enabled") == "on")
-    set_adsense_client((request.form.get("adsense_client") or "").strip())
-    set_adsense_slot((request.form.get("adsense_slot") or "").strip())
+    set_vast_tags(request.form.get("vast_tags") or "")
     return redirect(url_for("admin", ads_status="ok"))
 
 
@@ -655,13 +652,12 @@ def index():
     # Gated: require a sign-in (user or admin) before the filler is shown.
     if not session.get("role"):
         return redirect(url_for("login"))
-    # Ads only run when enabled AND a client+slot are configured; the template
-    # treats missing values as "off" regardless of the flag.
+    # Ads only run when enabled AND at least one VAST tag is configured; the
+    # template treats an empty tag list as "off" regardless of the flag.
     return render_template(
         "index.html",
         ads_enabled=get_ads_enabled(),
-        adsense_client=get_adsense_client(),
-        adsense_slot=get_adsense_slot(),
+        vast_tags=get_vast_tags(),
     )
 
 
