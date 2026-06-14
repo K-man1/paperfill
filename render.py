@@ -4,12 +4,19 @@ PDF. Coordinates are never seen by the LLM — they come from the
 preprocessor. Text auto-fits to the slot bbox.
 """
 
+import os
+
 import fitz
 
 
 # Tunables
 HANDWRITING_FONT = "helv"  # built-in PDF font
 MIN_FONT_SIZE = 6
+
+# "Made with Goodnotes" badge stamped on the bottom-left of every rendered page.
+WATERMARK_PATH = os.path.join(os.path.dirname(__file__), "assets", "goodnotes_watermark.png")
+WATERMARK_WIDTH = 110   # px wide on the page (aspect ratio preserved)
+WATERMARK_MARGIN = 18   # px from the left and bottom edges
 
 # One-DM handwriting is generated at 64px tall; squeezing it into a ~14px slot
 # turns legible cursive into an illegible scratch. Render it noticeably taller
@@ -130,6 +137,31 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
     page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
 
 
+def _stamp_watermark(doc) -> None:
+    """Stamp the 'Made with Goodnotes' badge on the bottom-left of every page.
+    The PNG is transparent, so it overlays cleanly. Sized to WATERMARK_WIDTH
+    with aspect ratio preserved and a small margin from the page edges."""
+    if not os.path.exists(WATERMARK_PATH):
+        return
+    import io
+    from PIL import Image
+
+    with open(WATERMARK_PATH, "rb") as f:
+        png_bytes = f.read()
+    img_w, img_h = Image.open(io.BytesIO(png_bytes)).size
+    if not (img_w and img_h):
+        return
+    scale = WATERMARK_WIDTH / img_w
+    draw_w, draw_h = img_w * scale, img_h * scale
+
+    for page in doc:
+        ph = page.rect.height
+        x0 = WATERMARK_MARGIN
+        y1 = ph - WATERMARK_MARGIN
+        rect = fitz.Rect(x0, y1 - draw_h, x0 + draw_w, y1)
+        page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
+
+
 def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
                         images: dict[str, bytes] | None = None) -> None:
     """
@@ -165,6 +197,7 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
         except Exception:
             # htmlbox failed (bad rect, unsupported font) — fall back to plain text
             insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
+    _stamp_watermark(doc)
     doc.save(out_path)
     doc.close()
 
