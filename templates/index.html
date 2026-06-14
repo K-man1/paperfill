@@ -871,6 +871,12 @@ button {
   border-radius: 999px;
   transition: width 0.5s ease;
 }
+.fill-autoskip-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: rgba(245,241,232,0.7);
+  text-align: center;
+}
 
 /* ---- Floating "refine box" toolbar (shorten / lengthen / custom) ---- */
 .refine-bar {
@@ -1221,6 +1227,7 @@ button {
     <div class="fill-progress-track">
       <div class="fill-progress-fill" id="fill-progress-fill"></div>
     </div>
+    <div class="fill-autoskip-note">✨ We'll automatically skip the ad the moment your worksheet is ready!</div>
   </div>
 </div>
 
@@ -1531,13 +1538,13 @@ function teardownAd() {
   hideAdOverlay();
 }
 
-// Resolve the gate only when BOTH the fill is done and the ad is done — there's
-// no skip, so the worksheet only reveals after the ad finishes (or its safety
-// timeout fires); we can never reveal an unfinished worksheet.
+// Reveal as soon as the worksheet is ready — we auto-end the ad the moment the
+// fill is done (no manual skip). If the ad finishes first we simply keep showing
+// the overlay until the fill completes; we can never reveal an unfinished sheet.
 function maybeReveal() {
   const st = _adState;
   if (!st || st.settled) return;
-  if (st.fillDone && st.adDone) {
+  if (st.fillDone) {
     st.settled = true;
     teardownAd();
     st.resolve(st.fillData);
