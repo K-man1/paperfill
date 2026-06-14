@@ -665,6 +665,13 @@ def index():
     )
 
 
+@app.route("/2d7883f358a775fc1a8f.txt")
+def hilltopads_verify():
+    # Public (no login gate) so HilltopAds' crawler can fetch it directly.
+    # The homepage "/" redirects to /login, which would hide any token there.
+    return send_file(BASE_DIR / "2d7883f358a775fc1a8f.txt", mimetype="text/plain")
+
+
 @app.post("/api/upload")
 def upload():
     if "file" not in request.files:
