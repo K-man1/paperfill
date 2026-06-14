@@ -839,20 +839,6 @@ button {
   cursor: pointer;
 }
 .fill-unmute:hover { background: var(--accent); border-color: var(--accent-deep); }
-.fill-skip {
-  position: absolute;
-  right: 20px;
-  bottom: 20px;
-  z-index: 2;
-  display: none;
-  background: rgba(0,0,0,0.65);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,0.5);
-  padding: 12px 20px;
-  border-radius: 2px;
-}
-.fill-skip.show { display: inline-block; }
-.fill-skip:hover { background: var(--accent); border-color: var(--accent-deep); }
 /* Bottom progress strip — the real-ish fill progress, pinned under the ad. */
 .fill-progress {
   flex: 0 0 auto;
@@ -1226,7 +1212,6 @@ button {
 <div class="fill-overlay" id="fill-overlay" aria-hidden="true">
   <div class="fill-stage" id="fill-stage">
     <div id="fill-slot"></div>
-    <button type="button" class="fill-skip" id="fill-skip">Skip &amp; view worksheet →</button>
   </div>
   <div class="fill-progress">
     <div class="fill-progress-label">
@@ -1524,9 +1509,6 @@ function hideAdOverlay() {
   o.classList.remove("active");
   o.setAttribute("aria-hidden", "true");
 }
-function showSkip() { $("fill-skip").classList.add("show"); }
-function hideSkip() { $("fill-skip").classList.remove("show"); }
-
 // Eased fake progress bar: creeps toward ~90%, snaps to 100% on real fill-done.
 function startFakeBar() {
   const fill = $("fill-progress-fill");
@@ -1546,13 +1528,12 @@ function teardownAd() {
   stopFakeBar();
   if (_adTimer) { clearTimeout(_adTimer); _adTimer = null; }
   $("fill-slot").innerHTML = "";
-  hideSkip();
   hideAdOverlay();
 }
 
-// Resolve the gate only when BOTH the fill is done and the ad is done. The
-// only way adDone flips early is the conditional skip, which is offered only
-// after fillDone — so we can never reveal an unfinished worksheet.
+// Resolve the gate only when BOTH the fill is done and the ad is done — there's
+// no skip, so the worksheet only reveals after the ad finishes (or its safety
+// timeout fires); we can never reveal an unfinished worksheet.
 function maybeReveal() {
   const st = _adState;
   if (!st || st.settled) return;
@@ -1560,14 +1541,6 @@ function maybeReveal() {
     st.settled = true;
     teardownAd();
     st.resolve(st.fillData);
-    return;
-  }
-  if (st.fillDone && !st.adDone) {
-    // Rounding: if the ad is about to end anyway, let it finish — don't flash
-    // a skip button for a fraction of a second.
-    const remaining = (_adEndsAt - Date.now()) / 1000;
-    if (remaining <= 1.5) return;
-    showSkip();
   }
 }
 
@@ -1575,7 +1548,6 @@ function onAdFinished() {
   const st = _adState;
   if (st) st.adDone = true;
   if (_adTimer) { clearTimeout(_adTimer); _adTimer = null; }
-  hideSkip();
   if (st && !st.fillDone) $("fill-progress-text").textContent = "Finishing up…";
   maybeReveal();
 }
@@ -1594,11 +1566,6 @@ function adBeacon(url) {
 function vastHmsToSec(str) {
   const m = /(\d+):(\d+):(\d+)(?:\.\d+)?/.exec(str || "");
   return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : 0;
-}
-function vastSkipOffset(str, durSec) {
-  if (!str) return null;
-  if (str.indexOf("%") >= 0) { const p = parseFloat(str); return isFinite(p) ? durSec * p / 100 : null; }
-  return vastHmsToSec(str) || null;
 }
 function vastText(node, sel) {
   const el = node && node.querySelector(sel);
@@ -1630,7 +1597,6 @@ function parseVast(xmlText) {
     return {
       media: best,
       duration: vastHmsToSec(vastText(linear, "Duration")),
-      skipOffsetRaw: linear.getAttribute("skipoffset"),
       impressions: [...ad.querySelectorAll("Impression")].map(n => (n.textContent || "").trim()),
       error: vastText(ad, "Error"),
       clickThrough: vastText(linear, "VideoClicks ClickThrough"),
@@ -1699,12 +1665,10 @@ async function initAd() {
 
   const fired = {};
   const fire = (ev) => { if (fired[ev]) return; fired[ev] = 1; (ad.tracking[ev] || []).forEach(adBeacon); };
-  let skipAt = null;
 
   v.addEventListener("loadedmetadata", () => {
     const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : (ad.duration || AD_DURATION_MS / 1000);
     _adEndsAt = Date.now() + dur * 1000;
-    skipAt = vastSkipOffset(ad.skipOffsetRaw, dur);
     // Safety watchdog in case 'ended' never fires.
     _adTimer = setTimeout(onAdFinished, dur * 1000 + 8000);
   });
@@ -1715,7 +1679,6 @@ async function initAd() {
     if (p >= 0.25) fire("firstQuartile");
     if (p >= 0.50) fire("midpoint");
     if (p >= 0.75) fire("thirdQuartile");
-    if (skipAt != null && v.currentTime >= skipAt) showSkip();
   });
   v.addEventListener("ended", () => { fire("complete"); onAdFinished(); });
   v.addEventListener("error", () => {
@@ -1749,8 +1712,6 @@ function runFillWithAd(fillPromise) {
     });
   });
 }
-
-$("fill-skip").addEventListener("click", onAdFinished);
 
 async function handleUpload(file) {
   if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
