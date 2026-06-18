@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Paperfill — Your Handwriting</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#f5f1e8;--ink:#1a1814;--ink-soft:#4a4438;--rule:#c9c0a8;--accent:#ff5a1f;--accent-deep:#c93f10;--serif:"Fraunces",serif;--sans:"IBM Plex Sans",system-ui,sans-serif;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.5;}
+.wrap{max-width:680px;margin:0 auto;padding:42px 22px 80px;}
+h1{font-family:var(--serif);font-weight:800;font-size:34px;margin:0 0 6px;}
+.lede{color:var(--ink-soft);margin:0 0 28px;}
+.pro{display:inline-block;background:var(--accent);color:#fff;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:20px;vertical-align:middle;margin-left:8px;}
+.step{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:20px 22px;margin:0 0 18px;}
+.step h2{font-family:var(--serif);font-size:19px;margin:0 0 8px;}
+.step p{margin:0 0 14px;color:var(--ink-soft);font-size:15px;}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:none;border-radius:8px;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;}
+.btn.accent{background:var(--accent);} .btn.accent:hover{background:var(--accent-deep);}
+.btn:disabled{opacity:.5;cursor:default;}
+input[type=text]{width:100%;padding:10px 12px;border:1px solid var(--rule);border-radius:8px;font:inherit;margin-bottom:12px;}
+input[type=file]{margin-bottom:14px;font:inherit;}
+.note{font-size:13px;color:var(--ink-soft);}
+#result{display:none;background:#eef7ee;border-color:#bcdcbc;}
+#result img{max-width:100%;border:1px solid var(--rule);border-radius:8px;background:#fff;margin-top:10px;}
+.err{color:var(--accent-deep);font-weight:500;margin-top:10px;display:none;}
+a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">← Back to Paperfill</a>
+  <h1>Make it your handwriting <span class="pro">Pro</span></h1>
+  <p class="lede">Turn your own handwriting into a font, right here — no apps, no sign-ups.
+     Once built, it shows up as a style when you fill a worksheet.</p>
+
+  <div class="step">
+    <h2>1 · Print the template</h2>
+    <p>Download the template and print it on plain paper.</p>
+    <a class="btn" href="/api/fonts/template">Download template (PDF)</a>
+  </div>
+
+  <div class="step">
+    <h2>2 · Fill it in</h2>
+    <p>Write one character in each cell, sitting on the lines. Use a dark pen.
+       Then take a clear, flat photo or scan of the whole page —
+       <strong>keep all four corner squares in frame</strong>.</p>
+  </div>
+
+  <div class="step">
+    <h2>3 · Build your font</h2>
+    <p>Upload your photo and give your handwriting a name.</p>
+    <form id="form">
+      <input type="text" id="name" placeholder="Name your handwriting (e.g. My Print)" maxlength="40" />
+      <input type="file" id="file" accept="image/*" required />
+      <button class="btn accent" id="go" type="submit">Build my font</button>
+      <span class="note" id="status"></span>
+      <div class="err" id="err"></div>
+    </form>
+  </div>
+
+  <div class="step" id="result">
+    <h2>✓ Your font is ready</h2>
+    <p>Pick <strong id="rlabel"></strong> from the handwriting styles next time you fill a worksheet.</p>
+    <img id="sample" alt="handwriting sample" />
+  </div>
+</div>
+
+<script>
+const form = document.getElementById("form");
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const file = document.getElementById("file").files[0];
+  if (!file) return;
+  const go = document.getElementById("go"), status = document.getElementById("status"),
+        err = document.getElementById("err");
+  err.style.display = "none"; go.disabled = true;
+  status.textContent = "Building your font… this takes a few seconds.";
+  const fd = new FormData();
+  fd.append("template", file);
+  fd.append("name", document.getElementById("name").value || "My handwriting");
+  try {
+    const r = await fetch("/api/fonts", { method: "POST", body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "build failed");
+    status.textContent = "";
+    document.getElementById("rlabel").textContent = data.label;
+    document.getElementById("sample").src =
+      "/api/styles/" + encodeURIComponent(data.style_id) + ".png?" + Date.now();
+    document.getElementById("result").style.display = "block";
+  } catch (ex) {
+    status.textContent = "";
+    err.textContent = "Couldn't build the font: " + ex.message +
+      " — make sure all four corner squares are visible and the photo is sharp.";
+    err.style.display = "block";
+  } finally { go.disabled = false; }
+});
+</script>
+</body>
+</html>

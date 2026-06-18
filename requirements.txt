@@ -5,3 +5,9 @@ gunicorn>=21.2
 youtube-transcript-api>=0.6
 requests>=2.31
 pillow>=10.0
+# Handwriting font builder (in-app "your handwriting" feature). Needs the
+# `potrace` system binary too (apt-get install potrace / brew install potrace).
+fonttools>=4.40
+opencv-python-headless>=4.8
+numpy>=1.24
+scipy>=1.10

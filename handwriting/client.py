@@ -17,7 +17,15 @@ TIMEOUT_S = float(os.environ.get("ONEDM_TIMEOUT", "150"))
 
 
 def handwriting_enabled() -> bool:
-    return bool(MODAL_URL)
+    """True if handwriting output is available at all: either the One-DM Modal
+    service is configured, or at least one user-built font exists locally."""
+    if MODAL_URL:
+        return True
+    try:
+        from .font_store import has_fonts
+        return has_fonts()
+    except Exception:
+        return False
 
 
 def generate_handwriting(style_b64: str, items: dict[str, str]) -> dict[str, bytes]:
