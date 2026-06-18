@@ -2,9 +2,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for PyMuPDF
+# System deps: PyMuPDF (libmupdf-dev), the handwriting font builder
+# (potrace traces the ink), and OpenCV's runtime (libglib2.0-0).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmupdf-dev \
+    potrace \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

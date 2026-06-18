@@ -547,6 +547,16 @@ button {
 }
 .editor-toolbar button { flex: 0 0 auto; padding: 12px 18px; min-width: 0; }
 .editor-toolbar .spacer { flex: 1; }
+.donate-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 12px 18px;
+  text-decoration: none;
+  color: #c0392b;
+  border-color: #e6b0aa;
+}
+.donate-btn:hover { background: #fdecea; }
 .editor-toolbar #add-box-btn.active,
 .editor-toolbar #snip-btn.active,
 .editor-toolbar .fmt-btn.active {
@@ -1186,6 +1196,7 @@ button {
       <div class="spacer"></div>
       <button class="btn-primary" id="download-btn" style="min-width:180px">↓ Download PDF</button>
       <button class="btn-ghost" id="restart-btn">Start over</button>
+      {% if donate_url %}<a class="btn-ghost donate-btn" href="{{ donate_url }}" target="_blank" rel="noopener">♥ Donate</a>{% endif %}
     </div>
     <div class="editor-help">
       Click any text to edit. Drag the black handle to move a box, the red × to delete.

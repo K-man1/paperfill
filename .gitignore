@@ -12,6 +12,9 @@ ads_enabled.txt
 adsense_client.txt
 adsense_slot.txt
 
+# User-built handwriting fonts (created at runtime, per deployment)
+handwriting/fonts/
+
 # Python / OS cruft
 __pycache__/
 *.pyc
