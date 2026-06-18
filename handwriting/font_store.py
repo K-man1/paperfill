@@ -2,8 +2,7 @@
 On-disk store for user-built handwriting fonts.
 
 One ``.otf`` per font under ``handwriting/fonts/<id>.otf`` plus a small JSON
-index of human labels. Kept dependency-free (no import of the One-DM client)
-so ``client.handwriting_enabled`` can consult it without a circular import.
+index of human labels.
 """
 
 from __future__ import annotations

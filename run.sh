@@ -3,7 +3,7 @@
 #
 #   ./run.sh
 #
-# Reads .env (PORT, HCAI_API_KEY, ONEDM_*). PORT comes from `nest get-port`.
+# Reads .env (PORT, HCAI_API_KEY). PORT comes from `nest get-port`.
 set -euo pipefail
 cd "$(dirname "$0")"
 

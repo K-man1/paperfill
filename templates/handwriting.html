@@ -88,7 +88,7 @@ form.addEventListener("submit", async (e) => {
     status.textContent = "";
     document.getElementById("rlabel").textContent = data.label;
     document.getElementById("sample").src =
-      "/api/styles/" + encodeURIComponent(data.style_id) + ".png?" + Date.now();
+      "/api/fonts/" + encodeURIComponent(data.font_id) + "/sample.png?" + Date.now();
     document.getElementById("result").style.display = "block";
   } catch (ex) {
     status.textContent = "";

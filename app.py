@@ -41,7 +41,6 @@ from preprocess import preprocess_pdf
 from multimodal_preprocess import multimodal_preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
 from vision_preprocess import VISION_MODEL, VISION_DPI
-from handwriting.client import handwriting_enabled, generate_handwriting
 from handwriting import font_store
 from context_sources import (extract_file_text, fetch_youtube_transcript,
                              assemble_context)
@@ -62,25 +61,6 @@ ALLOWED_EXT = {".pdf"}
 # last activity, then swept so neither outputs/ nor the in-memory JOBS dict
 # grows without bound. A re-render or handwriting pass refreshes the clock.
 JOB_RETENTION_DAYS = 7
-
-# Curated handwriting style presets. These are real in-distribution IAM word
-# images (the data One-DM was trained on), which produce far more consistent
-# output than arbitrary user photos. Keys are the ids the UI sends to /api/style.
-STYLES_DIR = BASE_DIR / "handwriting" / "styles"
-STYLE_PRESETS = {
-    "neat":  {"label": "Neat",  "file": "neat.png",  "hint": "clean print"},
-    "light": {"label": "Light", "file": "light.png", "hint": "light print"},
-    "bold":  {"label": "Bold",  "file": "bold.png",  "hint": "bold print"},
-}
-
-def _preset_b64(preset_id: str) -> str | None:
-    info = STYLE_PRESETS.get(preset_id)
-    if not info:
-        return None
-    path = STYLES_DIR / info["file"]
-    if not path.exists():
-        return None
-    return base64.b64encode(path.read_bytes()).decode()
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -188,10 +168,7 @@ def _style_label(style_id: str | None) -> str:
         label = next((f["label"] for f in font_store.list_fonts()
                       if f["id"] == fid), fid)
         return f"{label} (your handwriting)"
-    if style_id == "custom":
-        return "Custom handwriting upload"
-    info = STYLE_PRESETS.get(style_id)
-    return f"{info['label']} handwriting" if info else str(style_id)
+    return str(style_id)
 
 # ---- Device tracking -----------------------------------------------------
 # A long-lived cookie identifies a browser/device. The first request without
@@ -263,34 +240,22 @@ def _write_hw_images(job_id: str, images: dict[str, bytes]) -> None:
 
 
 def _generate_hw_for_job(job_id: str) -> None:
-    """Cache a handwriting PNG per overlay for rendering. Two sources:
-    a user-built font (rendered locally, free) takes priority; otherwise the
-    One-DM Modal service is used if configured. No-op when neither applies."""
+    """If the job has a user-built handwriting font attached, render each
+    overlay locally and cache it on disk. No-op otherwise (answers stay
+    typeset)."""
     job = JOBS[job_id]
-    overlays = job.get("overlays", [])
-    items = {ov["id"]: ov.get("text", "") for ov in overlays}
-
     font_id = _font_id_from_style(job.get("style_id"))
-    if font_id:
-        from handwriting.font_render import render_text_png
-        otf = font_store.font_path(font_id)
-        try:
-            images = {ov_id: render_text_png(text, str(otf))
-                      for ov_id, text in items.items() if str(text).strip()}
-        except Exception as e:
-            print(f"[handwriting] local font render failed, "
-                  f"falling back to text: {e}")
-            return
-        _write_hw_images(job_id, images)
+    if not font_id:
         return
-
-    style_b64 = job.get("style_b64")
-    if not (style_b64 and handwriting_enabled()):
-        return
+    from handwriting.font_render import render_text_png
+    otf = font_store.font_path(font_id)
+    items = {ov["id"]: ov.get("text", "") for ov in job.get("overlays", [])}
     try:
-        images = generate_handwriting(style_b64, items)
+        images = {ov_id: render_text_png(text, str(otf))
+                  for ov_id, text in items.items() if str(text).strip()}
     except Exception as e:
-        print(f"[handwriting] generation failed, falling back to text: {e}")
+        print(f"[handwriting] local font render failed, "
+              f"falling back to text: {e}")
         return
     _write_hw_images(job_id, images)
 
@@ -935,35 +900,23 @@ def submit_feedback():
     return jsonify({"error": "unknown job_id"}), 404
 
 
-@app.get("/api/styles")
-def list_styles():
-    """List the handwriting options for the UI picker: the curated presets
-    plus any handwriting fonts the user has built from a template."""
-    presets = [{"id": k, "label": v["label"], "hint": v["hint"]}
-               for k, v in STYLE_PRESETS.items()]
-    presets += [{"id": f"font:{f['id']}", "label": f["label"],
-                 "hint": "your handwriting"}
-                for f in font_store.list_fonts()]
-    return jsonify({"enabled": handwriting_enabled(), "presets": presets})
+@app.get("/api/fonts")
+def list_fonts_route():
+    """List the user's built handwriting fonts."""
+    return jsonify({"fonts": font_store.list_fonts()})
 
 
-@app.get("/api/styles/<preset_id>.png")
-def style_preview(preset_id: str):
-    """Serve a thumbnail for a picker option. Curated presets serve their
-    reference image; user fonts render a short sample word in the font."""
-    if preset_id.startswith("font:"):
-        otf = font_store.font_path(preset_id.split(":", 1)[1])
-        if not otf:
-            abort(404)
-        from handwriting.font_render import render_text_png
-        png = render_text_png("Sample", str(otf))
-        if not png:
-            abort(404)
-        return send_file(io.BytesIO(png), mimetype="image/png")
-    info = STYLE_PRESETS.get(preset_id)
-    if not info:
+@app.get("/api/fonts/<font_id>/sample.png")
+def font_sample(font_id: str):
+    """Render a short sample word in a built font (used by the onboarding page)."""
+    otf = font_store.font_path(font_id)
+    if not otf:
         abort(404)
-    return send_file(STYLES_DIR / info["file"], mimetype="image/png")
+    from handwriting.font_render import render_text_png
+    png = render_text_png("Sample", str(otf))
+    if not png:
+        abort(404)
+    return send_file(io.BytesIO(png), mimetype="image/png")
 
 
 @app.get("/api/fonts/template")
@@ -981,7 +934,7 @@ def download_template():
 def build_font_route():
     """Build a handwriting font from a filled-template photo/scan and store it
     (Pro onboarding step 2). Multipart: 'template' (image), 'name' (label).
-    Returns {font_id, label}. The font then appears in /api/styles."""
+    Returns {font_id, label}. The font then appears in /api/fonts."""
     if not session.get("role"):
         return jsonify({"error": "not signed in"}), 403
     file = request.files.get("template")
@@ -1007,46 +960,20 @@ def build_font_route():
 
 @app.post("/api/style")
 def upload_style():
-    """Attach a handwriting style to a job. Accepts, in priority order:
-      - a preset id  (form 'preset' or JSON {preset})  ← recommended
-      - a multipart file field 'style'
-      - JSON {style_b64}
-    """
+    """Attach a user-built handwriting font to a job so the fill renders the
+    answers in it. Body: {job_id, style: "font:<id>"}."""
     data = request.get_json(silent=True) or {}
     job_id = request.form.get("job_id") or data.get("job_id")
     job = load_job(job_id)
     if job is None:
         return jsonify({"error": "unknown job_id"}), 404
 
-    preset = request.form.get("preset") or data.get("preset")
-    file = request.files.get("style")
-    if preset and preset.startswith("font:"):
-        # A user-built handwriting font: rendered locally at fill time, so no
-        # style image is attached — just remember which font was chosen.
-        if not _font_id_from_style(preset):
-            return jsonify({"error": f"unknown font '{preset}'"}), 400
-        job["style_id"] = preset
-        job.pop("style_b64", None)
-        save_job(job_id)
-        return jsonify({"ok": True, "handwriting_service": True})
-    elif preset:
-        style_b64 = _preset_b64(preset)
-        if not style_b64:
-            return jsonify({"error": f"unknown preset '{preset}'"}), 400
-        style_id = preset
-    elif file is not None:
-        style_b64 = base64.b64encode(file.read()).decode()
-        style_id = "custom"
-    else:
-        style_b64 = data.get("style_b64", "")
-        style_id = "custom"
-    if not style_b64:
-        return jsonify({"error": "no style provided"}), 400
-
-    job["style_b64"] = style_b64
-    job["style_id"] = style_id      # which handwriting the user chose (for admin)
+    style = request.form.get("style") or data.get("style") or ""
+    if not _font_id_from_style(style):
+        return jsonify({"error": f"unknown font '{style}'"}), 400
+    job["style_id"] = style
     save_job(job_id)
-    return jsonify({"ok": True, "handwriting_service": handwriting_enabled()})
+    return jsonify({"ok": True})
 
 
 def _rerender_job(job_id: str) -> None:

@@ -153,20 +153,16 @@ def test_render_text_png(filled, tmp_path):
 
 # ---- font_store + gating --------------------------------------------------
 
-def test_font_store_roundtrip_and_gating(tmp_path, monkeypatch):
+def test_font_store_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(font_store, "FONTS_DIR", tmp_path / "fonts")
     monkeypatch.setattr(font_store, "_INDEX", tmp_path / "fonts" / "index.json")
-    import handwriting.client as client
-    monkeypatch.setattr(client, "MODAL_URL", "")
 
     assert not font_store.has_fonts()
-    assert client.handwriting_enabled() is False
 
     fid = font_store.save_font("My Hand", b"not-a-real-otf-but-bytes")
     assert font_store.font_path(fid) is not None
     assert {"id": fid, "label": "My Hand"} in font_store.list_fonts()
     assert font_store.has_fonts()
-    assert client.handwriting_enabled() is True
 
     # Colliding names don't clobber.
     fid2 = font_store.save_font("My Hand", b"second")
