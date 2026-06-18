@@ -908,12 +908,14 @@ def list_fonts_route():
 
 @app.get("/api/fonts/<font_id>/sample.png")
 def font_sample(font_id: str):
-    """Render a short sample word in a built font (used by the onboarding page)."""
+    """Render a sample in a built font (used by the onboarding page). Pass
+    ?text=... to preview arbitrary text; defaults to a short word."""
     otf = font_store.font_path(font_id)
     if not otf:
         abort(404)
+    text = (request.args.get("text") or "Sample").strip()[:120] or "Sample"
     from handwriting.font_render import render_text_png
-    png = render_text_png("Sample", str(otf))
+    png = render_text_png(text, str(otf))
     if not png:
         abort(404)
     return send_file(io.BytesIO(png), mimetype="image/png")

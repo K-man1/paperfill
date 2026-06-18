@@ -63,12 +63,32 @@ a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
 
   <div class="step" id="result">
     <h2>✓ Your font is ready</h2>
-    <p>Pick <strong id="rlabel"></strong> from the handwriting styles next time you fill a worksheet.</p>
+    <p>Here's <strong id="rlabel"></strong>. Type anything below to see it in your handwriting.</p>
+    <form id="testform" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <input type="text" id="testtext" placeholder="Type something to test…" maxlength="120"
+             value="The quick brown fox." style="flex:1;min-width:200px;margin:0;" />
+      <button class="btn" id="testbtn" type="submit">Test it</button>
+    </form>
     <img id="sample" alt="handwriting sample" />
   </div>
 </div>
 
 <script>
+let builtFontId = null;
+
+function renderSample() {
+  if (!builtFontId) return;
+  const text = document.getElementById("testtext").value.trim() || "Sample";
+  document.getElementById("sample").src =
+    "/api/fonts/" + encodeURIComponent(builtFontId) + "/sample.png?text=" +
+    encodeURIComponent(text) + "&t=" + Date.now();
+}
+
+document.getElementById("testform").addEventListener("submit", (e) => {
+  e.preventDefault();
+  renderSample();
+});
+
 const form = document.getElementById("form");
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -86,10 +106,10 @@ form.addEventListener("submit", async (e) => {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "build failed");
     status.textContent = "";
+    builtFontId = data.font_id;
     document.getElementById("rlabel").textContent = data.label;
-    document.getElementById("sample").src =
-      "/api/fonts/" + encodeURIComponent(data.font_id) + "/sample.png?" + Date.now();
     document.getElementById("result").style.display = "block";
+    renderSample();
   } catch (ex) {
     status.textContent = "";
     err.textContent = "Couldn't build the font: " + ex.message +
