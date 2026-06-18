@@ -923,35 +923,41 @@ def font_sample(font_id: str):
 
 @app.get("/api/fonts/template")
 def download_template():
-    """Serve the printable blank handwriting template (Pro onboarding step 1)."""
+    """Serve the printable handwriting template (Pro onboarding step 1)."""
     if not session.get("role"):
         return redirect(url_for("login"))
     from handwriting import template as hw_template
-    pdf = hw_template.render_blank_pdf()
-    return send_file(io.BytesIO(pdf), mimetype="application/pdf",
-                     as_attachment=True, download_name="paperfill-handwriting-template.pdf")
+    return send_file(io.BytesIO(hw_template.template_pdf_bytes()),
+                     mimetype="application/pdf", as_attachment=True,
+                     download_name="paperfill-handwriting-template.pdf")
 
 
 @app.post("/api/fonts")
 def build_font_route():
-    """Build a handwriting font from a filled-template photo/scan and store it
-    (Pro onboarding step 2). Multipart: 'template' (image), 'name' (label).
-    Returns {font_id, label}. The font then appears in /api/fonts."""
+    """Build a handwriting font from a filled template and store it (Pro
+    onboarding step 2). Multipart: 'template' = a multi-page PDF scan, or one
+    file per page (in page order); 'name' = label. Returns {font_id, label}.
+    The font then appears in /api/fonts."""
     if not session.get("role"):
         return jsonify({"error": "not signed in"}), 403
-    file = request.files.get("template")
-    if file is None or not file.filename:
-        return jsonify({"error": "no template image uploaded"}), 400
+    files = [f for f in request.files.getlist("template") if f and f.filename]
+    if not files:
+        return jsonify({"error": "no template uploaded"}), 400
     name = (request.form.get("name") or "My handwriting").strip()[:40]
 
     import tempfile
     from handwriting.font_build import build_font
     with tempfile.TemporaryDirectory() as d:
-        img_path = os.path.join(d, "template")
-        file.save(img_path)
+        paths = []
+        for i, f in enumerate(files):
+            ext = ".pdf" if f.filename.lower().endswith(".pdf") else ".img"
+            p = os.path.join(d, f"page{i}{ext}")
+            f.save(p)
+            paths.append(p)
         otf_path = os.path.join(d, "font.otf")
         try:
-            build_font(img_path, otf_path, family=name or "Paperfill Hand")
+            src = paths[0] if len(paths) == 1 else paths
+            build_font(src, otf_path, family=name or "Paperfill Hand")
             otf_bytes = Path(otf_path).read_bytes()
         except Exception as e:
             return jsonify({"error": f"could not build font: {e}"}), 422

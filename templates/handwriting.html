@@ -38,23 +38,25 @@ a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
 
   <div class="step">
     <h2>1 · Print the template</h2>
-    <p>Download the template and print it on plain paper.</p>
+    <p>Download the template (2 pages) and print it on plain paper.</p>
     <a class="btn" href="/api/fonts/template">Download template (PDF)</a>
   </div>
 
   <div class="step">
     <h2>2 · Fill it in</h2>
-    <p>Write one character in each cell, sitting on the lines. Use a dark pen.
-       Then take a clear, flat photo or scan of the whole page —
-       <strong>keep all four corner squares in frame</strong>.</p>
+    <p>Trace over each faint letter with a dark pen, staying on the lines.
+       Then take a clear, flat photo or scan of <strong>both pages</strong> —
+       <strong>keep all four corner squares in frame on each page</strong>.</p>
   </div>
 
   <div class="step">
     <h2>3 · Build your font</h2>
-    <p>Upload your photo and give your handwriting a name.</p>
+    <p>Upload both pages and give your handwriting a name.</p>
     <form id="form">
       <input type="text" id="name" placeholder="Name your handwriting (e.g. My Print)" maxlength="40" />
-      <input type="file" id="file" accept="image/*" required />
+      <input type="file" id="file" accept="image/*,application/pdf" multiple required />
+      <p class="note" style="margin:0 0 12px">The template is 2 pages — upload a
+         single PDF scan of both, or both photos at once (page 1 then page 2).</p>
       <button class="btn accent" id="go" type="submit">Build my font</button>
       <span class="note" id="status"></span>
       <div class="err" id="err"></div>
@@ -92,14 +94,14 @@ document.getElementById("testform").addEventListener("submit", (e) => {
 const form = document.getElementById("form");
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const file = document.getElementById("file").files[0];
-  if (!file) return;
+  const files = document.getElementById("file").files;
+  if (!files.length) return;
   const go = document.getElementById("go"), status = document.getElementById("status"),
         err = document.getElementById("err");
   err.style.display = "none"; go.disabled = true;
   status.textContent = "Building your font… this takes a few seconds.";
   const fd = new FormData();
-  fd.append("template", file);
+  for (const f of files) fd.append("template", f);
   fd.append("name", document.getElementById("name").value || "My handwriting");
   try {
     const r = await fetch("/api/fonts", { method: "POST", body: fd });

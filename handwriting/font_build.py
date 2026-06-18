@@ -3,18 +3,17 @@ Build a real ``.otf`` from a photo / scan of a filled handwriting template.
 
 Pipeline (no FontForge, no GPU):
 
-  1. find the four concentric-square registration markers,
-  2. warp the page back to canonical pixel space (template.py) so it works on
-     phone photos, not just clean scans,
-  3. crop each glyph's cell (cells are mapped by the known template layout —
-     we never OCR the labels),
+  1. for each filled page, find the four concentric-square registration markers,
+  2. warp the page back to its canonical pixel space (template_geometry.json)
+     so it works on phone photos, not just clean scans,
+  3. crop each glyph's cell by the calibrated layout (we never OCR the labels),
   4. threshold to an ink mask that keeps dark ink but drops the light ruled
      guides, denoise while keeping the dots on i / j,
   5. trace each mask with potrace (`-b svg --flat`) and build a CFF glyph,
      applying potrace's group transform composed with our font-unit transform,
-  6. assemble an OTF with fontTools, synthesising space / period / comma.
+  6. assemble an OTF with fontTools, synthesising space.
 
-CLI:  python -m handwriting.font_build <template image> <out.otf>
+CLI:  python -m handwriting.font_build <filled.pdf | page1.jpg page2.jpg> <out.otf>
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools.svgLib.path import parse_path
 
-from . import template as T
+from . import template
 
 # Font design space.
 UPM = 1000
@@ -113,34 +112,44 @@ def _find_markers(gray: np.ndarray) -> list[tuple[float, float]] | None:
     return chosen
 
 
-def rectify(img: np.ndarray) -> np.ndarray:
-    """Warp a photo/scan to canonical template pixel space using the four
-    markers. Falls back to a plain resize if the markers can't be found
-    (works for an already-square scan)."""
+def rectify(img: np.ndarray, dst_markers, size) -> np.ndarray:
+    """Warp a photo/scan to a page's canonical pixel space using the four
+    markers. ``dst_markers`` are the page's canonical marker centres and
+    ``size`` is (width, height). Falls back to a plain resize if the markers
+    can't be found (works for an already-square scan)."""
+    w, h = size
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     markers = _find_markers(gray)
     if markers is None:
-        return cv2.resize(img, (T.CANON_W, T.CANON_H),
-                          interpolation=cv2.INTER_AREA)
+        return cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
     src = np.array(markers, dtype=np.float32)
-    dst = np.array(T.marker_centers(), dtype=np.float32)
+    dst = np.array(dst_markers, dtype=np.float32)
     H = cv2.getPerspectiveTransform(src, dst)
-    return cv2.warpPerspective(img, H, (T.CANON_W, T.CANON_H),
-                               flags=cv2.INTER_LINEAR,
+    return cv2.warpPerspective(img, H, (w, h), flags=cv2.INTER_LINEAR,
                                borderValue=(255, 255, 255))
 
 
 # ---- Ink extraction -------------------------------------------------------
 
 def _ink_mask(cell_gray: np.ndarray) -> np.ndarray:
-    """Binary ink mask (255 = ink) for one drawing cell. Drops the light ruled
-    guides, denoises, but keeps small marks like the dots on i / j."""
+    """Binary ink mask (255 = ink) for one drawing cell. Drops the printed
+    ruled guides (including dark ones), denoises, but keeps small marks like
+    the dots on i / j."""
+    h, w = cell_gray.shape
     _, mask = cv2.threshold(cell_gray, INK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     keep = np.zeros_like(mask)
     for lbl in range(1, n):
-        if stats[lbl, cv2.CC_STAT_AREA] >= MIN_COMPONENT_PX:
-            keep[labels == lbl] = 255
+        cw = stats[lbl, cv2.CC_STAT_WIDTH]
+        ch = stats[lbl, cv2.CC_STAT_HEIGHT]
+        area = stats[lbl, cv2.CC_STAT_AREA]
+        if area < MIN_COMPONENT_PX:
+            continue
+        # A thin component spanning most of the cell is a printed ruled/border
+        # line, not a pen stroke — drop it.
+        if (ch <= 3 and cw >= 0.6 * w) or (cw <= 3 and ch >= 0.6 * h):
+            continue
+        keep[labels == lbl] = 255
     return keep
 
 
@@ -186,7 +195,8 @@ def _glyph_name(ch: str) -> str:
     return UV2AGL.get(ord(ch)) or f"uni{ord(ch):04X}"
 
 
-def _build_charstring(mask: np.ndarray, ch: str, draw_h: int):
+def _build_charstring(mask: np.ndarray, ch: str, draw_h: int,
+                      descenders: set):
     """Trace a cell mask into a CFF charstring. Returns (charstring, advance)
     or None if the cell is empty."""
     ys, xs = np.where(mask > 0)
@@ -209,7 +219,7 @@ def _build_charstring(mask: np.ndarray, ch: str, draw_h: int):
 
     # Baseline = ink bottom, so the letter sits on the line. For descenders,
     # lift the baseline into the glyph so the tail dips below it.
-    if ch in T.DESCENDERS:
+    if ch in descenders:
         baseline_py = top + DESCENDER_BASELINE * glyph_h
     else:
         baseline_py = bottom
@@ -246,28 +256,60 @@ def _synth_charstring(ch: str):
     return None
 
 
-def build_font(image_path: str, out_path: str, variants: int = 1,
-               family: str = "Paperfill Hand") -> str:
-    """Build an OTF from a filled-template image. Returns ``out_path``."""
-    img = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("could not read image (unsupported or corrupt file)")
-    canon = rectify(img)
-    gray = cv2.cvtColor(canon, cv2.COLOR_BGR2GRAY)
+def _page_images(sources) -> list[np.ndarray]:
+    """Load the filled-template pages as BGR images, in page order. ``sources``
+    is a path or list of paths; a multi-page PDF expands to one image per page,
+    images are taken in the order given."""
+    if isinstance(sources, (str, os.PathLike)):
+        sources = [sources]
+    imgs: list[np.ndarray] = []
+    for s in sources:
+        s = str(s)
+        if s.lower().endswith(".pdf"):
+            import fitz
+            doc = fitz.open(s)
+            for page in doc:
+                pix = page.get_pixmap(dpi=200)
+                arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                    pix.height, pix.width, pix.n)
+                code = cv2.COLOR_RGB2BGR if pix.n == 3 else cv2.COLOR_RGBA2BGR
+                imgs.append(cv2.cvtColor(arr, code))
+            doc.close()
+        else:
+            im = cv2.imread(s, cv2.IMREAD_COLOR)
+            if im is None:
+                raise ValueError("could not read image (unsupported or corrupt file)")
+            imgs.append(im)
+    return imgs
 
-    # Collect the masks per glyph (keep the best-inked variant).
+
+def build_font(sources, out_path: str, family: str = "Paperfill Hand") -> str:
+    """Build an OTF from a filled template. ``sources`` is a photo/scan path, a
+    multi-page PDF path, or a list of page images (in template-page order).
+    Returns ``out_path``."""
+    imgs = _page_images(sources)
+    geo_pages = template.pages()
+    descenders = template.descenders()
+
+    # Read every cell across all supplied pages; keep the best-inked mask per
+    # glyph. Cells share one drawing height, so all glyphs scale consistently.
     draw_h = None
     best: dict[str, np.ndarray] = {}
     best_area: dict[str, int] = {}
-    for glyph, _variant, rect in T.cells(variants):
-        dx0, dy0, dx1, dy1 = (int(round(v)) for v in T.drawing_rect(rect))
-        draw_h = dy1 - dy0
-        cell = gray[dy0:dy1, dx0:dx1]
-        mask = _ink_mask(cell)
-        area = int((mask > 0).sum())
-        if area > best_area.get(glyph, 0):
-            best[glyph] = mask
-            best_area[glyph] = area
+    for gp, img in zip(geo_pages, imgs):
+        canon = rectify(img, gp["markers"], (gp["width"], gp["height"]))
+        gray = cv2.cvtColor(canon, cv2.COLOR_BGR2GRAY)
+        for cell in gp["cells"]:
+            dx0, dy0, dx1, dy1 = (int(round(v)) for v in cell["draw"])
+            draw_h = dy1 - dy0
+            mask = _ink_mask(gray[dy0:dy1, dx0:dx1])
+            area = int((mask > 0).sum())
+            glyph = cell["glyph"]
+            if area > best_area.get(glyph, 0):
+                best[glyph] = mask
+                best_area[glyph] = area
+    if draw_h is None:
+        raise ValueError("no template pages could be read")
 
     charstrings: dict[str, object] = {}
     advances: dict[str, int] = {}
@@ -277,11 +319,11 @@ def build_font(image_path: str, out_path: str, variants: int = 1,
     advances[".notdef"] = 600
 
     cmap: dict[int, str] = {}
-    for glyph in T.GLYPHS:
+    for glyph in template.glyphs():
         mask = best.get(glyph)
         result = None
         if mask is not None and best_area.get(glyph, 0) >= MIN_COMPONENT_PX:
-            result = _build_charstring(mask, glyph, draw_h)
+            result = _build_charstring(mask, glyph, draw_h, descenders)
         if result is None:
             result = _synth_charstring(glyph)   # period / comma fallback
         if result is None:
@@ -317,9 +359,9 @@ def build_font(image_path: str, out_path: str, variants: int = 1,
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("usage: python -m handwriting.font_build <template.png> <out.otf> "
-              "[variants]", file=sys.stderr)
+        print("usage: python -m handwriting.font_build <filled.pdf|img [img2 ...]>"
+              " <out.otf>", file=sys.stderr)
         sys.exit(2)
-    var = int(sys.argv[3]) if len(sys.argv) > 3 else 1
-    path = build_font(sys.argv[1], sys.argv[2], variants=var)
+    *srcs, out = sys.argv[1:]
+    path = build_font(srcs if len(srcs) > 1 else srcs[0], out)
     print(f"wrote {path}")
