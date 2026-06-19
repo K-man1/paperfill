@@ -18,12 +18,18 @@ import re
 import secrets
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import fitz
 from flask import (Flask, jsonify, request, send_file, render_template,
                    abort, redirect, url_for, session, g)
+import smtplib
+from email.message import EmailMessage
+
 from openai import OpenAI
+from authlib.integrations.flask_client import OAuth
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Load .env file if present (no external dependency)
 _env_path = Path(__file__).parent / ".env"
@@ -66,7 +72,93 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
+# Behind Caddy on Nest, TLS terminates at the proxy and gunicorn sees plain
+# HTTP on the internal port. Without this, url_for(_external=True) builds an
+# http://internal:8080 OAuth redirect_uri that won't match the https public one
+# registered at Google. ProxyFix trusts Caddy's X-Forwarded-Proto/Host (one
+# proxy hop) so Flask reconstructs the real https://<domain> URL.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+# Session cookie hardening. Secure (HTTPS-only) is opt-in via env so local
+# plain-HTTP dev still works; set COOKIE_SECURE=1 in the production .env.
+# HttpOnly keeps JS from reading the cookie; SameSite=Lax still allows the
+# top-level GET redirect back from Google to carry the session.
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# Email/password auth is off by default so production launches Google-only.
+# Flip EMAIL_AUTH=1 in the env (once SMTP is configured) to expose it.
+EMAIL_AUTH_ENABLED = os.environ.get("EMAIL_AUTH", "0") == "1"
+
+
+@app.context_processor
+def _inject_auth_flags():
+    """Make the email-auth flag available to every template (login.html uses
+    it to show/hide the email + password forms)."""
+    return {"email_auth": EMAIL_AUTH_ENABLED}
+
 PASSWORD_ADMIN = os.environ.get("ADMIN_PASSWORD", "alien")
+
+# Accounts whose email is in this allowlist get the "admin" role at login.
+# Everyone else is a normal user (or pro, per their is_pro column). Read from
+# env as a comma-separated list so it's configurable without a code change;
+# defaults to the owner's address. Emails are lowercased so the check is
+# case-insensitive and stored in a set (see _role_for below).
+ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get("ADMIN_EMAILS", "karman.chhatwal@gmail.com").split(",")
+    if e.strip()
+}
+
+
+def _role_for(email: str) -> str:
+    """Map an email to its access role. Only allowlisted emails are admin."""
+    return "admin" if (email or "").strip().lower() in ADMIN_EMAILS else "user"
+
+oauth = OAuth(app)
+oauth.register(
+    name="google",
+    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+    client_kwargs={"scope": "openid email profile"},
+)
+
+# A verification link is only good for this long. Short enough to limit the
+# damage if an email is forwarded or leaks; long enough that a user who opens
+# it the next morning still gets in.
+VERIFY_TOKEN_TTL = timedelta(hours=24)
+
+
+def send_verification_email(to_email: str, verify_url: str) -> None:
+    """Email a verification link. If SMTP isn't configured (local dev), fall
+    back to printing the link to the server log so the flow is still testable."""
+    host = os.environ.get("SMTP_HOST")
+    if not host:
+        print(f"[auth] SMTP not configured. Verify link for {to_email}:\n  {verify_url}")
+        return
+    msg = EmailMessage()
+    msg["Subject"] = "Verify your Paperfill account"
+    msg["From"] = os.environ.get("SMTP_FROM", "no-reply@paperfill.app")
+    msg["To"] = to_email
+    msg.set_content(
+        "Welcome to Paperfill!\n\n"
+        f"Confirm your email to activate your account:\n{verify_url}\n\n"
+        "This link expires in 24 hours. If you didn't sign up, ignore this email."
+    )
+    try:
+        port = int(os.environ.get("SMTP_PORT", "587"))
+        with smtplib.SMTP(host, port, timeout=10) as s:
+            s.starttls()
+            user = os.environ.get("SMTP_USER")
+            pw = os.environ.get("SMTP_PASS")
+            if user and pw:
+                s.login(user, pw)
+            s.send_message(msg)
+    except (smtplib.SMTPException, OSError) as e:
+        # Never let a mail hiccup 500 the signup; the user can re-request later.
+        print(f"[auth] send_verification_email failed for {to_email}: {e}")
 
 # How much of the stored answer-key / reference text to feed the vision model
 # when answering a hand-snipped question (see /api/snip).
@@ -554,28 +646,134 @@ def call_openai_to_refine(text: str, mode: str, instruction: str = "",
 
 # ---- Routes --------------------------------------------------------------
 
+def _start_user_session(user: dict) -> None:
+    """Populate the session for a signed-in user. One place so Google and
+    email/password logins can't drift apart on what they store."""
+    email = user.get("email", "")
+    session["role"] = _role_for(email)        # "admin" for the allowlist, else "user"
+    session["is_pro"] = bool(user.get("is_pro"))  # the pro tier, independent of admin
+    session["user_sub"] = user.get("google_sub") or f"email:{email}"
+    session["user_email"] = email
+    session["user_name"] = user.get("name", "")
+    session["user_picture"] = user.get("picture", "")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        pw = request.form.get("password", "")
-        if pw == PASSWORD_ADMIN:
-            _record_signin("admin")
-            session["role"] = "admin"
-            return redirect(url_for("admin"))
-        elif pw == get_user_password():
-            _record_signin("user")
-            session["role"] = "user"
-            return redirect(url_for("index"))
-        else:
+        if not EMAIL_AUTH_ENABLED:
+            abort(404)
+        email = (request.form.get("email") or "").strip().lower()
+        password = request.form.get("password") or ""
+        user = db.get_user_by_email(email)
+        # Same generic message whether the email is unknown or the password is
+        # wrong: telling an attacker "that email exists" leaks who has accounts.
+        if not user or not user.get("password_hash") or \
+                not check_password_hash(user["password_hash"], password):
             _record_signin("failed")
-            return render_template("login.html", error="Incorrect access code. Please try again.")
+            return render_template("login.html",
+                                   error="Incorrect email or password.")
+        if not user.get("email_verified"):
+            return render_template(
+                "login.html",
+                error="Please verify your email first. Check your inbox for the link.")
+        _record_signin("user")
+        _start_user_session(user)
+        return redirect(url_for("index"))
     return render_template("login.html", error=None)
+
+
+@app.post("/signup")
+def signup():
+    email = (request.form.get("email") or "").strip().lower()
+    password = request.form.get("password") or ""
+    name = (request.form.get("name") or "").strip()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        return render_template("login.html", error="Enter a valid email address.", mode="signup")
+    if len(password) < 8:
+        return render_template("login.html",
+                               error="Password must be at least 8 characters.", mode="signup")
+    if db.get_user_by_email(email):
+        return render_template("login.html",
+                               error="An account with that email already exists.", mode="signup")
+
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.now(timezone.utc) + VERIFY_TOKEN_TTL).isoformat()
+    user = db.create_email_user(
+        email=email,
+        password_hash=generate_password_hash(password),
+        name=name,
+        token=token,
+        token_expires=expires,
+    )
+    if user is None:
+        return render_template("login.html",
+                               error="Could not create account. Please try again.", mode="signup")
+    verify_url = url_for("verify_email", token=token, _external=True)
+    send_verification_email(email, verify_url)
+    return render_template("login.html", notice=(
+        "Account created. Check your email for a verification link to finish "
+        "setting up your account."))
+
+
+@app.route("/verify/<token>")
+def verify_email(token):
+    user = db.get_user_by_token(token)
+    if user is None:
+        return render_template("login.html",
+                               error="That verification link is invalid or has already been used.")
+    # Check expiry while the token (and its expiry) still exist on the row.
+    expires = user.get("token_expires")
+    if expires:
+        try:
+            if datetime.fromisoformat(expires.replace("Z", "+00:00")) < datetime.now(timezone.utc):
+                return render_template("login.html",
+                                       error="That verification link has expired. Please sign up again.")
+        except (ValueError, TypeError):
+            pass
+    updated = db.mark_email_verified(token)
+    _record_signin("user")
+    _start_user_session(updated or user)
+    return redirect(url_for("index"))
 
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/auth/google")
+def auth_google():
+    redirect_uri = url_for("auth_google_callback", _external=True)
+    return oauth.google.authorize_redirect(redirect_uri)
+
+
+@app.route("/auth/google/callback")
+def auth_google_callback():
+    try:
+        token = oauth.google.authorize_access_token()
+    except Exception as e:
+        print(f"[auth] Google OAuth error: {e}")
+        return render_template("login.html", error="Google sign-in failed. Please try again.")
+    userinfo = token.get("userinfo") or oauth.google.userinfo()
+    google_sub = userinfo["sub"]
+    user = db.get_or_create_user(
+        google_sub=google_sub,
+        email=userinfo.get("email", ""),
+        name=userinfo.get("name", ""),
+        picture=userinfo.get("picture", ""),
+    )
+    if user is None:
+        return render_template("login.html", error="Could not create account. Please try again.")
+    # Make sure the session carries fresh profile fields even when the DB is
+    # off (the fallback row lacks name/picture); merge in what Google gave us.
+    user = {**user, "email": userinfo.get("email", ""),
+            "name": userinfo.get("name", ""),
+            "picture": userinfo.get("picture", "")}
+    _record_signin("user")
+    _start_user_session(user)
+    return redirect(url_for("index"))
 
 
 def _fmt_ts(iso: str | None) -> str:

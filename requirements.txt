@@ -1,4 +1,5 @@
 flask>=3.0
+authlib>=1.3
 openai>=1.50
 pymupdf>=1.24
 gunicorn>=21.2

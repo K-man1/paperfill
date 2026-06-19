@@ -186,3 +186,110 @@ def fetch_assignments() -> list[dict]:
 
 def device_count() -> int:
     return len(_get("devices?select=device_id"))
+
+
+# ---- User accounts -------------------------------------------------------
+
+def get_or_create_user(google_sub: str, email: str, name: str, picture: str) -> dict | None:
+    """Look up a user by their Google subject ID; create if missing.
+    Returns the user row dict, or None on error."""
+    if not enabled():
+        return {"google_sub": google_sub, "email": email, "name": name, "picture": picture, "is_pro": False}
+    try:
+        # Try to find existing user
+        r = requests.get(
+            _rest(f"users?google_sub=eq.{requests.utils.quote(google_sub, safe='')}"),
+            headers=_headers(),
+            timeout=_TIMEOUT,
+        )
+        if r.status_code < 400:
+            rows = r.json()
+            if rows:
+                return rows[0]
+        # Create new user. Google already verified the email it hands us, so
+        # these accounts are email_verified from birth (no need to re-check).
+        r = requests.post(
+            _rest("users"),
+            headers=_headers({"Prefer": "return=representation"}),
+            json={"google_sub": google_sub, "email": email, "name": name,
+                  "picture": picture, "email_verified": True},
+            timeout=_TIMEOUT,
+        )
+        if r.status_code < 400:
+            rows = r.json()
+            return rows[0] if rows else None
+    except (requests.RequestException, ValueError) as e:
+        print(f"[db] get_or_create_user failed: {e}")
+    return None
+
+
+def get_user_by_email(email: str) -> dict | None:
+    """Fetch a single user row by email (case-insensitive), or None."""
+    if not enabled():
+        return None
+    # PostgREST `ilike` gives a case-insensitive exact match here (no wildcards).
+    rows = _get(f"users?email=ilike.{requests.utils.quote(email, safe='')}")
+    return rows[0] if rows else None
+
+
+def create_email_user(email: str, password_hash: str, name: str,
+                      token: str, token_expires: str) -> dict | None:
+    """Create an email/password account, unverified, carrying a verification
+    token and its expiry. Returns the new row, or None on error (including the
+    unique-email collision Postgres raises if the address is already taken)."""
+    if not enabled():
+        return None
+    try:
+        r = requests.post(
+            _rest("users"),
+            headers=_headers({"Prefer": "return=representation"}),
+            json={"email": email, "password_hash": password_hash, "name": name,
+                  "email_verified": False, "verification_token": token,
+                  "token_expires": token_expires},
+            timeout=_TIMEOUT,
+        )
+        if r.status_code < 400:
+            rows = r.json()
+            return rows[0] if rows else None
+        print(f"[db] create_email_user HTTP {r.status_code}: {r.text[:200]}")
+    except (requests.RequestException, ValueError) as e:
+        print(f"[db] create_email_user failed: {e}")
+    return None
+
+
+def get_user_by_token(token: str) -> dict | None:
+    """Fetch the account holding this verification token (with its expiry so
+    the caller can decide if it's still valid), or None if unknown."""
+    if not enabled():
+        return None
+    rows = _get(f"users?verification_token=eq.{requests.utils.quote(token, safe='')}")
+    return rows[0] if rows else None
+
+
+def mark_email_verified(token: str) -> dict | None:
+    """Flip the token's account to verified and clear the token so the link
+    can't be replayed. Returns the updated row, or None on error."""
+    if not enabled():
+        return None
+    try:
+        r = requests.patch(
+            _rest(f"users?verification_token=eq.{requests.utils.quote(token, safe='')}"),
+            headers=_headers({"Prefer": "return=representation"}),
+            json={"email_verified": True, "verification_token": None,
+                  "token_expires": None},
+            timeout=_TIMEOUT,
+        )
+        if r.status_code < 400:
+            updated = r.json()
+            return updated[0] if updated else None
+    except (requests.RequestException, ValueError) as e:
+        print(f"[db] mark_email_verified failed: {e}")
+    return None
+
+
+def get_user(google_sub: str) -> dict | None:
+    """Fetch a single user row by google_sub."""
+    if not enabled():
+        return None
+    rows = _get(f"users?google_sub=eq.{requests.utils.quote(google_sub, safe='')}")
+    return rows[0] if rows else None

@@ -57,6 +57,44 @@ body {
   color: var(--ink-soft);
   margin-bottom: 36px;
 }
+.google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 20px;
+  background: #fff;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 0.95rem;
+  font-weight: 500;
+  border: 1.5px solid var(--rule);
+  border-radius: 8px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.google-btn:hover {
+  border-color: var(--ink-soft);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.google-btn svg { flex-shrink: 0; }
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 28px 0 24px;
+  color: var(--rule);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+.divider::before, .divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule-soft);
+}
 label {
   display: block;
   text-align: left;
@@ -67,22 +105,34 @@ label {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-input[type="password"] {
+input[type="email"],
+input[type="password"],
+input[type="text"] {
   width: 100%;
   padding: 12px 16px;
-  font-family: var(--mono);
-  font-size: 1rem;
+  font-family: var(--sans);
+  font-size: 0.95rem;
   border: 1.5px solid var(--rule);
   border-radius: 8px;
   background: var(--paper);
   color: var(--ink);
   outline: none;
   transition: border-color 0.15s;
-  letter-spacing: 0.1em;
+  margin-bottom: 14px;
 }
-input[type="password"]:focus { border-color: var(--accent); }
+input:focus { border-color: var(--accent); }
+.field-label {
+  display: block;
+  text-align: left;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 .error {
-  margin-top: 12px;
+  margin: 0 0 16px;
   padding: 10px 14px;
   background: #fff0eb;
   border: 1px solid #ffcbb8;
@@ -91,8 +141,18 @@ input[type="password"]:focus { border-color: var(--accent); }
   font-size: 0.85rem;
   text-align: left;
 }
-button {
-  margin-top: 20px;
+.notice {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  background: #eefaf0;
+  border: 1px solid #b8e6c4;
+  border-radius: 8px;
+  color: #1f7a3d;
+  font-size: 0.85rem;
+  text-align: left;
+}
+button[type="submit"] {
+  margin-top: 6px;
   width: 100%;
   padding: 13px;
   background: var(--accent);
@@ -105,21 +165,96 @@ button {
   cursor: pointer;
   transition: background 0.15s;
 }
-button:hover { background: var(--accent-deep); }
+button[type="submit"]:hover { background: var(--accent-deep); }
+.toggle {
+  margin-top: 22px;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.toggle a {
+  color: var(--accent-deep);
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+}
+.toggle a:hover { text-decoration: underline; }
+.hidden { display: none; }
 </style>
 </head>
 <body>
 <div class="card">
   <div class="logo">Paper<span>fill</span></div>
-  <div class="subtitle">Enter your access code to continue</div>
-  <form method="post" action="/login">
-    <label for="password">Access Code</label>
-    <input type="password" id="password" name="password" autofocus autocomplete="current-password" placeholder="••••••" />
-    {% if error %}
-    <div class="error">{{ error }}</div>
-    {% endif %}
+  <div class="subtitle" id="subtitle">Sign in to continue</div>
+
+  <a href="/auth/google" class="google-btn">
+    <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+      <g fill="none" fill-rule="evenodd">
+        <path d="M17.64 9.205c0-.639-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
+        <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/>
+        <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
+        <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+      </g>
+    </svg>
+    Continue with Google
+  </a>
+
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
+
+  {% if email_auth %}
+  <div class="divider">or</div>
+
+  {# `mode` decides which form is shown first; defaults to sign-in. #}
+  {% set start_signup = (mode == "signup") %}
+
+  <form method="post" action="/login" id="signin-form" class="{{ 'hidden' if start_signup else '' }}">
+    <label class="field-label" for="si-email">Email</label>
+    <input type="email" id="si-email" name="email" autocomplete="email" required placeholder="you@example.com" />
+    <label class="field-label" for="si-password">Password</label>
+    <input type="password" id="si-password" name="password" autocomplete="current-password" required placeholder="••••••••" />
     <button type="submit">Sign In</button>
   </form>
+
+  <form method="post" action="/signup" id="signup-form" class="{{ '' if start_signup else 'hidden' }}">
+    <label class="field-label" for="su-name">Name</label>
+    <input type="text" id="su-name" name="name" autocomplete="name" placeholder="Your name" />
+    <label class="field-label" for="su-email">Email</label>
+    <input type="email" id="su-email" name="email" autocomplete="email" required placeholder="you@example.com" />
+    <label class="field-label" for="su-password">Password</label>
+    <input type="password" id="su-password" name="password" autocomplete="new-password" required minlength="8" placeholder="At least 8 characters" />
+    <button type="submit">Create Account</button>
+  </form>
+
+  <div class="toggle">
+    <span id="toggle-to-signup" class="{{ 'hidden' if start_signup else '' }}">
+      New here? <a onclick="showSignup()">Create an account</a>
+    </span>
+    <span id="toggle-to-signin" class="{{ '' if start_signup else 'hidden' }}">
+      Already have an account? <a onclick="showSignin()">Sign in</a>
+    </span>
+  </div>
+  {% endif %}
 </div>
+
+{% if email_auth %}
+<script>
+  var subtitle = document.getElementById("subtitle");
+  function showSignup() {
+    document.getElementById("signin-form").classList.add("hidden");
+    document.getElementById("signup-form").classList.remove("hidden");
+    document.getElementById("toggle-to-signup").classList.add("hidden");
+    document.getElementById("toggle-to-signin").classList.remove("hidden");
+    subtitle.textContent = "Create your account";
+  }
+  function showSignin() {
+    document.getElementById("signup-form").classList.add("hidden");
+    document.getElementById("signin-form").classList.remove("hidden");
+    document.getElementById("toggle-to-signin").classList.add("hidden");
+    document.getElementById("toggle-to-signup").classList.remove("hidden");
+    subtitle.textContent = "Sign in to continue";
+  }
+  {% if start_signup %}subtitle.textContent = "Create your account";{% endif %}
+</script>
+{% endif %}
 </body>
 </html>
