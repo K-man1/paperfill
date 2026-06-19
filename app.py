@@ -746,6 +746,13 @@ def logout():
 @app.route("/auth/google")
 def auth_google():
     redirect_uri = url_for("auth_google_callback", _external=True)
+    # Behind the Nest gateway the inbound scheme can arrive as http (chained
+    # X-Forwarded-Proto that ProxyFix can't reliably collapse), so the callback
+    # would be built as http:// and fail Google's exact-match against the https
+    # URI we registered. Force https in production; local dev runs in debug over
+    # plain http, so leave it alone there.
+    if not app.debug and redirect_uri.startswith("http://"):
+        redirect_uri = "https://" + redirect_uri[len("http://"):]
     return oauth.google.authorize_redirect(redirect_uri)
 
 
