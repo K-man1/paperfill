@@ -63,12 +63,15 @@ def _extract_image(data: bytes, mime: str) -> str:
     """OCR / describe an image with the vision model (reuses the proxy client)."""
     from openai import OpenAI
 
-    api_key = os.environ.get("HCAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    api_key = (os.environ.get("AI_API_KEY")
+               or os.environ.get("HCAI_API_KEY")
+               or os.environ.get("OPENAI_API_KEY"))
     if not api_key:
         return "[image attached, but no API key configured to read it]"
     client = OpenAI(
         api_key=api_key,
-        base_url=os.environ.get("OPENAI_BASE_URL", "https://ai.hackclub.com/proxy/v1"),
+        base_url=(os.environ.get("AI_BASE_URL")
+                  or os.environ.get("OPENAI_BASE_URL", "https://ai.hackclub.com/proxy/v1")),
     )
     data_uri = f"data:{mime};base64," + base64.b64encode(data).decode()
     resp = client.chat.completions.create(

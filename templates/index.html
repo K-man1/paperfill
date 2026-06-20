@@ -225,7 +225,7 @@ header.masthead {
 /* ---- Answer-format picker (multi-select) ---- */
 .fmt-block { margin-bottom: 16px; }
 .fmt-block > .fmt-formats-label {
-  display: block; font-family: var(--mono); font-size: 12px;
+  display: block; font-family: var(--mono); font-size: 15px;
   color: var(--ink); margin-bottom: 8px;
 }
 .fmt-cards { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -1013,10 +1013,8 @@ button {
 <main>
   <header class="masthead">
     <div class="top-rule">
-      <span>EST. 2026 · NJ</span>
-      <span id="status-line">Ready</span>
     </div>
-    <h1 class="brand">Paper<em>fill</em>.</h1>
+    <h1 class="brand">Paper<em>fill</em></h1>
     <div class="subtitle">AI worksheet filler</div>
   </header>
 
@@ -1028,20 +1026,26 @@ button {
 
   <!-- ===== STAGE 1: Upload ===== -->
   <section class="stage active" id="stage-upload">
-    <p class="tagline">
-      Drop in any <strong>fill-in-the-blank worksheet</strong> as a PDF.
-      We find every blank, every question, every box — then fill them
-      with answers that fit, without ever overlapping your original text.
-    </p>
 
     <div class="instructions-box">
-      <label class="instructions-label" for="instructions">
-        Instructions <span>— optional</span>
-      </label>
-      <textarea id="instructions" placeholder="Paste an answer key or tell the AI how to fill the sheet. e.g. 'Cult of personality: Dictators promote an idealized, heroic image of themselves…' — the AI will match your answers to the right blanks."></textarea>
+      <div class="fmt-block" id="detector-block">
+        <span class="fmt-formats-label"><b>Detection Method</b></span>
+        <div class="fmt-cards" id="detector-cards">
+          <label class="fmt-card selected">
+            <input type="radio" name="detector" value="deterministic" checked>
+            <span class="fmt-card-name">Standard</span>
+            <span class="fmt-card-sub">faster and better for simple PDFs</span>
+          </label>
+          <label class="fmt-card">
+            <input type="radio" name="detector" value="multimodal">
+            <span class="fmt-card-name">AI Vision</span>
+            <span class="fmt-card-sub">slower but better for complex PDF structures</span>
+          </label>
+        </div>
+      </div>
 
       <div class="fmt-block" id="fmt-block">
-        <span class="fmt-formats-label">Answer format <span class="hw-hint">— tell us what this sheet uses (pick any that apply)</span></span>
+        <span class="fmt-formats-label"><b>Answer format </b><span class="hw-hint">- tell us what type of blanks to fill in</span></span>
         <div class="fmt-cards" id="fmt-cards">
           <label class="fmt-card selected">
             <input type="checkbox" value="inline_blanks" checked>
@@ -1056,7 +1060,7 @@ button {
           <label class="fmt-card selected">
             <input type="checkbox" value="bullet_answer" checked>
             <span class="fmt-card-name">Bullet list</span>
-            <span class="fmt-card-sub">empty • bullet under a question</span>
+            <span class="fmt-card-sub">empty bullets to fill in</span>
           </label>
           <label class="fmt-card selected">
             <input type="checkbox" value="table" checked>
@@ -1066,21 +1070,10 @@ button {
         </div>
       </div>
 
-      <div class="fmt-block" id="detector-block">
-        <span class="fmt-formats-label">Detection method <span class="hw-hint">— how we find the blanks</span></span>
-        <div class="fmt-cards" id="detector-cards">
-          <label class="fmt-card selected">
-            <input type="radio" name="detector" value="deterministic" checked>
-            <span class="fmt-card-name">Standard</span>
-            <span class="fmt-card-sub">fast, rule-based</span>
-          </label>
-          <label class="fmt-card">
-            <input type="radio" name="detector" value="multimodal">
-            <span class="fmt-card-name">Smart — AI vision</span>
-            <span class="fmt-card-sub">reads the page like a human (beta)</span>
-          </label>
-        </div>
-      </div>
+      <label class="fmt-formats-label">
+        <b>Instructions </b><span><i>— optional</i></span>
+      </label>
+      <textarea id="instructions" placeholder="Give any additional instructions on how to fill the PDF. Ex: 'Use bullet points.'"></textarea>
 
       <div class="attach-row">
         <label class="attach-btn">
@@ -1105,24 +1098,6 @@ button {
 
     <div class="fill-row" id="fill-row" style="display:none; text-align:center; margin-top:16px;">
       <button class="btn-primary" id="fill-btn" style="min-width:220px">Fill worksheet →</button>
-    </div>
-
-    <div class="steps">
-      <div class="step">
-        <div class="num">i.</div>
-        <h3>Parse the structure</h3>
-        <p>We map every underscore run, every question, every table cell to a precise bounding box.</p>
-      </div>
-      <div class="step">
-        <div class="num">ii.</div>
-        <h3>Ask the AI to fill it</h3>
-        <p>The AI only sees the question — never the coordinates. So nothing lands in the wrong place.</p>
-      </div>
-      <div class="step">
-        <div class="num">iii.</div>
-        <h3>Render the result</h3>
-        <p>Answers drop into their detected slots with auto-fit font sizing. Download the filled PDF.</p>
-      </div>
     </div>
   </section>
 
@@ -1266,7 +1241,7 @@ function clearError() {
   $("error-banner").classList.remove("visible");
   $("error-detail").textContent = "";
 }
-function setStatus(msg) { $("status-line").textContent = msg; }
+function setStatus(msg) { const el = $("status-line"); if (el) el.textContent = msg; }
 
 let currentJob = null;
 

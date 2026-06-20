@@ -1,7 +1,8 @@
 """
 OpenAI-compatible client with provider fallback.
 
-Primary is the Hack Club AI proxy (HCAI_API_KEY / OPENAI_BASE_URL). If a call
+Primary is whatever provider AI_API_KEY / AI_BASE_URL point at (the Hack Club
+AI proxy by default). If a call
 to the primary raises (auth failure, outage, unsupported model, …) it is
 retried once against a fallback provider — OpenRouter by default
 (OPENROUTER_API_KEY / OPENROUTER_BASE_URL). The fallback uses its own model id
@@ -73,14 +74,17 @@ class FallbackClient:
 def build_client() -> FallbackClient:
     """Build the primary (Hack Club) client plus an optional OpenRouter
     fallback. Raises if no primary key is configured."""
-    primary_key = os.environ.get("HCAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    primary_key = (os.environ.get("AI_API_KEY")
+                   or os.environ.get("HCAI_API_KEY")
+                   or os.environ.get("OPENAI_API_KEY"))
     if not primary_key:
         raise RuntimeError(
-            "No API key found. Set HCAI_API_KEY in .env or environment."
+            "No API key found. Set AI_API_KEY in .env or environment."
         )
     primary = _make(
         primary_key,
-        os.environ.get("OPENAI_BASE_URL", "https://ai.hackclub.com/proxy/v1"),
+        (os.environ.get("AI_BASE_URL")
+         or os.environ.get("OPENAI_BASE_URL", "https://ai.hackclub.com/proxy/v1")),
     )
 
     fb_key = os.environ.get("OPENROUTER_API_KEY")

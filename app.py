@@ -288,7 +288,7 @@ def _set_device_cookie(resp):
 
 # OpenAI-compatible client. Uses the Hack Club AI proxy by default
 # (free, no credit card), with an OpenRouter fallback on any failure. Reads
-# HCAI_API_KEY / OPENROUTER_API_KEY from environment / .env.
+# AI_API_KEY / OPENROUTER_API_KEY from environment / .env.
 _openai_client = None
 def get_openai_client():
     global _openai_client
@@ -490,7 +490,7 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict
         user = structure_json
 
     response = get_openai_client().chat.completions.create(
-        model=os.environ.get("OPENAI_MODEL", "openai/gpt-5.5"),
+        model=os.environ.get("AI_MODEL", "openai/gpt-5.5"),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -630,7 +630,7 @@ def call_openai_to_refine(text: str, mode: str, instruction: str = "",
     user = "\n\n".join(parts)
 
     response = get_openai_client().chat.completions.create(
-        model=os.environ.get("OPENAI_MODEL", "openai/gpt-5.5"),
+        model=os.environ.get("AI_MODEL", "openai/gpt-5.5"),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
