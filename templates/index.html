@@ -683,7 +683,7 @@ button {
   outline: none;
   border-color: var(--accent, #ff5a1f);
 }
-.feedback-row #feedback-send { white-space: nowrap; }
+.feedback-row #feedback-send { white-space: nowrap; width: auto; flex: 0 0 auto; }
 .feedback-thanks {
   display: none;
   font-family: var(--mono);
@@ -1139,12 +1139,6 @@ button {
       <button class="btn-primary" id="download-btn" style="min-width:180px">↓ Download PDF</button>
       <button class="btn-ghost" id="restart-btn">Start over</button>
       {% if donate_url %}<a class="btn-ghost donate-btn" href="{{ donate_url }}" target="_blank" rel="noopener">♥ Donate</a>{% endif %}
-    </div>
-    <div class="editor-help">
-      Click any text to edit. Drag the black handle to move a box, the red × to delete.
-      Click <b>+ Add box</b>, then drag on the page to draw a new field.
-      Missed answer? Click <b>✦ Ask AI for a question</b>, then drag a box around it — the AI reads it and drops in the answer.
-      Select any box and use the floating bar to <b>Shorten</b>, <b>Lengthen</b>, or tell the AI exactly how to rewrite it.
     </div>
     <div class="rate-bar" id="rate-bar">
       <span class="rate-prompt">How did the AI do?</span>
