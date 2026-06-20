@@ -70,7 +70,43 @@ JOB_RETENTION_DAYS = 7
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+
+
+def _resolve_secret_key() -> str:
+    """Flask session signing key. Prefer SECRET_KEY from the env. If it's
+    unset, fall back to a key persisted on disk and SHARED across every
+    gunicorn worker — a fresh per-process secrets.token_hex() would give each
+    of the workers a *different* key, so a cookie signed by one worker fails
+    HMAC validation on the next and users get randomly logged out. Persisting
+    one key keeps sessions stable across workers and restarts. We still warn
+    loudly because SECRET_KEY belongs in the production .env."""
+    env_key = os.environ.get("SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+    key_path = BASE_DIR / "secret_key.txt"
+    try:
+        existing = key_path.read_text().strip()
+        if existing:
+            print("[auth] WARNING: SECRET_KEY not set; using the generated key "
+                  f"in {key_path.name}. Set SECRET_KEY in .env for production.")
+            return existing
+    except OSError:
+        pass
+    generated = secrets.token_hex(32)
+    try:
+        key_path.write_text(generated)
+        os.chmod(key_path, 0o600)
+    except OSError as e:
+        # Can't persist (read-only FS): every worker will diverge. Warn hard.
+        print(f"[auth] WARNING: SECRET_KEY unset and could not persist a shared "
+              f"key ({e}); sessions may break across workers. Set SECRET_KEY in .env.")
+    else:
+        print("[auth] WARNING: SECRET_KEY not set; generated one and saved it to "
+              f"{key_path.name}. Set SECRET_KEY in .env for production.")
+    return generated
+
+
+app.secret_key = _resolve_secret_key()
 
 # Behind Caddy on Nest, TLS terminates at the proxy and gunicorn sees plain
 # HTTP on the internal port. Without this, url_for(_external=True) builds an
@@ -267,6 +303,27 @@ def _style_label(style_id: str | None) -> str:
 # the cookie is counted as a brand-new device, inserted into the shared
 # `devices` table so the count is consistent across workers and restarts.
 DEVICE_COOKIE = "pf_device"
+
+# The whole product runs behind a sign-in. The page routes redirect to /login
+# on their own, but every /api/* endpoint must be gated too — otherwise the
+# login screen is cosmetic and anyone can drive the JSON API (and burn LLM
+# credits) without an account. One guard covers them all so a newly-added route
+# can't forget the check. Returns JSON 403 (not an HTML redirect) so API clients
+# get a clean, parseable error.
+_PUBLIC_API_PATHS = frozenset({"/api/fonts/template"})  # already gates itself
+
+
+@app.before_request
+def _require_login_for_api():
+    path = request.path
+    if not path.startswith("/api/"):
+        return None
+    if path in _PUBLIC_API_PATHS:
+        return None
+    if not session.get("role"):
+        return jsonify({"error": "authentication required"}), 403
+    return None
+
 
 @app.before_request
 def _track_device():

@@ -1,5 +1,6 @@
 # Secrets — never commit; recreate directly on the server
 .env
+secret_key.txt
 
 # Generated at runtime — regenerated on the server, don't ship
 uploads/
