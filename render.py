@@ -8,7 +8,7 @@ import os
 
 import fitz
 
-from handwriting.font_render import LINE_BAND_PX
+from handwriting.font_render import LINE_BAND_PX, RENDER_PX, BASELINE_FRAC
 
 
 # Tunables
@@ -21,25 +21,34 @@ WATERMARK_WIDTH = 110   # px wide on the page (aspect ratio preserved)
 WATERMARK_MARGIN = 18   # px from the left and bottom edges
 
 # Handwriting is rendered by the font pipeline as fixed-height line bands
-# (LINE_BAND_PX tall each). The stamper scales every band to HW_LINE_PDF on the
-# page, so every answer comes out at the same line height regardless of length —
-# short answers no longer balloon and long ones no longer shrink to a scratch.
-HW_LINE_PDF = 15        # px tall each handwriting line band becomes on the page
-HW_DESCENDER_DROP = 3   # px the image bottom sits below the underscore line
+# (LINE_BAND_PX tall) whose glyphs are drawn at RENDER_PX em. We scale every
+# band so the *em* lands at a target px on the page — sizing by the actual
+# writing height, not the band's ascent/descent whitespace, so short answers
+# read at a comfortable size. Inline blanks (a matching letter, a verb form)
+# are written large to match the printed text and sit *on* the underscore;
+# open-response answers are smaller so a multi-line answer fits its region
+# without crowding the next question.
+HW_EM_INLINE = 16       # px em for single-line inline-blank answers
+HW_EM_REGION = 12       # px em for wrapped open-response answers
 HW_THIN_H = 24          # bbox heights below this are single-line slots (inline blanks)
+
+_HW_SCALE_INLINE = HW_EM_INLINE / RENDER_PX
+_HW_SCALE_REGION = HW_EM_REGION / RENDER_PX
+_HW_BASELINE_OFF = BASELINE_FRAC * LINE_BAND_PX  # baseline depth within a band (render px)
 
 
 def hw_wrap_width(bbox) -> float | None:
     """Render-space pixel width to wrap a handwriting answer to so it flows onto
-    multiple lines at HW_LINE_PDF instead of being squeezed onto one line.
-    Returns None for thin inline-blank slots, which stay on a single line."""
+    multiple lines at the open-response em height instead of being squeezed onto
+    one line. Returns None for thin inline-blank slots, which stay on a single
+    line."""
     box_w = bbox[2] - bbox[0]
     box_h = bbox[3] - bbox[1]
     if box_h < HW_THIN_H:
         return None
-    # A band scaled by HW_LINE_PDF/LINE_BAND_PX should be <= box_w wide, so the
-    # wrap width in render-space px is box_w divided by that scale.
-    return box_w * LINE_BAND_PX / HW_LINE_PDF
+    # A band scaled by _HW_SCALE_REGION should stay within box_w, so the wrap
+    # width in render-space px is box_w divided by that scale.
+    return box_w / _HW_SCALE_REGION
 
 _OV_DEFAULTS = {
     "mode": "region",
@@ -126,13 +135,13 @@ def _overlay_to_html(ov: dict) -> str | None:
 
 
 def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
-    """Stamp a transparent handwriting PNG into the slot at a consistent line
-    height. The PNG is a stack of fixed-height (LINE_BAND_PX) line bands, so
-    scaling every band to HW_LINE_PDF gives the same handwriting size for every
-    answer. Multi-line region answers are top-anchored (so they sit next to the
-    question, not way below it); single-line inline blanks bottom-anchor onto
-    the underscore and shrink to fit only if the answer overruns the blank. The
-    PNG already has the paper knocked out to alpha, so it overlays cleanly."""
+    """Stamp a transparent handwriting PNG into the slot at a consistent writing
+    size. The PNG is a stack of fixed-height (LINE_BAND_PX) line bands drawn at
+    RENDER_PX em; scaling by _HW_SCALE lands the em at HW_EM_PX, so every answer
+    — a single matching letter or a full sentence — reads at the same size.
+    Single-line inline blanks place their baseline *on* the underscore; multi-
+    line region answers top-anchor so they sit next to the question. The PNG
+    already has the paper knocked out to alpha, so it overlays cleanly."""
     import io
     from PIL import Image
 
@@ -142,19 +151,21 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
     if not (img_w and img_h):
         return
 
-    scale = HW_LINE_PDF / LINE_BAND_PX          # constant -> uniform line height
-
     if box_h < HW_THIN_H:
-        # Inline blank: single line, bottom-anchored on the underscore. Only
-        # shrink if the answer would overrun the blank's width.
+        # Inline blank: single line, written large. Only shrink if the answer
+        # would overrun the blank's width. Anchor the glyph baseline onto the
+        # underscore (~y1) so writing sits on the line with descenders below it.
+        scale = _HW_SCALE_INLINE
         if img_w * scale > box_w:
             scale = box_w / img_w
         draw_w, draw_h = img_w * scale, img_h * scale
-        bottom = y1 + HW_DESCENDER_DROP         # let g/y/p tails dip under the line
-        rect = fitz.Rect(x0 + 1, bottom - draw_h, x0 + 1 + draw_w, bottom)
+        baseline_y = y1 - 1                      # the underscore line
+        top = baseline_y - _HW_BASELINE_OFF * scale
+        rect = fitz.Rect(x0 + 1, top, x0 + 1 + draw_w, top + draw_h)
     else:
         # Open-response region: wrapped lines, top-anchored next to the question.
         # If the wrapped block is taller than the region, scale it down to fit.
+        scale = _HW_SCALE_REGION
         if img_h * scale > box_h:
             scale = box_h / img_h
         draw_w, draw_h = img_w * scale, img_h * scale
