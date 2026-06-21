@@ -21,7 +21,10 @@ h1{font-family:var(--serif);font-weight:800;font-size:34px;margin:0 0 6px;}
 .btn.accent{background:var(--accent);} .btn.accent:hover{background:var(--accent-deep);}
 .btn:disabled{opacity:.5;cursor:default;}
 input[type=text]{width:100%;padding:10px 12px;border:1px solid var(--rule);border-radius:8px;font:inherit;margin-bottom:12px;}
-input[type=file]{margin-bottom:14px;font:inherit;}
+input[type=file]{display:block;margin-bottom:14px;font:inherit;}
+.vlabel{display:block;font-size:13px;font-weight:600;margin:4px 0 6px;}
+.vlabel .req{color:var(--accent-deep);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;}
+.vlabel .opt{color:var(--ink-soft);font-weight:400;font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;}
 .note{font-size:13px;color:var(--ink-soft);}
 #result{display:none;background:#eef7ee;border-color:#bcdcbc;}
 #result img{max-width:100%;border:1px solid var(--rule);border-radius:8px;background:#fff;margin-top:10px;}
@@ -43,28 +46,36 @@ a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
   </div>
 
   <div class="step">
-    <h2>2 · Fill it in</h2>
-    <p>Export this PDF to Goodnotes and upload it here again. Stay in
-       the lines and follow the guides, but write the characters in your
-      own handwriting aswell.</p>
+    <h2>2 · Fill it in — up to 3 times</h2>
+    <p>Write each character in your own handwriting, staying inside the lines.
+       For the most natural result, print and fill the template <strong>2–3
+       times</strong> — we blend the copies so repeated letters don't look
+       stamped. One copy works too.</p>
   </div>
 
   <div class="step">
-    <h2>3 · Build your font</h2>
-    <p>Upload both pages and give your handwriting a name.</p>
+    <h2>3 · Upload your copies</h2>
+    <p>Upload each filled copy (both pages — a PDF, or photos of the pages).
+       Copy 1 is required; 2 and 3 are optional but make your handwriting look
+       more real.</p>
     <form id="form">
-      <input type="text" id="name" placeholder="Name your handwriting (e.g. My Print)" maxlength="40" />
-      <input type="file" id="file" accept="image/*,application/pdf" multiple required />
-      
-      <button class="btn accent" id="go" type="submit">Build my font</button>
+      <label class="vlabel">Copy 1 <span class="req">required</span></label>
+      <input type="file" id="v1" accept="image/*,application/pdf" multiple required />
+      <label class="vlabel">Copy 2 <span class="opt">optional</span></label>
+      <input type="file" id="v2" accept="image/*,application/pdf" multiple />
+      <label class="vlabel">Copy 3 <span class="opt">optional</span></label>
+      <input type="file" id="v3" accept="image/*,application/pdf" multiple />
+
+      <button class="btn accent" id="go" type="submit">Build my handwriting</button>
       <span class="note" id="status"></span>
       <div class="err" id="err"></div>
     </form>
   </div>
 
   <div class="step" id="result">
-    <h2>✓ Your font is ready</h2>
-    <p>Here's <strong id="rlabel"></strong>. Type anything below to see it in your handwriting.</p>
+    <h2>✓ Your handwriting is ready</h2>
+    <p>Type anything below to see it. Then head back and toggle
+       <strong>✍️ My handwriting</strong> when you fill a worksheet.</p>
     <form id="testform" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <input type="text" id="testtext" placeholder="Type something to test…" maxlength="120"
              value="The quick brown fox." style="flex:1;min-width:200px;margin:0;" />
@@ -93,27 +104,28 @@ document.getElementById("testform").addEventListener("submit", (e) => {
 const form = document.getElementById("form");
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const files = document.getElementById("file").files;
-  if (!files.length) return;
+  const v1 = document.getElementById("v1").files;
+  if (!v1.length) return;
   const go = document.getElementById("go"), status = document.getElementById("status"),
         err = document.getElementById("err");
   err.style.display = "none"; go.disabled = true;
-  status.textContent = "Building your font… this takes a few seconds.";
+  status.textContent = "Building your handwriting… this takes a few seconds.";
   const fd = new FormData();
-  for (const f of files) fd.append("template", f);
-  fd.append("name", document.getElementById("name").value || "My handwriting");
+  for (const f of v1) fd.append("version1", f);
+  for (const f of document.getElementById("v2").files) fd.append("version2", f);
+  for (const f of document.getElementById("v3").files) fd.append("version3", f);
   try {
     const r = await fetch("/api/fonts", { method: "POST", body: fd });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "build failed");
-    status.textContent = "";
+    status.textContent = data.variants > 1
+      ? `Blended ${data.variants} copies.` : "";
     builtFontId = data.font_id;
-    document.getElementById("rlabel").textContent = data.label;
     document.getElementById("result").style.display = "block";
     renderSample();
   } catch (ex) {
     status.textContent = "";
-    err.textContent = "Couldn't build the font: " + ex.message +
+    err.textContent = "Couldn't build your handwriting: " + ex.message +
       " — make sure all four corner squares are visible and the photo is sharp.";
     err.style.display = "block";
   } finally { go.disabled = false; }

@@ -141,6 +141,7 @@ def _inject_auth_flags():
         "is_authed": bool(session.get("role")),
         "is_admin": session.get("role") == "admin",
         "is_pro": _is_pro(),
+        "has_font": bool(_current_font_id()),
         "acct_name": session.get("user_name", ""),
         "acct_email": session.get("user_email", ""),
         "acct_picture": session.get("user_picture", ""),
@@ -342,11 +343,18 @@ def _style_label(style_id: str | None) -> str:
     if not style_id:
         return "Typed text"
     if style_id.startswith("font:"):
-        fid = style_id.split(":", 1)[1]
-        label = next((f["label"] for f in font_store.list_fonts()
-                      if f["id"] == fid), fid)
-        return f"{label} (your handwriting)"
+        return "Your handwriting"
     return str(style_id)
+
+
+def _current_font_id() -> str | None:
+    """The font id owned by the signed-in user, if they've built one. A user
+    can only ever address their own font (id derived from their subject)."""
+    sub = session.get("user_sub", "")
+    if not sub:
+        return None
+    fid = font_store.user_font_id(sub)
+    return fid if font_store.font_path(fid) else None
 
 # ---- Device tracking -----------------------------------------------------
 # A long-lived cookie identifies a browser/device. The first request without
@@ -450,10 +458,10 @@ def _generate_hw_for_job(job_id: str) -> None:
         _write_hw_images(job_id, {})
         return
     from handwriting.font_render import render_text_png
-    otf = font_store.font_path(font_id)
+    variants = font_store.font_variant_paths(font_id)
     items = {ov["id"]: ov.get("text", "") for ov in job.get("overlays", [])}
     try:
-        images = {ov_id: render_text_png(text, str(otf))
+        images = {ov_id: render_text_png(text, variants)
                   for ov_id, text in items.items() if str(text).strip()}
     except Exception as e:
         print(f"[handwriting] local font render failed, "
@@ -1307,21 +1315,20 @@ def submit_feedback():
 @app.get("/api/fonts")
 @pro_required
 def list_fonts_route():
-    """List the user's built handwriting fonts."""
-    return jsonify({"fonts": font_store.list_fonts()})
+    """The signed-in user's handwriting font (0 or 1 — one font per user)."""
+    return jsonify({"fonts": font_store.list_fonts_for(session.get("user_sub", ""))})
 
 
 @app.get("/api/fonts/<font_id>/sample.png")
 @pro_required
 def font_sample(font_id: str):
-    """Render a sample in a built font (used by the onboarding page). Pass
-    ?text=... to preview arbitrary text; defaults to a short word."""
-    otf = font_store.font_path(font_id)
-    if not otf:
+    """Render a sample in the user's font (onboarding preview). Pass ?text=...
+    to preview arbitrary text. A user may only sample their own font."""
+    if font_id != _current_font_id():
         abort(404)
     text = (request.args.get("text") or "Sample").strip()[:120] or "Sample"
     from handwriting.font_render import render_text_png
-    png = render_text_png(text, str(otf))
+    png = render_text_png(text, font_store.font_variant_paths(font_id))
     if not png:
         abort(404)
     return send_file(io.BytesIO(png), mimetype="image/png")
@@ -1343,34 +1350,57 @@ def download_template():
 @app.post("/api/fonts")
 @pro_required
 def build_font_route():
-    """Build a handwriting font from a filled template and store it (Pro
-    onboarding step 2). Multipart: 'template' = a multi-page PDF scan, or one
-    file per page (in page order); 'name' = label. Returns {font_id, label}.
-    The font then appears in /api/fonts."""
-    files = [f for f in request.files.getlist("template") if f and f.filename]
-    if not files:
-        return jsonify({"error": "no template uploaded"}), 400
-    name = (request.form.get("name") or "My handwriting").strip()[:40]
+    """Build the user's handwriting font from 1–3 filled template copies and
+    store it, replacing any previous font (one font per user). Each copy is a
+    full filled template (a 2-page PDF, or its page images) sent as a separate
+    multipart group: 'version1' (required), 'version2', 'version3' (optional).
+    More copies → more variants → repeated letters look less stamped."""
+    sub = session.get("user_sub", "")
+    if not sub:
+        return jsonify({"error": "not signed in"}), 403
+
+    # Collect the version groups. Fall back to the legacy single 'template'
+    # group so an older client still works (treated as one version).
+    groups: list[list] = []
+    for key in ("version1", "version2", "version3"):
+        fs = [f for f in request.files.getlist(key) if f and f.filename]
+        if fs:
+            groups.append(fs)
+    if not groups:
+        legacy = [f for f in request.files.getlist("template") if f and f.filename]
+        if legacy:
+            groups.append(legacy)
+    if not groups:
+        return jsonify({"error": "no filled template uploaded"}), 400
 
     import tempfile
     from handwriting.font_build import build_font
+    otf_variants: list[bytes] = []
     with tempfile.TemporaryDirectory() as d:
-        paths = []
-        for i, f in enumerate(files):
-            ext = ".pdf" if f.filename.lower().endswith(".pdf") else ".img"
-            p = os.path.join(d, f"page{i}{ext}")
-            f.save(p)
-            paths.append(p)
-        otf_path = os.path.join(d, "font.otf")
-        try:
-            src = paths[0] if len(paths) == 1 else paths
-            build_font(src, otf_path, family=name or "Paperfill Hand")
-            otf_bytes = Path(otf_path).read_bytes()
-        except Exception as e:
-            return jsonify({"error": f"could not build font: {e}"}), 422
-    font_id = font_store.save_font(name, otf_bytes)
+        for vi, files in enumerate(groups):
+            paths = []
+            for fi, f in enumerate(files):
+                ext = ".pdf" if f.filename.lower().endswith(".pdf") else ".img"
+                p = os.path.join(d, f"v{vi}_page{fi}{ext}")
+                f.save(p)
+                paths.append(p)
+            out = os.path.join(d, f"font{vi}.otf")
+            try:
+                build_font(paths[0] if len(paths) == 1 else paths, out,
+                           family="Paperfill Hand")
+                otf_variants.append(Path(out).read_bytes())
+            except Exception as e:
+                # One bad copy shouldn't sink the whole build if others worked.
+                print(f"[fonts] version {vi + 1} failed to build: {e}")
+        if not otf_variants:
+            return jsonify({"error": "could not build a font from the upload — "
+                            "make sure the four corner squares are visible and "
+                            "the photo is sharp"}), 422
+
+    font_id = font_store.save_user_font(sub, otf_variants)
     return jsonify({"ok": True, "font_id": font_id,
-                    "style_id": f"font:{font_id}", "label": name})
+                    "style_id": f"font:{font_id}", "label": font_store.LABEL,
+                    "variants": len(otf_variants)})
 
 
 @app.post("/api/style")
@@ -1386,8 +1416,12 @@ def upload_style():
 
     style = request.form.get("style") or data.get("style") or ""
     # Empty style is allowed: it clears handwriting back to typeset text.
-    if style and not _font_id_from_style(style):
-        return jsonify({"error": f"unknown font '{style}'"}), 400
+    # Otherwise it must resolve to an existing font AND be THIS user's own —
+    # no using anyone else's, and no setting a bogus style id.
+    if style:
+        fid = _font_id_from_style(style)
+        if not fid or fid != _current_font_id():
+            return jsonify({"error": "that handwriting font isn't available"}), 403
     job["style_id"] = style or None
 
     # If the worksheet has already been filled (style picked from the editor),

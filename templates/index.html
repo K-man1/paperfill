@@ -106,10 +106,12 @@ header.masthead {
 
 /* ---- Account / tier strip (lives in the top rule) ---- */
 .acct { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.acct.acct-right { justify-content: flex-end; }
 .acct .acct-email { color: var(--ink-soft); text-transform: none; letter-spacing: 0; }
 .acct a { color: var(--ink); text-decoration: none; border-bottom: 1px solid transparent; }
 .acct a:hover { border-bottom-color: var(--ink); }
 .acct a.upgrade { color: var(--accent-deep); font-weight: 600; }
+.acct a.hw-link { color: var(--accent-deep); font-weight: 600; }
 .tier-badge {
   font-family: var(--mono);
   font-size: 10px;
@@ -585,6 +587,38 @@ button {
   cursor: pointer;
 }
 .fmt-group select:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---- Handwriting: flagship control in the editor toolbar ---- */
+.hw-group { gap: 8px; }
+.hw-cta {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1.5px solid var(--accent);
+  color: var(--accent-deep);
+  background: rgba(255, 90, 31, 0.07);
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+}
+.hw-cta:hover { background: rgba(255, 90, 31, 0.16); }
+.hw-cta.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(255, 90, 31, 0.35);
+}
+.hw-cta.locked { border-style: dashed; opacity: 0.9; }
+.hw-cta.busy { opacity: 0.6; pointer-events: none; }
+.hw-redo {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-decoration: underline;
+  cursor: pointer;
+}
 .fmt-btn {
   font-family: var(--serif);
   font-size: 14px;
@@ -1031,15 +1065,16 @@ button {
 <main>
   <header class="masthead">
     <div class="top-rule">
-      <span>The Daily Worksheet</span>
-      <span class="acct">
+      <span class="acct acct-left">
         {% if is_pro %}
           <span class="tier-badge pro">Pro</span>
-          <a href="{{ url_for('handwriting_onboarding') }}">✍️ Handwriting</a>
+          <a class="hw-link" href="{{ url_for('handwriting_onboarding') }}">✍️ Your handwriting</a>
         {% else %}
           <span class="tier-badge">Free</span>
-          <a class="upgrade" href="{{ url_for('pricing') }}">Upgrade to Pro</a>
+          <a class="upgrade" href="{{ url_for('pricing') }}">✦ Upgrade to Pro</a>
         {% endif %}
+      </span>
+      <span class="acct acct-right">
         {% if is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
         {% if acct_email %}<span class="acct-email">{{ acct_email }}</span>{% endif %}
         <a href="{{ url_for('logout') }}">Log out</a>
@@ -1144,16 +1179,14 @@ button {
           <option value="mono">Courier</option>
         </select>
       </div>
-      <div class="fmt-group">
-        <span class="fmt-label">Handwriting</span>
-        {% if is_pro %}
-        <select id="hw-style" title="Render answers in your handwriting (Pro)">
-          <option value="">Typed (default)</option>
-          <!-- built fonts injected by JS -->
-          <option value="__new__">+ Build my handwriting…</option>
-        </select>
+      <div class="fmt-group hw-group">
+        {% if not is_pro %}
+          <a class="hw-cta locked" href="{{ url_for('pricing') }}" title="Fill in your own handwriting — a Pro feature">✍️ Handwriting · Pro</a>
+        {% elif has_font %}
+          <button class="hw-cta" id="hw-toggle" type="button" aria-pressed="false" title="Fill the worksheet in your own handwriting">✍️ My handwriting</button>
+          <a class="hw-redo" href="{{ url_for('handwriting_onboarding') }}" title="Rebuild your handwriting font">redo</a>
         {% else %}
-        <a class="btn-ghost" href="{{ url_for('pricing') }}" title="Fill in your own handwriting — Pro feature">✍️ Handwriting · Pro</a>
+          <a class="hw-cta" href="{{ url_for('handwriting_onboarding') }}" title="Turn your real handwriting into a font">✍️ Set up your handwriting</a>
         {% endif %}
       </div>
       <div class="fmt-group">
@@ -2109,64 +2142,60 @@ $("doc-font").addEventListener("change", async e => {
   await saveOverlays();
 });
 
-// ---- Handwriting style (Pro) -------------------------------------------
-// The picker only exists for Pro users (server-gated in the template). It
-// lists the user's built fonts; choosing one re-renders the filled PDF in
-// that handwriting. Free users see an upgrade link instead, and every
-// handwriting endpoint is Pro-gated server-side regardless.
-const hwStyle = $("hw-style");
-let lastHwStyle = "";
+// ---- Handwriting toggle (Pro) ------------------------------------------
+// The toggle only exists for Pro users who've built a font (server-gated in
+// the template). Pressing it re-renders the filled PDF in their handwriting;
+// pressing again reverts to typed. Every handwriting endpoint is Pro-gated
+// and owner-scoped server-side regardless of the UI.
+const hwToggle = $("hw-toggle");
+let hwFontId = null;   // the user's own font id, loaded from /api/fonts
+let hwOn = false;
 
-async function loadHwFonts() {
-  if (!hwStyle) return;
+async function loadMyFont() {
+  if (!hwToggle) return;
   try {
     const r = await fetch("/api/fonts");
-    if (!r.ok) return;  // 402/403 → not Pro; leave the default options
+    if (!r.ok) return;
     const data = await r.json();
-    const newOpt = hwStyle.querySelector('option[value="__new__"]');
-    (data.fonts || []).forEach(f => {
-      const id = "font:" + f.id;
-      if (hwStyle.querySelector(`option[value="${CSS.escape(id)}"]`)) return;
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = f.label || f.id;
-      hwStyle.insertBefore(opt, newOpt);
-    });
-  } catch (_) { /* leave defaults */ }
+    hwFontId = (data.fonts && data.fonts[0]) ? data.fonts[0].id : null;
+  } catch (_) { /* leave disabled */ }
 }
 
-if (hwStyle) {
-  hwStyle.addEventListener("change", async e => {
-    const val = e.target.value;
-    if (val === "__new__") {
-      window.open("/handwriting", "_blank");
-      e.target.value = lastHwStyle;  // not a real selection
-      return;
-    }
-    if (!currentJob) { lastHwStyle = val; return; }
-    setStatus(val ? "Applying handwriting…" : "Switching to typed…");
-    try {
-      const r = await fetch("/api/style", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: currentJob.job_id, style: val }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || "Could not apply style");
-      lastHwStyle = val;
-      document.querySelectorAll(".editor-page img").forEach(img => {
-        const i = img.dataset.page;
-        img.src = `/api/preview/${currentJob.job_id}/filled/${i}?t=${Date.now()}`;
-      });
-      setStatus("Ready to edit");
-      toast(val ? "Rendered in your handwriting" : "Switched to typed text");
-    } catch (ex) {
-      e.target.value = lastHwStyle;  // revert the dropdown on failure
-      setStatus("Ready to edit");
-      toast(ex.message || "Could not apply handwriting", true);
-    }
+async function applyHwStyle(styleVal) {
+  if (!currentJob) return;
+  hwToggle.classList.add("busy");
+  setStatus(styleVal ? "Writing in your handwriting…" : "Switching to typed…");
+  try {
+    const r = await fetch("/api/style", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: currentJob.job_id, style: styleVal }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Could not apply handwriting");
+    hwOn = !!styleVal;
+    hwToggle.classList.toggle("active", hwOn);
+    hwToggle.setAttribute("aria-pressed", hwOn ? "true" : "false");
+    document.querySelectorAll(".editor-page img").forEach(img => {
+      img.src = `/api/preview/${currentJob.job_id}/filled/${img.dataset.page}?t=${Date.now()}`;
+    });
+    setStatus("Ready to edit");
+    toast(hwOn ? "Filled in your handwriting ✍️" : "Switched back to typed text");
+  } catch (ex) {
+    setStatus("Ready to edit");
+    toast(ex.message || "Could not apply handwriting", true);
+  } finally {
+    hwToggle.classList.remove("busy");
+  }
+}
+
+if (hwToggle) {
+  hwToggle.addEventListener("click", () => {
+    if (!hwFontId) { toast("Set up your handwriting first", true); return; }
+    if (!currentJob) { toast("Fill a worksheet first", true); return; }
+    applyHwStyle(hwOn ? "" : "font:" + hwFontId);
   });
-  loadHwFonts();
+  loadMyFont();
 }
 
 $("fmt-font").addEventListener("change", e => applyActiveFmt({ font: e.target.value }));

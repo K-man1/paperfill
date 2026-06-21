@@ -77,29 +77,44 @@ def _render_word(word: str, font: ImageFont.FreeTypeFont, feats,
     return img, baseline
 
 
-def render_text_png(text: str, otf_path: str, seed: int | None = None) -> bytes:
-    """Render ``text`` in the font at ``otf_path`` to transparent-PNG bytes
-    (dark ink on alpha). Empty / whitespace text yields b''."""
+def _load_font(path: str) -> ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype(path, RENDER_PX, layout_engine=_layout_engine())
+    except OSError:
+        return ImageFont.truetype(path, RENDER_PX)
+
+
+def render_text_png(text: str, otf_path, seed: int | None = None) -> bytes:
+    """Render ``text`` to transparent-PNG bytes (dark ink on alpha). Empty /
+    whitespace text yields b''.
+
+    ``otf_path`` is a font path, or a list of variant paths (one per filled
+    template copy the user uploaded). With multiple variants a font is chosen
+    per word, so repeated words/letters across the page don't look stamped —
+    important because contextual-alternate (calt) glyph cycling needs raqm,
+    which isn't always available."""
     text = (text or "").strip()
     if not text:
         return b""
     rng = random.Random(seed if seed is not None else text)
-    try:
-        font = ImageFont.truetype(otf_path, RENDER_PX,
-                                  layout_engine=_layout_engine())
-    except OSError:
-        font = ImageFont.truetype(otf_path, RENDER_PX)
+
+    paths = [otf_path] if isinstance(otf_path, (str, bytes)) else list(otf_path)
+    paths = [str(p) for p in paths if p]
+    if not paths:
+        return b""
+    fonts = [_load_font(p) for p in paths]
 
     # raqm may be unavailable in the Pillow build; fall back to no features.
     feats = _FEATURES
     try:
         ImageDraw.Draw(Image.new("L", (4, 4))).textbbox(
-            (0, 0), "x", font=font, features=feats)
+            (0, 0), "x", font=fonts[0], features=feats)
     except Exception:
         feats = None
 
     space = int(RENDER_PX * SPACE_FRAC)
-    words = [(_render_word(w, font, feats, rng)) for w in text.split()]
+    # Pick a variant per word for natural variation across repeats.
+    words = [_render_word(w, rng.choice(fonts), feats, rng) for w in text.split()]
     if not words:
         return b""
 
