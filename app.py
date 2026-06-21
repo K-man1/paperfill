@@ -1635,6 +1635,26 @@ def download(job_id):
                      mimetype="application/pdf")
 
 
+@app.get("/api/job/<job_id>")
+def get_job(job_id):
+    """Return a filled job's editor state so the front-end can restore the
+    editor after a page refresh. The client keeps job state in memory only, so
+    without this a refresh would orphan the (safely persisted) job on disk. The
+    job_id is an unguessable token, same capability model as preview/download."""
+    job = load_job(job_id)
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+    return jsonify({
+        "job_id": job_id,
+        "overlays": job.get("overlays", []),
+        "page_count": job.get("page_count", 0),
+        "page_sizes": job.get("page_sizes", []),
+        "style_id": job.get("style_id"),
+        "filled": bool(job.get("filled_path") and job.get("overlays")),
+        "original_name": job.get("original_name", ""),
+    })
+
+
 @app.get("/api/preview/<job_id>/<which>/<int:page>")
 def preview(job_id, which, page):
     """which = 'page' (original) or 'filled'."""

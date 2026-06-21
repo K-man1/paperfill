@@ -1721,6 +1721,9 @@ async function handleUpload(file) {
     showStage("result");
     // renderResult AFTER stage is visible, so img.clientWidth is non-zero
     renderResult(fillData);
+    // Put the job id in the URL so a refresh can restore this editor session
+    // (job state is otherwise in-memory only).
+    history.replaceState(null, "", "?job=" + encodeURIComponent(currentJob.job_id));
     setStatus("Ready to edit");
   } catch (err) {
     showError(err.message);
@@ -2199,7 +2202,12 @@ if (hwToggle) {
 }
 
 $("fmt-font").addEventListener("change", e => applyActiveFmt({ font: e.target.value }));
-$("fmt-size").addEventListener("change", e => applyActiveFmt({ size: parseFloat(e.target.value) || 11 }));
+$("fmt-size").addEventListener("change", async e => {
+  applyActiveFmt({ size: parseFloat(e.target.value) || 11 });
+  // Persist + re-render so the change shows immediately — important for
+  // handwriting, whose size only appears in the re-rendered preview image.
+  await saveOverlays();
+});
 $("fmt-bold").addEventListener("click", () => toggleFmt("bold"));
 $("fmt-italic").addEventListener("click", () => toggleFmt("italic"));
 $("fmt-underline").addEventListener("click", () => toggleFmt("underline"));
@@ -2392,9 +2400,51 @@ $("restart-btn").addEventListener("click", () => {
   $("drop-title").textContent = "Drop a PDF here";
   $("drop-sub").textContent = "or click to browse · max 10 MB";
   $("fill-row").style.display = "none";
+  history.replaceState(null, "", location.pathname);  // drop ?job= so a refresh starts clean
   showStage("upload");
   setStatus("Ready");
 });
+
+// ---- Restore editor after a refresh -----------------------------------
+// Job state lives only in memory, but the job (overlays, handwriting style,
+// previews) is persisted server-side. If the URL carries ?job=<id>, re-fetch
+// that state and rebuild the editor instead of dropping to the upload screen.
+function reflectHwState(styleId) {
+  hwOn = !!styleId;
+  if (hwToggle) {
+    hwToggle.classList.toggle("active", hwOn);
+    hwToggle.setAttribute("aria-pressed", hwOn ? "true" : "false");
+  }
+}
+
+async function restoreJob(jobId) {
+  try {
+    const r = await fetch("/api/job/" + encodeURIComponent(jobId));
+    if (!r.ok) return false;            // expired/unknown → stay on upload
+    const data = await r.json();
+    if (!data.filled || !(data.overlays || []).length) return false;
+    currentJob = {
+      job_id: data.job_id,
+      page_count: data.page_count,
+      page_sizes: data.page_sizes,
+    };
+    await loadMyFont();                 // so the toggle knows the user's font id
+    showStage("result");
+    renderResult(data);
+    reflectHwState(data.style_id);
+    setStatus("Ready to edit");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+(async () => {
+  const jobId = new URLSearchParams(location.search).get("job");
+  if (!jobId) return;
+  const ok = await restoreJob(jobId);
+  if (!ok) history.replaceState(null, "", location.pathname);  // stale link → clean URL
+})();
 </script>
 </body>
 </html>

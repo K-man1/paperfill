@@ -22,7 +22,8 @@ WATERMARK_MARGIN = 18   # px from the left and bottom edges
 # turns legible cursive into an illegible scratch. Render it noticeably taller
 # than typeset text (real handwriting is bigger than print and overshoots the
 # line), bottom-anchored a hair below the underscore so descenders dip under it.
-HW_TARGET_HEIGHT = 22   # px tall to aim for when width allows
+HW_TARGET_HEIGHT = 22   # px tall to aim for at the default font size, width allowing
+HW_BASE_SIZE = 11       # overlay font size HW_TARGET_HEIGHT is calibrated to
 HW_DESCENDER_DROP = 3   # px the image bottom sits below the underscore line
 
 _OV_DEFAULTS = {
@@ -109,10 +110,12 @@ def _overlay_to_html(ov: dict) -> str | None:
     return f'<p style="{css}">{_html_escape(text)}</p>'
 
 
-def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
+def _insert_handwriting_image(page, bbox, png_bytes: bytes,
+                              size: float = HW_BASE_SIZE) -> None:
     """Stamp a transparent handwriting PNG into the slot. Rendered at a real
-    handwriting height (HW_TARGET_HEIGHT) rather than crammed into the thin
-    text slot, with the baseline sitting on the underscore and descenders
+    handwriting height (HW_TARGET_HEIGHT, scaled by the overlay's font `size`
+    so the size picker drives handwriting too) rather than crammed into the
+    thin text slot, with the baseline sitting on the underscore and descenders
     dipping just below it. Left-aligned; the PNG already has the paper
     background knocked out to alpha, so it overlays cleanly."""
     import io
@@ -124,10 +127,15 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
     if not (img_w and img_h):
         return
 
-    # Aim for HW_TARGET_HEIGHT, but if the word would then run past the blank's
-    # width, fall back to fitting the width (same behaviour typeset text has when
-    # a long answer must shrink). Aspect ratio is always preserved.
-    scale = HW_TARGET_HEIGHT / img_h
+    # Aim for HW_TARGET_HEIGHT scaled to the chosen font size, but if the word
+    # would then run past the blank's width, fall back to fitting the width
+    # (same behaviour typeset text has when a long answer must shrink). Aspect
+    # ratio is always preserved.
+    try:
+        target_h = HW_TARGET_HEIGHT * (float(size) / HW_BASE_SIZE)
+    except (TypeError, ValueError):
+        target_h = HW_TARGET_HEIGHT
+    scale = max(target_h, 1.0) / img_h
     if img_w * scale > box_w:
         scale = box_w / img_w
     draw_w, draw_h = img_w * scale, img_h * scale
@@ -183,7 +191,8 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
         png = images.get(ov.get("id"))
         if png:
             try:
-                _insert_handwriting_image(page, ov["bbox"], png)
+                _insert_handwriting_image(page, ov["bbox"], png,
+                                          ov.get("size", _OV_DEFAULTS["size"]))
                 continue
             except Exception:
                 pass  # fall through to text rendering on any image failure
