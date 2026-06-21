@@ -101,6 +101,22 @@ document.getElementById("testform").addEventListener("submit", (e) => {
   renderSample();
 });
 
+// On load, restore the user's existing font (if any) so a page refresh doesn't
+// appear to wipe it — the font lives on the server, the page just forgot it.
+async function restoreExistingFont() {
+  try {
+    const r = await fetch("/api/fonts");
+    if (!r.ok) return;
+    const data = await r.json();
+    const fonts = (data && data.fonts) || [];
+    if (!fonts.length) return;
+    builtFontId = fonts[0].id;
+    document.getElementById("result").style.display = "block";
+    renderSample();
+  } catch (_) { /* not signed in / network — leave the build flow as-is */ }
+}
+restoreExistingFont();
+
 const form = document.getElementById("form");
 form.addEventListener("submit", async (e) => {
   e.preventDefault();

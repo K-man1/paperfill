@@ -35,9 +35,13 @@ DESCENDERS = "gjpqy"
 # page. Empty/QR cells are simply omitted (rows are left-aligned). Edit this to
 # match the template if its glyph set changes.
 GLYPH_MAP = {
-    0: ["!\"',.1", "234567", "89:;?ABC", "DEFGHIJK",
-        "LMNOPQRS", "TUVWXYZa", "bcdefghi", "jklmnopq"],
-    1: ["rstuvw", "xyzáéí", "ñóú"],
+    # Page 0: the QR occupies the last two columns of rows 0-1, so those rows
+    # hold only 6 glyphs; the remaining rows are full width (8).
+    0: ["!\"'()+", ",-.123", "456789:;", "<>?ABCDE",
+        "FGHIJKLM", "NOPQRSTU", "VWXYZabc", "defghijk"],
+    # Page 1: the larger QR occupies the last three columns of rows 0-1, so
+    # those rows hold only 5 glyphs.
+    1: ["lmnop", "qrstu", "vwxyz±×á", "éíñó÷ú→√", "∛∞≈≠≤≥"],
 }
 
 
