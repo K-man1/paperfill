@@ -31,6 +31,11 @@ WATERMARK_MARGIN = 18   # px from the left and bottom edges
 HW_EM_INLINE = 16       # px em for single-line inline-blank answers
 HW_EM_REGION = 12       # px em for wrapped open-response answers
 HW_THIN_H = 24          # bbox heights below this are single-line slots (inline blanks)
+# The slot's y1 is the printed text-cell bottom, which sits ~a descender below
+# the underscore the student writes on. Raise the handwriting baseline by a
+# fraction of the em so words rest *on* the line instead of the line striking
+# through them.
+HW_BASELINE_RAISE = 0.30
 
 _HW_SCALE_INLINE = HW_EM_INLINE / RENDER_PX
 _HW_SCALE_REGION = HW_EM_REGION / RENDER_PX
@@ -159,7 +164,8 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
         if img_w * scale > box_w:
             scale = box_w / img_w
         draw_w, draw_h = img_w * scale, img_h * scale
-        baseline_y = y1 - 1                      # the underscore line
+        # Underscore sits ~a descender above the slot bottom; raise onto it.
+        baseline_y = y1 - 1 - HW_BASELINE_RAISE * HW_EM_INLINE
         top = baseline_y - _HW_BASELINE_OFF * scale
         rect = fitz.Rect(x0 + 1, top, x0 + 1 + draw_w, top + draw_h)
     else:
