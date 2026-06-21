@@ -471,28 +471,43 @@ def _generate_hw_for_job(job_id: str) -> None:
 
 
 def save_job(job_id: str) -> None:
-    """Mirror a job's metadata to disk so other workers can load it."""
+    """Mirror a job's metadata to disk so other workers can load it. Stamps the
+    in-memory copy with the file's mtime so load_job can tell when another
+    worker has written a newer version."""
     job = JOBS.get(job_id)
     if job is None:
         return
     (OUTPUTS / job_id).mkdir(exist_ok=True)
-    _job_meta_path(job_id).write_text(json.dumps(job))
+    path = _job_meta_path(job_id)
+    # Don't persist the private mtime marker.
+    path.write_text(json.dumps({k: v for k, v in job.items() if k != "_mtime"}))
+    try:
+        job["_mtime"] = path.stat().st_mtime_ns
+    except OSError:
+        pass
 
 
 def load_job(job_id: str) -> dict | None:
-    """Return a job from memory, falling back to its on-disk copy."""
+    """Return a job, preferring the on-disk copy when it's newer than what this
+    worker has cached. Under multiple gunicorn workers, an upload, fill and
+    style change can each land on a different worker; without this freshness
+    check a worker would serve its own stale copy (e.g. pre-fill overlays),
+    which silently skipped handwriting regeneration."""
     if not job_id:
         return None
-    job = JOBS.get(job_id)
-    if job is not None:
-        return job
     path = _job_meta_path(job_id)
-    if not path.exists():
-        return None
+    cached = JOBS.get(job_id)
+    try:
+        disk_mtime = path.stat().st_mtime_ns
+    except OSError:
+        return cached  # no file on disk; best we have is the cache (maybe None)
+    if cached is not None and cached.get("_mtime") == disk_mtime:
+        return cached
     try:
         job = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return None
+        return cached
+    job["_mtime"] = disk_mtime
     JOBS[job_id] = job
     return job
 
