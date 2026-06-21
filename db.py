@@ -293,3 +293,24 @@ def get_user(google_sub: str) -> dict | None:
         return None
     rows = _get(f"users?google_sub=eq.{requests.utils.quote(google_sub, safe='')}")
     return rows[0] if rows else None
+
+
+def set_user_pro(email: str, is_pro: bool) -> bool:
+    """Flip a user's Pro flag by email (case-insensitive). Returns True only if
+    a matching row was actually updated (so callers can tell 'no such user'
+    apart from success). Used by the Stripe webhook and the admin grant form."""
+    if not enabled():
+        return False
+    try:
+        r = requests.patch(
+            _rest(f"users?email=ilike.{requests.utils.quote(email, safe='')}"),
+            headers=_headers({"Prefer": "return=representation"}),
+            json={"is_pro": bool(is_pro)},
+            timeout=_TIMEOUT,
+        )
+        if r.status_code < 400:
+            return bool(r.json())
+        print(f"[db] set_user_pro HTTP {r.status_code}: {r.text[:200]}")
+    except (requests.RequestException, ValueError) as e:
+        print(f"[db] set_user_pro failed: {e}")
+    return False

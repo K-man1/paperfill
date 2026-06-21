@@ -403,6 +403,32 @@ tr:hover td { background: var(--paper); }
     </form>
   </div>
 
+  <div class="section-title">Pro Membership</div>
+  <div class="settings-card">
+    {% if pro_status == 'granted' %}
+      <div class="banner banner-ok">Pro granted to <span class="current">{{ pro_email }}</span>. It applies on their next sign-in (or immediately if they re-open the app).</div>
+    {% elif pro_status == 'revoked' %}
+      <div class="banner banner-ok">Pro revoked for <span class="current">{{ pro_email }}</span>.</div>
+    {% elif pro_status == 'nouser' %}
+      <div class="banner banner-err">No account found for <span class="current">{{ pro_email }}</span>. They need to sign in once before Pro can be set.</div>
+    {% elif pro_status == 'empty' %}
+      <div class="banner banner-err">Enter an email address.</div>
+    {% endif %}
+    <p class="hint">
+      Paid upgrades flip to Pro automatically via the Stripe webhook. Use this to
+      grant a comp, fix a mismatched checkout email, or revoke access. Matched by
+      email (case-insensitive).
+    </p>
+    <form method="post" action="/admin/grant-pro" autocomplete="off">
+      <div class="field">
+        <label for="pro_email">Account email</label>
+        <input type="email" id="pro_email" name="email" required autocomplete="off" placeholder="user@example.com" />
+      </div>
+      <button type="submit" class="save-btn" name="action" value="grant">Grant Pro</button>
+      <button type="submit" class="save-btn" name="action" value="revoke" style="background:transparent;border:1px solid var(--rule, #c9c0a8);color:inherit;">Revoke Pro</button>
+    </form>
+  </div>
+
   <div class="section-title">Ads</div>
   <div class="settings-card">
     {% if ads_status == 'ok' %}

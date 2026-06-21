@@ -6,8 +6,8 @@
       "runtimeExecutable": "/Users/User/Desktop/PaperFill/venv/bin/python",
       "runtimeArgs": ["/Users/User/Desktop/PaperFill/app.py"],
       "cwd": "/Users/User/Desktop/PaperFill",
-      "port": 5000,
-      "autoPort": true
+      "port": 5050,
+      "autoPort": false
     }
   ]
 }

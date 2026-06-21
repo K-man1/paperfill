@@ -104,6 +104,24 @@ header.masthead {
   padding-bottom: 6px;
 }
 
+/* ---- Account / tier strip (lives in the top rule) ---- */
+.acct { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.acct .acct-email { color: var(--ink-soft); text-transform: none; letter-spacing: 0; }
+.acct a { color: var(--ink); text-decoration: none; border-bottom: 1px solid transparent; }
+.acct a:hover { border-bottom-color: var(--ink); }
+.acct a.upgrade { color: var(--accent-deep); font-weight: 600; }
+.tier-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--ink-soft);
+  color: var(--ink-soft);
+}
+.tier-badge.pro { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 /* ---- Stage system ---- */
 .stage { display: none; }
 .stage.active { display: block; animation: fadeUp 0.4s ease both; }
@@ -1013,6 +1031,19 @@ button {
 <main>
   <header class="masthead">
     <div class="top-rule">
+      <span>The Daily Worksheet</span>
+      <span class="acct">
+        {% if is_pro %}
+          <span class="tier-badge pro">Pro</span>
+          <a href="{{ url_for('handwriting_onboarding') }}">✍️ Handwriting</a>
+        {% else %}
+          <span class="tier-badge">Free</span>
+          <a class="upgrade" href="{{ url_for('pricing') }}">Upgrade to Pro</a>
+        {% endif %}
+        {% if is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
+        {% if acct_email %}<span class="acct-email">{{ acct_email }}</span>{% endif %}
+        <a href="{{ url_for('logout') }}">Log out</a>
+      </span>
     </div>
     <h1 class="brand">Paper<em>fill</em></h1>
     <div class="subtitle">AI worksheet filler</div>
@@ -1112,6 +1143,18 @@ button {
           <option value="serif">Georgia</option>
           <option value="mono">Courier</option>
         </select>
+      </div>
+      <div class="fmt-group">
+        <span class="fmt-label">Handwriting</span>
+        {% if is_pro %}
+        <select id="hw-style" title="Render answers in your handwriting (Pro)">
+          <option value="">Typed (default)</option>
+          <!-- built fonts injected by JS -->
+          <option value="__new__">+ Build my handwriting…</option>
+        </select>
+        {% else %}
+        <a class="btn-ghost" href="{{ url_for('pricing') }}" title="Fill in your own handwriting — Pro feature">✍️ Handwriting · Pro</a>
+        {% endif %}
       </div>
       <div class="fmt-group">
         <span class="fmt-label">Font</span>
@@ -2065,6 +2108,66 @@ $("doc-font").addEventListener("change", async e => {
   applyDocumentFont(e.target.value);
   await saveOverlays();
 });
+
+// ---- Handwriting style (Pro) -------------------------------------------
+// The picker only exists for Pro users (server-gated in the template). It
+// lists the user's built fonts; choosing one re-renders the filled PDF in
+// that handwriting. Free users see an upgrade link instead, and every
+// handwriting endpoint is Pro-gated server-side regardless.
+const hwStyle = $("hw-style");
+let lastHwStyle = "";
+
+async function loadHwFonts() {
+  if (!hwStyle) return;
+  try {
+    const r = await fetch("/api/fonts");
+    if (!r.ok) return;  // 402/403 → not Pro; leave the default options
+    const data = await r.json();
+    const newOpt = hwStyle.querySelector('option[value="__new__"]');
+    (data.fonts || []).forEach(f => {
+      const id = "font:" + f.id;
+      if (hwStyle.querySelector(`option[value="${CSS.escape(id)}"]`)) return;
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = f.label || f.id;
+      hwStyle.insertBefore(opt, newOpt);
+    });
+  } catch (_) { /* leave defaults */ }
+}
+
+if (hwStyle) {
+  hwStyle.addEventListener("change", async e => {
+    const val = e.target.value;
+    if (val === "__new__") {
+      window.open("/handwriting", "_blank");
+      e.target.value = lastHwStyle;  // not a real selection
+      return;
+    }
+    if (!currentJob) { lastHwStyle = val; return; }
+    setStatus(val ? "Applying handwriting…" : "Switching to typed…");
+    try {
+      const r = await fetch("/api/style", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: currentJob.job_id, style: val }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Could not apply style");
+      lastHwStyle = val;
+      document.querySelectorAll(".editor-page img").forEach(img => {
+        const i = img.dataset.page;
+        img.src = `/api/preview/${currentJob.job_id}/filled/${i}?t=${Date.now()}`;
+      });
+      setStatus("Ready to edit");
+      toast(val ? "Rendered in your handwriting" : "Switched to typed text");
+    } catch (ex) {
+      e.target.value = lastHwStyle;  // revert the dropdown on failure
+      setStatus("Ready to edit");
+      toast(ex.message || "Could not apply handwriting", true);
+    }
+  });
+  loadHwFonts();
+}
 
 $("fmt-font").addEventListener("change", e => applyActiveFmt({ font: e.target.value }));
 $("fmt-size").addEventListener("change", e => applyActiveFmt({ size: parseFloat(e.target.value) || 11 }));

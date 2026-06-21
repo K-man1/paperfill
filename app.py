@@ -11,6 +11,8 @@ Endpoints:
 """
 
 import base64
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -19,6 +21,7 @@ import secrets
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 import fitz
 from flask import (Flask, jsonify, request, send_file, render_template,
@@ -130,9 +133,20 @@ EMAIL_AUTH_ENABLED = os.environ.get("EMAIL_AUTH", "0") == "1"
 
 @app.context_processor
 def _inject_auth_flags():
-    """Make the email-auth flag available to every template (login.html uses
-    it to show/hide the email + password forms)."""
-    return {"email_auth": EMAIL_AUTH_ENABLED}
+    """Make auth/tier flags available to every template: login.html uses
+    email_auth to show/hide the email forms; the filler and pricing pages use
+    is_pro / is_admin / the account fields to render the right experience."""
+    return {
+        "email_auth": EMAIL_AUTH_ENABLED,
+        "is_authed": bool(session.get("role")),
+        "is_admin": session.get("role") == "admin",
+        "is_pro": _is_pro(),
+        "acct_name": session.get("user_name", ""),
+        "acct_email": session.get("user_email", ""),
+        "acct_picture": session.get("user_picture", ""),
+        "stripe_payment_link": STRIPE_PAYMENT_LINK,
+        "pro_price": PRO_PRICE,
+    }
 
 PASSWORD_ADMIN = os.environ.get("ADMIN_PASSWORD", "alien")
 
@@ -151,6 +165,42 @@ ADMIN_EMAILS = {
 def _role_for(email: str) -> str:
     """Map an email to its access role. Only allowlisted emails are admin."""
     return "admin" if (email or "").strip().lower() in ADMIN_EMAILS else "user"
+
+
+def _is_pro() -> bool:
+    """True if the signed-in user is on the Pro tier. Admins are always Pro so
+    the owner can use Pro features without paying themselves."""
+    return bool(session.get("is_pro")) or session.get("role") == "admin"
+
+
+# ---- Pro tier / billing --------------------------------------------------
+# Pro is sold via a Stripe Payment Link — paste the link from the Stripe
+# dashboard into STRIPE_PAYMENT_LINK and the upgrade buttons light up. Stripe
+# collects the buyer's email at checkout; the webhook below matches it to the
+# account and flips is_pro. STRIPE_WEBHOOK_SECRET is the signing secret for
+# that endpoint (Stripe dashboard → Webhooks). Without the secret the webhook
+# rejects everything, so an unauthenticated POST can never grant Pro.
+STRIPE_PAYMENT_LINK = os.environ.get("STRIPE_PAYMENT_LINK", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+# Display price for the pricing page. Kept here (not hardcoded in the template)
+# so it can be bumped without touching markup.
+PRO_PRICE = os.environ.get("PRO_PRICE", "$5/yr")
+
+
+def pro_required(f):
+    """Gate an /api/* route behind the Pro tier. Returns 403 if not signed in,
+    402 (Payment Required) with an upgrade URL if signed in but not Pro. This
+    is the real enforcement — the UI also hides Pro controls, but a free user
+    hitting the endpoint directly is stopped here."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get("role"):
+            return jsonify({"error": "authentication required"}), 403
+        if not _is_pro():
+            return jsonify({"error": "Pro required",
+                            "upgrade_url": url_for("pricing")}), 402
+        return f(*args, **kwargs)
+    return wrapper
 
 oauth = OAuth(app)
 oauth.register(
@@ -395,6 +445,9 @@ def _generate_hw_for_job(job_id: str) -> None:
     job = JOBS[job_id]
     font_id = _font_id_from_style(job.get("style_id"))
     if not font_id:
+        # No (or cleared) style → drop any cached handwriting so a re-render
+        # falls back to typeset text instead of stamping stale PNGs.
+        _write_hw_images(job_id, {})
         return
     from handwriting.font_render import render_text_png
     otf = font_store.font_path(font_id)
@@ -889,6 +942,8 @@ def admin():
         ads_enabled=get_ads_enabled(),
         vast_tags="\n".join(get_vast_tags()),
         ads_status=request.args.get("ads_status"),
+        pro_status=request.args.get("pro_status"),
+        pro_email=request.args.get("pro_email", ""),
     )
 
 
@@ -906,6 +961,22 @@ def change_user_password():
         return redirect(url_for("admin", pw_status="conflict"))
     set_user_password(new_pw)
     return redirect(url_for("admin", pw_status="ok"))
+
+
+@app.post("/admin/grant-pro")
+def grant_pro():
+    """Manually grant or revoke Pro for an account by email. The Stripe webhook
+    does this automatically on payment; this is the fallback (comps, refunds,
+    or buyers whose checkout email didn't match their login)."""
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    email = (request.form.get("email") or "").strip().lower()
+    grant = request.form.get("action") == "grant"
+    if not email:
+        return redirect(url_for("admin", pro_status="empty"))
+    ok = db.set_user_pro(email, grant)
+    status = ("granted" if grant else "revoked") if ok else "nouser"
+    return redirect(url_for("admin", pro_status=status, pro_email=email))
 
 
 @app.post("/admin/ads")
@@ -939,7 +1010,78 @@ def handwriting_onboarding():
     a handwriting font from it (see /api/fonts)."""
     if not session.get("role"):
         return redirect(url_for("login"))
+    if not _is_pro():
+        return redirect(url_for("pricing"))
     return render_template("handwriting.html")
+
+
+@app.route("/pricing")
+def pricing():
+    """Free vs Pro comparison + the upgrade call-to-action. Viewable signed-out
+    so it can double as a marketing page; the upgrade button routes to /login
+    first when there's no session (we need to know who's buying)."""
+    return render_template("pricing.html", upgraded=False)
+
+
+@app.route("/upgrade/success")
+def upgrade_success():
+    """Stripe's post-payment redirect lands here. The webhook is what actually
+    sets is_pro in the database; this route just re-reads the user's row so the
+    *current session* reflects Pro without making them log out and back in."""
+    if not session.get("role"):
+        return redirect(url_for("login"))
+    email = session.get("user_email", "")
+    user = db.get_user_by_email(email) if email else None
+    if user:
+        session["is_pro"] = bool(user.get("is_pro"))
+    return render_template("pricing.html", upgraded=True)
+
+
+def _verify_stripe_sig(payload: bytes, sig_header: str) -> bool:
+    """Verify a Stripe webhook signature without the Stripe SDK. Stripe signs
+    `"{timestamp}.{body}"` with HMAC-SHA256 keyed by the endpoint secret and
+    sends it as `Stripe-Signature: t=...,v1=...`. No secret configured ⇒ reject,
+    so a missing/misconfigured secret never silently trusts callers."""
+    if not STRIPE_WEBHOOK_SECRET or not sig_header:
+        return False
+    try:
+        parts = dict(p.split("=", 1) for p in sig_header.split(",") if "=" in p)
+        ts, v1 = parts.get("t"), parts.get("v1")
+        if not ts or not v1:
+            return False
+        if abs(time.time() - int(ts)) > 300:  # drop replays older than 5 min
+            return False
+        signed = ts.encode() + b"." + payload
+        expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode(), signed,
+                            hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, v1)
+    except (ValueError, TypeError):
+        return False
+
+
+@app.post("/stripe/webhook")
+def stripe_webhook():
+    """Stripe calls this when a checkout completes. We verify the signature,
+    then flip the buyer's account to Pro by the email Stripe collected. Public
+    (Stripe is unauthenticated) but signature-gated, and outside /api/ so the
+    login guard doesn't intercept it."""
+    payload = request.get_data()
+    if not _verify_stripe_sig(payload, request.headers.get("Stripe-Signature", "")):
+        return jsonify({"error": "bad signature"}), 400
+    try:
+        event = json.loads(payload or b"{}")
+    except ValueError:
+        return jsonify({"error": "bad payload"}), 400
+    if event.get("type") == "checkout.session.completed":
+        obj = event.get("data", {}).get("object", {}) or {}
+        email = ((obj.get("customer_details") or {}).get("email")
+                 or obj.get("customer_email") or "").strip().lower()
+        if email and db.set_user_pro(email, True):
+            print(f"[stripe] upgraded {email} to Pro")
+        else:
+            print(f"[stripe] checkout completed but no matching user for "
+                  f"'{email}' — grant Pro manually from /admin")
+    return jsonify({"received": True}), 200
 
 
 @app.route("/2d7883f358a775fc1a8f.txt")
@@ -1163,12 +1305,14 @@ def submit_feedback():
 
 
 @app.get("/api/fonts")
+@pro_required
 def list_fonts_route():
     """List the user's built handwriting fonts."""
     return jsonify({"fonts": font_store.list_fonts()})
 
 
 @app.get("/api/fonts/<font_id>/sample.png")
+@pro_required
 def font_sample(font_id: str):
     """Render a sample in a built font (used by the onboarding page). Pass
     ?text=... to preview arbitrary text; defaults to a short word."""
@@ -1188,6 +1332,8 @@ def download_template():
     """Serve the printable handwriting template (Pro onboarding step 1)."""
     if not session.get("role"):
         return redirect(url_for("login"))
+    if not _is_pro():
+        return redirect(url_for("pricing"))
     from handwriting import template as hw_template
     return send_file(io.BytesIO(hw_template.template_pdf_bytes()),
                      mimetype="application/pdf", as_attachment=True,
@@ -1195,13 +1341,12 @@ def download_template():
 
 
 @app.post("/api/fonts")
+@pro_required
 def build_font_route():
     """Build a handwriting font from a filled template and store it (Pro
     onboarding step 2). Multipart: 'template' = a multi-page PDF scan, or one
     file per page (in page order); 'name' = label. Returns {font_id, label}.
     The font then appears in /api/fonts."""
-    if not session.get("role"):
-        return jsonify({"error": "not signed in"}), 403
     files = [f for f in request.files.getlist("template") if f and f.filename]
     if not files:
         return jsonify({"error": "no template uploaded"}), 400
@@ -1229,6 +1374,7 @@ def build_font_route():
 
 
 @app.post("/api/style")
+@pro_required
 def upload_style():
     """Attach a user-built handwriting font to a job so the fill renders the
     answers in it. Body: {job_id, style: "font:<id>"}."""
@@ -1239,11 +1385,25 @@ def upload_style():
         return jsonify({"error": "unknown job_id"}), 404
 
     style = request.form.get("style") or data.get("style") or ""
-    if not _font_id_from_style(style):
+    # Empty style is allowed: it clears handwriting back to typeset text.
+    if style and not _font_id_from_style(style):
         return jsonify({"error": f"unknown font '{style}'"}), 400
-    job["style_id"] = style
+    job["style_id"] = style or None
+
+    # If the worksheet has already been filled (style picked from the editor),
+    # re-apply right away so the preview updates without a second fill pass.
+    # Pre-fill (style picked before /api/fill) there's nothing to render yet.
+    rerendered = False
+    if job.get("overlays") and job.get("filled_path"):
+        _generate_hw_for_job(job_id)
+        try:
+            _rerender_job(job_id)
+            rerendered = True
+        except Exception as e:
+            return jsonify({"error": f"render failed: {e}"}), 500
+
     save_job(job_id)
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "rerendered": rerendered})
 
 
 def _rerender_job(job_id: str) -> None:
