@@ -458,11 +458,18 @@ def _generate_hw_for_job(job_id: str) -> None:
         _write_hw_images(job_id, {})
         return
     from handwriting.font_render import render_text_png
+    from render import hw_wrap_width
     variants = font_store.font_variant_paths(font_id)
-    items = {ov["id"]: ov.get("text", "") for ov in job.get("overlays", [])}
+    # Keep each overlay's bbox so handwriting wraps to the slot width.
+    items = {ov["id"]: (ov.get("text", ""), ov.get("bbox"))
+             for ov in job.get("overlays", [])}
     try:
-        images = {ov_id: render_text_png(text, variants)
-                  for ov_id, text in items.items() if str(text).strip()}
+        images = {
+            ov_id: render_text_png(text, variants,
+                                   max_width_px=hw_wrap_width(bbox))
+            for ov_id, (text, bbox) in items.items()
+            if str(text).strip() and bbox
+        }
     except Exception as e:
         print(f"[handwriting] local font render failed, "
               f"falling back to text: {e}")

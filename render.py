@@ -8,6 +8,8 @@ import os
 
 import fitz
 
+from handwriting.font_render import LINE_BAND_PX
+
 
 # Tunables
 HANDWRITING_FONT = "helv"  # built-in PDF font
@@ -18,13 +20,26 @@ WATERMARK_PATH = os.path.join(os.path.dirname(__file__), "assets", "goodnotes_wa
 WATERMARK_WIDTH = 110   # px wide on the page (aspect ratio preserved)
 WATERMARK_MARGIN = 18   # px from the left and bottom edges
 
-# One-DM handwriting is generated at 64px tall; squeezing it into a ~14px slot
-# turns legible cursive into an illegible scratch. Render it noticeably taller
-# than typeset text (real handwriting is bigger than print and overshoots the
-# line), bottom-anchored a hair below the underscore so descenders dip under it.
-HW_TARGET_HEIGHT = 22   # px tall to aim for at the default font size, width allowing
-HW_BASE_SIZE = 11       # overlay font size HW_TARGET_HEIGHT is calibrated to
+# Handwriting is rendered by the font pipeline as fixed-height line bands
+# (LINE_BAND_PX tall each). The stamper scales every band to HW_LINE_PDF on the
+# page, so every answer comes out at the same line height regardless of length —
+# short answers no longer balloon and long ones no longer shrink to a scratch.
+HW_LINE_PDF = 15        # px tall each handwriting line band becomes on the page
 HW_DESCENDER_DROP = 3   # px the image bottom sits below the underscore line
+HW_THIN_H = 24          # bbox heights below this are single-line slots (inline blanks)
+
+
+def hw_wrap_width(bbox) -> float | None:
+    """Render-space pixel width to wrap a handwriting answer to so it flows onto
+    multiple lines at HW_LINE_PDF instead of being squeezed onto one line.
+    Returns None for thin inline-blank slots, which stay on a single line."""
+    box_w = bbox[2] - bbox[0]
+    box_h = bbox[3] - bbox[1]
+    if box_h < HW_THIN_H:
+        return None
+    # A band scaled by HW_LINE_PDF/LINE_BAND_PX should be <= box_w wide, so the
+    # wrap width in render-space px is box_w divided by that scale.
+    return box_w * LINE_BAND_PX / HW_LINE_PDF
 
 _OV_DEFAULTS = {
     "mode": "region",
@@ -110,38 +125,41 @@ def _overlay_to_html(ov: dict) -> str | None:
     return f'<p style="{css}">{_html_escape(text)}</p>'
 
 
-def _insert_handwriting_image(page, bbox, png_bytes: bytes,
-                              size: float = HW_BASE_SIZE) -> None:
-    """Stamp a transparent handwriting PNG into the slot. Rendered at a real
-    handwriting height (HW_TARGET_HEIGHT, scaled by the overlay's font `size`
-    so the size picker drives handwriting too) rather than crammed into the
-    thin text slot, with the baseline sitting on the underscore and descenders
-    dipping just below it. Left-aligned; the PNG already has the paper
-    background knocked out to alpha, so it overlays cleanly."""
+def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
+    """Stamp a transparent handwriting PNG into the slot at a consistent line
+    height. The PNG is a stack of fixed-height (LINE_BAND_PX) line bands, so
+    scaling every band to HW_LINE_PDF gives the same handwriting size for every
+    answer. Multi-line region answers are top-anchored (so they sit next to the
+    question, not way below it); single-line inline blanks bottom-anchor onto
+    the underscore and shrink to fit only if the answer overruns the blank. The
+    PNG already has the paper knocked out to alpha, so it overlays cleanly."""
     import io
     from PIL import Image
 
     x0, y0, x1, y1 = bbox
-    box_w = x1 - x0
+    box_w, box_h = x1 - x0, y1 - y0
     img_w, img_h = Image.open(io.BytesIO(png_bytes)).size
     if not (img_w and img_h):
         return
 
-    # Aim for HW_TARGET_HEIGHT scaled to the chosen font size, but if the word
-    # would then run past the blank's width, fall back to fitting the width
-    # (same behaviour typeset text has when a long answer must shrink). Aspect
-    # ratio is always preserved.
-    try:
-        target_h = HW_TARGET_HEIGHT * (float(size) / HW_BASE_SIZE)
-    except (TypeError, ValueError):
-        target_h = HW_TARGET_HEIGHT
-    scale = max(target_h, 1.0) / img_h
-    if img_w * scale > box_w:
-        scale = box_w / img_w
-    draw_w, draw_h = img_w * scale, img_h * scale
+    scale = HW_LINE_PDF / LINE_BAND_PX          # constant -> uniform line height
 
-    bottom = y1 + HW_DESCENDER_DROP            # let g/y/p tails dip under the line
-    rect = fitz.Rect(x0 + 1, bottom - draw_h, x0 + 1 + draw_w, bottom)
+    if box_h < HW_THIN_H:
+        # Inline blank: single line, bottom-anchored on the underscore. Only
+        # shrink if the answer would overrun the blank's width.
+        if img_w * scale > box_w:
+            scale = box_w / img_w
+        draw_w, draw_h = img_w * scale, img_h * scale
+        bottom = y1 + HW_DESCENDER_DROP         # let g/y/p tails dip under the line
+        rect = fitz.Rect(x0 + 1, bottom - draw_h, x0 + 1 + draw_w, bottom)
+    else:
+        # Open-response region: wrapped lines, top-anchored next to the question.
+        # If the wrapped block is taller than the region, scale it down to fit.
+        if img_h * scale > box_h:
+            scale = box_h / img_h
+        draw_w, draw_h = img_w * scale, img_h * scale
+        rect = fitz.Rect(x0 + 1, y0, x0 + 1 + draw_w, y0 + draw_h)
+
     page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
 
 
@@ -177,7 +195,7 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
     its own formatting (font, size, bold/italic/underline) which is applied
     via PyMuPDF's HTML/Story renderer.
 
-    If `images` maps an overlay id -> PNG bytes (handwriting from One-DM), that
+    If `images` maps an overlay id -> PNG bytes (rendered handwriting), that
     overlay is stamped as an image instead of typeset text.
     """
     images = images or {}
@@ -191,8 +209,7 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
         png = images.get(ov.get("id"))
         if png:
             try:
-                _insert_handwriting_image(page, ov["bbox"], png,
-                                          ov.get("size", _OV_DEFAULTS["size"]))
+                _insert_handwriting_image(page, ov["bbox"], png)
                 continue
             except Exception:
                 pass  # fall through to text rendering on any image failure
@@ -207,7 +224,11 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
             # htmlbox failed (bad rect, unsupported font) — fall back to plain text
             insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
     _stamp_watermark(doc)
-    doc.save(out_path)
+    # garbage=4 + deflate strip orphaned objects and compress streams; without
+    # them PyMuPDF leaves the source PDF's bloat in place (a study guide ballooned
+    # to ~178MB). With them the same file lands around 10MB.
+    doc.save(out_path, garbage=4, deflate=True, deflate_images=True,
+             deflate_fonts=True, clean=True)
     doc.close()
 
 

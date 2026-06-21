@@ -4,9 +4,11 @@ format ``render._insert_handwriting_image`` expects: dark ink on alpha, paper
 knocked out to transparent.
 
 We layout the words with Pillow (HarfBuzz/raqm when available, so ``+calt`` /
-``+liga`` fire), then add a GENTLE per-word elastic warp plus a touch of
-rotation and baseline jitter so repeated letters don't look stamped. The warp
-is deliberately small — a strong warp mangles the letterforms.
+``+liga`` fire). The ink sits on a flat, even baseline — no warping, rotation,
+or per-word jitter — so the script stays clean and legible. When a wrap width
+is supplied the text flows onto multiple lines at a constant size instead of
+being squeezed onto one long line; each line occupies a fixed-height band so
+the PDF stamper can scale every answer to the same line height.
 """
 
 from __future__ import annotations
@@ -16,15 +18,17 @@ import random
 
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFont
-from scipy.ndimage import gaussian_filter, map_coordinates
 
-RENDER_PX = 128            # tall render; the PDF stamper scales it down
-PAD = 24                   # padding around each word (room for warp/rotation)
+RENDER_PX = 110            # glyph size; the PDF stamper scales it down
+PAD = 6                    # horizontal padding around a line
 SPACE_FRAC = 0.32          # word gap as a fraction of the em
-WARP_DISP = 1.3            # elastic displacement, ~px per em-hundred (gentle)
-WARP_SIGMA = 14            # smoothness of the elastic field
-MAX_ROTATE = 2.2           # degrees of per-word rotation
-MAX_BASELINE_JITTER = 4    # px of per-word vertical jitter
+
+# Each rendered line lives in a band of this fixed pixel height with its
+# baseline at BASELINE_FRAC down the band. Because the band height is constant,
+# a multi-line image is exactly ``nlines * LINE_BAND_PX`` tall, which lets the
+# stamper recover the line count and scale every answer to one line height.
+LINE_BAND_PX = 150
+BASELINE_FRAC = 0.74
 
 
 def _layout_engine():
@@ -37,44 +41,20 @@ def _layout_engine():
 _FEATURES = ["+calt", "+liga"]
 
 
-def _elastic(arr: np.ndarray, rng: random.Random) -> np.ndarray:
-    """Gentle elastic warp of a grayscale (white-bg) word image."""
-    h, w = arr.shape
-    seed = rng.randrange(2**31)
-    state = np.random.RandomState(seed)
-    disp = WARP_DISP * RENDER_PX / 100.0
-    dx = gaussian_filter(state.rand(h, w) * 2 - 1, WARP_SIGMA)
-    dy = gaussian_filter(state.rand(h, w) * 2 - 1, WARP_SIGMA)
-    # Normalise the smoothed field to a known peak displacement.
-    for d in (dx, dy):
-        m = np.abs(d).max() or 1.0
-        d *= disp / m
-    yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
-    coords = [(yy + dy).ravel(), (xx + dx).ravel()]
-    out = map_coordinates(arr, coords, order=1, mode="constant", cval=255.0)
-    return out.reshape(h, w)
-
-
-def _render_word(word: str, font: ImageFont.FreeTypeFont, feats,
-                 rng: random.Random) -> tuple[Image.Image, int]:
-    """Render one word to a grayscale (black-on-white) image with a gentle
-    warp + rotation. Returns (image, baseline_y_within_image)."""
+def _render_word(word: str, font: ImageFont.FreeTypeFont,
+                 feats) -> tuple[Image.Image, int]:
+    """Render one word to a tight grayscale (black-on-white) image on a flat
+    baseline. Returns (image, baseline_y_within_image)."""
     ascent, descent = font.getmetrics()
     probe = Image.new("L", (8, 8), 255)
     bbox = ImageDraw.Draw(probe).textbbox((0, 0), word, font=font,
                                           anchor="la", features=feats)
     w = max(bbox[2] - bbox[0], 1)
-    img = Image.new("L", (w + 2 * PAD, ascent + descent + 2 * PAD), 255)
-    ImageDraw.Draw(img).text((PAD - bbox[0], PAD), word, font=font,
+    img = Image.new("L", (w, ascent + descent), 255)
+    # anchor "la" draws the text top at y=0, so the baseline sits at `ascent`.
+    ImageDraw.Draw(img).text((-bbox[0], 0), word, font=font,
                              fill=0, anchor="la", features=feats)
-
-    img = Image.fromarray(_elastic(np.asarray(img, dtype=np.float64), rng)
-                          .clip(0, 255).astype(np.uint8))
-    angle = rng.uniform(-MAX_ROTATE, MAX_ROTATE)
-    img = img.rotate(angle, resample=Image.BILINEAR, expand=True, fillcolor=255)
-
-    baseline = PAD + ascent + (img.height - (ascent + descent + 2 * PAD)) // 2
-    return img, baseline
+    return img, ascent
 
 
 def _load_font(path: str) -> ImageFont.FreeTypeFont:
@@ -84,15 +64,35 @@ def _load_font(path: str) -> ImageFont.FreeTypeFont:
         return ImageFont.truetype(path, RENDER_PX)
 
 
-def render_text_png(text: str, otf_path, seed: int | None = None) -> bytes:
+def _compose_line(words: list[tuple[Image.Image, int]], space: int) -> Image.Image:
+    """Paste a line of (word_image, baseline) onto a fixed-height band with a
+    common, flat baseline."""
+    baseline_y = int(LINE_BAND_PX * BASELINE_FRAC)
+    width = sum(im.width for im, _ in words) + space * (len(words) - 1) + 2 * PAD
+    band = Image.new("L", (max(width, 1), LINE_BAND_PX), 255)
+    x = PAD
+    for im, baseline in words:
+        y = baseline_y - baseline
+        # Clamp so a tall font can't spill out of the band (rare).
+        y = max(0, min(y, LINE_BAND_PX - im.height))
+        region = band.crop((x, y, x + im.width, y + im.height))
+        band.paste(ImageChops.darker(region, im), (x, y))
+        x += im.width + space
+    return band
+
+
+def render_text_png(text: str, otf_path, seed: int | None = None,
+                    max_width_px: float | None = None) -> bytes:
     """Render ``text`` to transparent-PNG bytes (dark ink on alpha). Empty /
     whitespace text yields b''.
 
     ``otf_path`` is a font path, or a list of variant paths (one per filled
     template copy the user uploaded). With multiple variants a font is chosen
-    per word, so repeated words/letters across the page don't look stamped —
-    important because contextual-alternate (calt) glyph cycling needs raqm,
-    which isn't always available."""
+    per word so repeated words/letters across the page don't look stamped.
+
+    If ``max_width_px`` is given, words are wrapped onto multiple fixed-height
+    line bands so each line stays within that pixel width; otherwise everything
+    is laid out on a single line (used for the handwriting-sample preview)."""
     text = (text or "").strip()
     if not text:
         return b""
@@ -113,33 +113,39 @@ def render_text_png(text: str, otf_path, seed: int | None = None) -> bytes:
         feats = None
 
     space = int(RENDER_PX * SPACE_FRAC)
-    # Pick a variant per word for natural variation across repeats.
-    words = [_render_word(w, rng.choice(fonts), feats, rng) for w in text.split()]
-    if not words:
+    # Render each word (variant chosen per word for natural variation).
+    rendered = [_render_word(w, rng.choice(fonts), feats) for w in text.split()]
+    if not rendered:
         return b""
 
-    above = max(b for _, b in words) + MAX_BASELINE_JITTER + 2
-    below = max(im.height - b for im, b in words) + MAX_BASELINE_JITTER + 2
-    total_w = sum(im.width for im, _ in words) + space * (len(words) - 1) + 2 * PAD
-    canvas = Image.new("L", (total_w, above + below), 255)
+    # Greedy word-wrap into lines that fit max_width_px (render-space px).
+    lines: list[list[tuple[Image.Image, int]]] = []
+    cur: list[tuple[Image.Image, int]] = []
+    cur_w = 0
+    for im, baseline in rendered:
+        add = im.width if not cur else cur_w + space + im.width
+        if max_width_px and cur and add > max_width_px:
+            lines.append(cur)
+            cur, cur_w = [(im, baseline)], im.width
+        else:
+            cur.append((im, baseline))
+            cur_w = add
+    if cur:
+        lines.append(cur)
 
-    x = PAD
-    for im, baseline in words:
-        jitter = rng.randint(-MAX_BASELINE_JITTER, MAX_BASELINE_JITTER)
-        y = above - baseline + jitter
-        region = canvas.crop((x, y, x + im.width, y + im.height))
-        canvas.paste(ImageChops.darker(region, im), (x, y))
-        x += im.width + space
+    line_imgs = [_compose_line(line, space) for line in lines]
+    total_w = max(im.width for im in line_imgs)
+    canvas = Image.new("L", (total_w, LINE_BAND_PX * len(line_imgs)), 255)
+    for i, im in enumerate(line_imgs):
+        canvas.paste(im, (0, i * LINE_BAND_PX))
 
-    # Knock the white paper out to alpha; keep dark ink.
+    # Knock the white paper out to alpha; keep dark ink. Crop horizontally only
+    # — the full band height per line is the stamper's scaling contract.
     gray = np.asarray(canvas, dtype=np.uint8)
     alpha = 255 - gray
     cols = np.where(alpha.max(axis=0) > 8)[0]
-    rows = np.where(alpha.max(axis=1) > 8)[0]
-    if cols.size and rows.size:
-        x0, x1 = cols[0], cols[-1] + 1
-        y0, y1 = rows[0], rows[-1] + 1
-        alpha = alpha[y0:y1, x0:x1]
+    if cols.size:
+        alpha = alpha[:, cols[0]:cols[-1] + 1]
     h, w = alpha.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)   # black ink (RGB stays 0)
     rgba[..., 3] = alpha
