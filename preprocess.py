@@ -75,7 +75,7 @@ def is_empty_bullet_line(line: dict) -> bool:
     return strip_bullet_prefix(line["text"]).strip() == ""
 
 
-# The four answer formats the user can ask us to detect. The scanned/vision
+# The four answer formats the user can ask us to detect. The scanned/OCR
 # path is not listed here \u2014 it fires automatically for image-only pages.
 ALL_FORMATS = ("inline_blanks", "open_response", "bullet_answer", "table")
 
@@ -721,7 +721,7 @@ def page_is_scanned(page) -> bool:
     """
     True if the page is a scan, even when it carries a (often garbled) OCR text
     layer. Detected by a single image block covering most of the page. Such
-    pages must go through the vision detector — the text-layer parser would
+    pages must go through the OCR detector — the text-layer parser would
     otherwise run on OCR noise and emit junk units.
     """
     page_area = page.rect.width * page.rect.height
@@ -744,7 +744,7 @@ def preprocess_pdf(path: str, formats=None) -> dict:
     ALL_FORMATS ("inline_blanks", "open_response", "bullet_answer", "table").
     The user picks these in the UI instead of us guessing. When omitted (or
     empty after filtering), all formats run, preserving the old behaviour.
-    The scanned/vision path always runs for image-only pages regardless.
+    The scanned/OCR path always runs for image-only pages regardless.
     """
     active = set(formats) & set(ALL_FORMATS) if formats else set()
     if not active:
@@ -753,18 +753,18 @@ def preprocess_pdf(path: str, formats=None) -> dict:
     doc = fitz.open(path)
     counter = {"u": 0, "n": 0}  # unit, slot counters
     all_units: list[Unit] = []
-    vision_client = None
+    ocr_client = None
 
     for page_num, page in enumerate(doc):
         # Scanned page: either no text layer at all, or a full-page image with a
         # baked-in OCR text layer that would feed the text parser pure noise.
-        # Either way, route it through the vision detector.
+        # Either way, route it through the OCR detector.
         if page_is_scanned(page) or not page_has_text_layer(page):
             from vision_preprocess import detect_scanned_page, _build_client
-            if vision_client is None:
-                vision_client = _build_client()
+            if ocr_client is None:
+                ocr_client = _build_client()
             all_units.extend(
-                detect_scanned_page(page, page_num, counter, client=vision_client)
+                detect_scanned_page(page, page_num, counter, client=ocr_client)
             )
             continue
 

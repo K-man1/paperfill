@@ -251,6 +251,15 @@ def send_verification_email(to_email: str, verify_url: str) -> None:
 # when answering a hand-snipped question (see /api/snip).
 SNIP_REF_MAX = 12000
 
+# Answer-then-anchor fill: when on, /api/fill shows the worksheet page image(s)
+# to the model so it answers from what it can SEE (answer banks, matching option
+# lists, tables, diagrams) instead of from the transcribed text alone. Detection
+# still owns where each answer is anchored. Set PAPERFILL_VISION_FILL=0 to revert
+# to the text-only fill (call_openai_to_fill).
+VISION_FILL = os.environ.get("PAPERFILL_VISION_FILL", "1") != "0"
+# DPI for the page images sent to the vision fill.
+VISION_FILL_DPI = int(os.environ.get("VISION_FILL_DPI", "150"))
+
 # The user access code is changeable from the admin panel and persisted to
 # disk so it survives restarts and is shared across all gunicorn workers. It
 # is read fresh from disk on every login attempt, so a change takes effect
@@ -643,6 +652,110 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict
     if not flat:
         print(f"[fill] WARNING: LLM returned no usable answers. Raw (first 800 chars):\n{content[:800]}")
     return flat
+
+
+def _render_page_pngs(pdf_path: str, dpi: int = VISION_FILL_DPI) -> list[bytes]:
+    """Render each PDF page to PNG bytes for the vision fill."""
+    out: list[bytes] = []
+    doc = fitz.open(pdf_path)
+    try:
+        for page in doc:
+            out.append(page.get_pixmap(dpi=dpi).tobytes("png"))
+    finally:
+        doc.close()
+    return out
+
+
+_VISION_FILL_SYSTEM = (
+    "You are filling in a worksheet. You are shown ONE worksheet page image AND "
+    "a JSON list of the 'units' detected on that page. Each unit has an id and a "
+    "prompt: 'inline_blanks'/'table' prompts contain {{slot_id}} placeholders "
+    "(answer each slot_id); 'open_response' units are keyed by their answer_key.\n"
+    "Answer EVERY unit in the list — do not skip any. Read the PAGE IMAGE to "
+    "understand each item: use any answer bank, word box, matching option list, "
+    "table, diagram or worked example you can see. The image is authoritative; "
+    "the unit list just tells you which id each answer belongs to.\n"
+    "MATCHING items: when a term has a blank and there is a SEPARATE list of "
+    "lettered or numbered options (e.g. 'A. to wake up', '1. nucleus'), the "
+    "answer is the matching option's LABEL — the letter or number — NOT the "
+    "option's text.\n"
+    "Give the ACTUAL answer in the language and format the item calls for (a "
+    "word, phrase, conjugated verb, letter, number, date, …). Be accurate. "
+    "Never reply with meta or filler text. For a multi-part answer (point k "
+    "of n), write a DIFFERENT specific point in each, never repeating.\n"
+    "If the user provides instructions or an answer key, treat those as "
+    "authoritative and prefer them over your own knowledge.\n"
+    "Return ONLY a JSON object: {\"<slot_or_unit_id>\": \"<answer>\", ...}. "
+    "No prose, no markdown, no <think> tags. /no_think"
+)
+
+
+def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
+                          instructions: str = "") -> dict[str, str]:
+    """One vision fill call for a single page's units + that page's image."""
+    structure_json = json.dumps(structure_for_llm, ensure_ascii=False)
+    instructions = (instructions or "").strip()
+
+    content: list[dict] = []
+    if instructions:
+        content.append({"type": "text", "text": (
+            "User-provided answer key / instructions (authoritative — prefer "
+            "over your own knowledge):\n" + instructions)})
+    content.append({"type": "text",
+                    "text": "Units detected on this page:\n" + structure_json})
+    data_uri = "data:image/png;base64," + base64.b64encode(png).decode()
+    content.append({"type": "image_url", "image_url": {"url": data_uri}})
+
+    response = get_openai_client().chat.completions.create(
+        model=VISION_MODEL,
+        messages=[
+            {"role": "system", "content": _VISION_FILL_SYSTEM},
+            {"role": "user", "content": content},
+        ],
+        response_format={"type": "json_object"},
+    )
+    raw = response.choices[0].message.content or "{}"
+    flat = _flatten_answers(extract_json_object(raw))
+    if not flat:
+        print(f"[fill] WARNING: vision fill returned no usable answers. "
+              f"Raw (first 400 chars):\n{raw[:400]}")
+    return flat
+
+
+def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
+                        instructions: str = "") -> dict[str, str]:
+    """
+    Answer-then-anchor fill, ONE call per page (run in parallel).
+
+    The model is shown a single page image plus the units detected on that page
+    and returns {slot_or_unit_id: answer}. Per-page is deliberate: a single call
+    spanning every page makes the model answer only the first page and stop, so a
+    long study guide came back mostly blank. Splitting keeps each response small
+    and complete, and the calls fan out across threads.
+
+    Seeing the page lets the model use answer banks, matching option lists,
+    tables and layout the transcribed structure can't convey. Detection still
+    owns WHERE each answer is anchored; this owns only the answer text, keyed by
+    the same slot/unit ids.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    by_page: dict[int, list] = {}
+    for u in structure.get("units", []):
+        by_page.setdefault(u.get("page", 0), []).append(u)
+
+    def fill_page(pidx: int) -> dict[str, str]:
+        if pidx < 0 or pidx >= len(page_pngs):
+            return {}
+        sub = strip_bboxes_for_llm({"units": by_page[pidx]})
+        return _vision_fill_one_page(sub, page_pngs[pidx], instructions)
+
+    pages = sorted(by_page)
+    answers: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(pages) or 1)) as ex:
+        for part in ex.map(fill_page, pages):
+            answers.update(part)
+    return answers
 
 
 _KEY_SUFFIX_RE = re.compile(r"(s\d+|u\d+)$")
@@ -1158,9 +1271,11 @@ def upload():
         except (TypeError, json.JSONDecodeError):
             formats = None
 
-    # Detector selection: deterministic (preprocess.py, default) vs the
-    # multimodal vision path. Chosen per-request via the `detector` form field
-    # or globally via the PAPERFILL_DETECTOR env var.
+    # Detector selection: deterministic ("Standard", preprocess.py, default) vs
+    # the "AI Vision" path (multimodal_preprocess.py). Note this is separate from
+    # the OCR path (vision_preprocess.py), which fires automatically on scanned
+    # pages. Chosen per-request via the `detector` form field or globally via the
+    # PAPERFILL_DETECTOR env var.
     detector_mode = (request.form.get("detector")
                      or os.environ.get("PAPERFILL_DETECTOR")
                      or "deterministic").strip().lower()
@@ -1275,10 +1390,21 @@ def fill():
             f"(use it as authoritative source material):\n{context_text}"
         ).strip()
     structure_for_llm = strip_bboxes_for_llm(job["structure"])
-    try:
-        answers = call_openai_to_fill(structure_for_llm, instructions)
-    except Exception as e:
-        return jsonify({"error": f"LLM call failed: {e}"}), 502
+    answers: dict[str, str] = {}
+    # Primary path: answer-then-anchor — let the model see the page so it can use
+    # answer banks, matching options and layout. Falls back to the text-only fill
+    # if the vision call errors or comes back empty.
+    if VISION_FILL:
+        try:
+            page_pngs = _render_page_pngs(job["pdf_path"])
+            answers = call_vision_to_fill(job["structure"], page_pngs, instructions)
+        except Exception as e:
+            print(f"[fill] vision fill failed ({e}); falling back to text-only")
+    if not answers:
+        try:
+            answers = call_openai_to_fill(structure_for_llm, instructions)
+        except Exception as e:
+            return jsonify({"error": f"LLM call failed: {e}"}), 502
 
     overlays = build_overlays_from_structure(job["structure"], answers)
     job["answers"] = answers

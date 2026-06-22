@@ -1,9 +1,12 @@
 """
-Vision-based detection for scanned (image-only) PDF pages.
+OCR detection for scanned (image-only) PDF pages.
+
+This is the OCR path. It runs automatically on scanned pages and is separate
+from the user-selectable "AI Vision" detector in multimodal_preprocess.py.
 
 The text-layer pipeline in preprocess.py needs real characters and
 underscore runs. Scanned worksheets have neither — each page is a single
-raster image. This module renders such a page, asks a vision model to
+raster image. This module renders such a page, asks an OCR (vision) model to
 locate every fill-in prompt and its blank line(s), and converts the
 result into the same Unit/Slot structure the renderer consumes.
 

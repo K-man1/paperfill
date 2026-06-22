@@ -1,8 +1,12 @@
 """
-Multimodal answer-space detector — a parallel path to preprocess.py.
+AI Vision answer-space detector — a parallel path to preprocess.py.
+
+This is the "AI Vision" detection method the user picks on the home screen
+(detector=multimodal). It is distinct from the OCR path in vision_preprocess.py,
+which only runs automatically on scanned image-only pages.
 
 Instead of finding blanks deterministically from underscore runs and vertical
-gaps, this module asks a vision model to read the worksheet and list every
+gaps, this module asks an AI Vision model to read the worksheet and list every
 place a student writes an answer. Crucially the model never emits coordinates:
 for each answer space it returns the printed text the blank attaches to
 (`anchor_text`, transcribed verbatim) plus where the blank sits relative to
@@ -456,14 +460,19 @@ def _first_real_char(flat, src_start, src_end):
 # Geometry derivation (reuses preprocess routines).
 # --------------------------------------------------------------------------
 
-def _inline_slot_bbox(line, anchor_ci, position):
+def _inline_slot_bbox(line, anchor_ci, position, page):
     """
     Re-derive the blank geometry for an inline anchor on `line`.
 
     First tries to reuse an actual underscore run (find_underscore_runs /
     bbox_of_chars) adjacent to the anchor on the side `position` points to.
     If there is no literal run (the blank is bare space, e.g. after a dash),
-    synthesize a same-height region of SYNTH_BLANK_WIDTH on that side.
+    synthesize a region on that side. For an "after" blank the synthesized box
+    runs to the next printed text on the line (or the right margin when the
+    anchor ends the line) instead of a fixed width — a fixed width here is the
+    main reason AI Vision blanks came out too small on whitespace worksheets.
+    "before" blanks stay capped at SYNTH_BLANK_WIDTH (they are usually short
+    matching-letter blanks where a small box is correct).
 
     Returns (bbox, underscore_length).
     """
@@ -490,9 +499,19 @@ def _inline_slot_bbox(line, anchor_ci, position):
         anchor_x1 = chars[anchor_ci]["bbox"][2]
         if chars[rs]["bbox"][0] - anchor_x1 <= ANCHOR_RUN_GAP:
             return bbox_of_chars(chars, rs, re_), re_ - rs + 1
-    # synthesize to the right of the anchor
+    # No literal underscore run: synthesize a blank that runs from just past the
+    # anchor to the next printed text on the line, or to the right margin if the
+    # anchor ends the line. This gives definition/sentence blanks real room.
     ax0, ay0, ax1, ay1 = chars[anchor_ci]["bbox"]
-    return (ax1 + 3, ay0, ax1 + 3 + SYNTH_BLANK_WIDTH, ay1), 0
+    start_x = ax1 + 3
+    right_limit = page.rect.x1 - PAGE_RIGHT_MARGIN
+    for c in chars[anchor_ci + 1:]:
+        if c["bbox"] and not c["c"].isspace():
+            right_limit = min(right_limit, c["bbox"][0] - 4)
+            break
+    end_x = (right_limit if right_limit - start_x >= 8
+             else start_x + SYNTH_BLANK_WIDTH)
+    return (start_x, ay0, end_x, ay1), 0
 
 
 def _open_region_for_anchor(anchor_bbox, page, lines, obstacle_bboxes):
@@ -712,7 +731,7 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
             drop(item, "no_anchor_bbox")
             continue
         line = pidx.lines[end_char["line"]]
-        slot_bbox, ulen = _inline_slot_bbox(line, end_char["ci"], position)
+        slot_bbox, ulen = _inline_slot_bbox(line, end_char["ci"], position, pidx.page)
 
         counter["u"] += 1
         counter["n"] += 1
