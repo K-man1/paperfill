@@ -23,36 +23,25 @@ You can also feed extra context (a pasted file or a YouTube transcript via `cont
 ### Setup
 
 ```bash
-git clone <repo-url> PaperFill
+git clone https://github.com/K-man1/paperfill
 cd PaperFill
 
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env              # then edit .env (see below)
 ```
 
-### Configure `.env`
-
-```bash
-# generate a session signing key
-python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-Put that value in `SECRET_KEY`. Useful keys:
+### Configure .env
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SECRET_KEY` | random per-boot | Flask session signing. Set it so sessions survive restarts. |
-| `PORT` | `8080` | Port the server binds to. |
 | `AI_API_KEY` | — | AI key. I use HCAI for a free AI API key for teens. |
-| `AI_BASE_URL` / `AI_MODEL` | proxy defaults / `openai/gpt-5.5` | Point at OpenAI or another provider instead. |
-| `PAPERFILL_DETECTOR` | `deterministic` | Set `multimodal` to route uploads through the vision path. Also selectable per-upload. |
-| `EMAIL_AUTH` | `0` (off) | Enable email/password sign-in alongside Google. |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enable "Sign in with Google". |
-| `ADMIN_EMAILS` | `my email` | Comma-separated email addresses for admins account so that I can see the `/admin` dashboard. |
-| `SUPABASE_URL` / `SUPABASE_SECRET_KEY` | — | Backs the admin dashboard stats. |
+| `AI_BASE_URL` / `AI_MODEL` | HCAI proxy / `openai/gpt-5.5` | uhhhhh i think u can guess |
+| `EMAIL_AUTH` | `0` (off) | do 1 to enable email/password sign-in alongside Google. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | config for "Sign in with Google". |
+| `ADMIN_EMAILS` | `my email` | the emails u wanna have users as admins. they can see the admin dashboard |
+| `SUPABASE_URL` / `SUPABASE_SECRET_KEY` | — | stores info for admin dashboard |
 
 ### Start it
 Development:
@@ -85,20 +74,3 @@ templates/                Frontend (index.html, handwriting.html, login, admin)
 uploads/                  User uploads (one .pdf per job)
 outputs/                  Filled PDFs + preview images
 ```
-
-## Key routes
-
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/` | GET | Main worksheet-filler UI |
-| `/handwriting` | GET | Handwriting-font onboarding |
-| `/login`, `/logout` | — | Auth |
-| `/auth/google`, `/auth/google/callback` | — | Google OAuth |
-| `/admin` | GET | Admin dashboard (stats) |
-| `/api/upload` | POST | multipart PDF → `{job_id, slot_count, ...}` |
-| `/api/context` | POST | Attach extra context to a job |
-| `/api/fill` | POST | `{job_id}` → LLM fills slots, renders, returns answers |
-| `/api/update`, `/api/snip`, `/api/refine` | POST | Edit / re-fill specific answers |
-| `/api/fonts`, `/api/fonts/template`, `/api/style` | — | Handwriting-font build & apply |
-| `/api/download/<job_id>` | GET | Stream the filled PDF |
-| `/api/preview/<job_id>/<which>/<page>` | GET | PNG preview of original/filled page |

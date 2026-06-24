@@ -167,9 +167,26 @@ def test_font_store_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(font_store, "FONTS_DIR", tmp_path / "fonts")
     monkeypatch.setattr(font_store, "_INDEX", tmp_path / "fonts" / "index.json")
 
-    assert not font_store.has_fonts()
-    fid = font_store.save_font("My Hand", b"not-a-real-otf-but-bytes")
+    sub = "user-123"
+    assert font_store.user_font(sub) is None
+    assert font_store.list_fonts_for(sub) == []
+
+    fid = font_store.save_user_font(sub, [b"otf-one", b"otf-two"])
+    assert fid == font_store.user_font_id(sub)            # id derives from sub
     assert font_store.font_path(fid) is not None
-    assert {"id": fid, "label": "My Hand"} in font_store.list_fonts()
-    assert font_store.has_fonts()
-    assert font_store.save_font("My Hand", b"second") != fid   # no clobber
+    assert font_store.font_variant_paths(fid) == [
+        str(tmp_path / "fonts" / f"{fid}.otf"),
+        str(tmp_path / "fonts" / f"{fid}.v2.otf"),
+    ]
+    assert font_store.user_font(sub) == {
+        "id": fid, "label": font_store.LABEL, "variants": 2,
+    }
+    assert font_store.list_fonts_for(sub) == [{"id": fid, "label": font_store.LABEL}]
+
+    # Rebuilding replaces in place: same id, stale variants are cleared.
+    assert font_store.save_user_font(sub, [b"only-one"]) == fid
+    assert font_store.user_font(sub)["variants"] == 1
+    assert font_store.font_variant_paths(fid) == [str(tmp_path / "fonts" / f"{fid}.otf")]
+
+    # A different user gets a different, isolated id.
+    assert font_store.save_user_font("user-456", [b"x"]) != fid
