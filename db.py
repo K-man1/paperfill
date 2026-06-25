@@ -208,11 +208,12 @@ def get_or_create_user(google_sub: str, email: str, name: str, picture: str) -> 
                 return rows[0]
         # Create new user. Google already verified the email it hands us, so
         # these accounts are email_verified from birth (no need to re-check).
+        # New sign-ups get Pro automatically.
         r = requests.post(
             _rest("users"),
             headers=_headers({"Prefer": "return=representation"}),
             json={"google_sub": google_sub, "email": email, "name": name,
-                  "picture": picture, "email_verified": True},
+                  "picture": picture, "email_verified": True, "is_pro": True},
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:
@@ -245,7 +246,7 @@ def create_email_user(email: str, password_hash: str, name: str,
             headers=_headers({"Prefer": "return=representation"}),
             json={"email": email, "password_hash": password_hash, "name": name,
                   "email_verified": False, "verification_token": token,
-                  "token_expires": token_expires},
+                  "token_expires": token_expires, "is_pro": True},
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:
