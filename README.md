@@ -13,3 +13,30 @@ I personally use it for my HW (dont tell me teachers 😭) and for quickly compl
 Use it here: [karman.hackclub.app](karman.hackclub.app)
 
 See the demo: [https://www.youtube.com/watch?v=bDNsQvA0_DU&feature=youtu.be](demo) plz dont judge the cough
+
+## Features
+
+- Editing
+  - I knew it wasnt gunna be perfect ALL the time, so I added the ability to add, edit, and remove text boxes
+  - You can also edit text boxes with AI. Just select a text box and choose lengthen, shorten, or give it another prompt
+- AI screenshots
+  - So I also knew if ur getting AI to fill the PDF for you, sometimes you may not know the info. that means you can take a "screenshot" of the question and AI will answer it and you can move the answer to the correct location.
+- Handwriting
+  - Simply upload a filled template of your handwriting, and then you can have PDFs filled in with what looks like your handwriting.(https://github.com/yashlamba/handwrite)
+
+## Prerequisites
+
+Python 3.10+
+potrace system binary (only needed for the handwriting-font feature)
+macOS: brew install potrace
+Debian/Ubuntu: apt-get install potrace
+
+## Setup
+``` 
+git clone https://github.com/K-man1/paperfill
+cd PaperFill
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
