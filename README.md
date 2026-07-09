@@ -27,8 +27,11 @@ See the demo: [https://www.youtube.com/watch?v=bDNsQvA0_DU&feature=youtu.be](dem
 ## Prerequisites
 
 Python 3.10+
+
 potrace system binary (only needed for the handwriting-font feature)
+
 macOS: brew install potrace
+
 Debian/Ubuntu: apt-get install potrace
 
 ## Setup
