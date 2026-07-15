@@ -60,8 +60,13 @@ from context_sources import (extract_file_text, fetch_youtube_transcript,
 BASE_DIR = Path(__file__).parent
 UPLOADS = BASE_DIR / "uploads"
 OUTPUTS = BASE_DIR / "outputs"
+# Snapshots of PDFs attached to user problem reports. Deliberately outside
+# uploads/ so sweep_old_jobs() can't delete the evidence for a report that
+# hasn't been looked at yet.
+REPORTS = BASE_DIR / "reports"
 UPLOADS.mkdir(exist_ok=True)
 OUTPUTS.mkdir(exist_ok=True)
+REPORTS.mkdir(exist_ok=True)
 
 MAX_UPLOAD_MB = 10
 ALLOWED_EXT = {".pdf"}
@@ -324,7 +329,6 @@ DONATE_URL = ""
 # source of truth across gunicorn workers, which is what finally kills the
 # "two different tallies on refresh" bug that per-worker memory and per-file
 # JSON both suffered from.
-VALID_RATINGS = db.VALID_RATINGS
 
 def _client_ip() -> str:
     return request.remote_addr or "unknown"
@@ -545,6 +549,8 @@ def sweep_old_jobs() -> None:
         except OSError:
             continue
         shutil.rmtree(d, ignore_errors=True)
+        # reports/<id>.pdf is intentionally left alone: a reported PDF outlives
+        # its job so the report is still reproducible when it's read.
         (UPLOADS / f"{d.name}.pdf").unlink(missing_ok=True)
         JOBS.pop(d.name, None)
 
@@ -553,6 +559,36 @@ def sweep_old_jobs() -> None:
 
 def new_job_id() -> str:
     return secrets.token_urlsafe(12)
+
+
+# Job ids are secrets.token_urlsafe() output, i.e. the URL-safe base64 alphabet.
+# Anything else is refused before it can reach a filesystem path.
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def reported_pdf_path(job_id: str) -> Path | None:
+    """Path to the PDF snapshotted for a report, or None if the id is
+    malformed or no snapshot exists."""
+    if not _JOB_ID_RE.match(job_id or ""):
+        return None
+    path = REPORTS / f"{job_id}.pdf"
+    return path if path.is_file() else None
+
+
+def _snapshot_reported_pdf(job_id: str) -> bool:
+    """Copy a reported job's uploaded PDF into reports/. Best-effort: returns
+    False (without raising) if the id is bad or the upload is already gone."""
+    if not _JOB_ID_RE.match(job_id or ""):
+        return False
+    src = UPLOADS / f"{job_id}.pdf"
+    if not src.is_file():
+        return False
+    try:
+        shutil.copy2(src, REPORTS / f"{job_id}.pdf")
+        return True
+    except OSError as e:
+        print(f"[report] snapshot failed for {job_id}: {e}")
+        return False
 
 
 def strip_bboxes_for_llm(structure: dict) -> dict:
@@ -1059,14 +1095,14 @@ def admin():
         e["timestamp"] = _fmt_ts(e.get("ts"))
     for e in activity_log:
         e["timestamp"] = _fmt_ts(e.get("ts"))
+        # A non-empty `feedback` column *is* a report — the report text and the
+        # PDF snapshot are written together by /api/report.
+        e["reported"] = bool((e.get("feedback") or "").strip())
+        e["has_pdf"] = reported_pdf_path(e.get("job_id") or "") is not None
     user_count = sum(1 for e in signin_log if e.get("result") == "user")
     admin_count = sum(1 for e in signin_log if e.get("result") == "admin")
     fail_count = sum(1 for e in signin_log if e.get("result") == "failed")
-    rating_counts = {
-        "green": sum(1 for e in activity_log if e.get("rating") == "green"),
-        "yellow": sum(1 for e in activity_log if e.get("rating") == "yellow"),
-        "red": sum(1 for e in activity_log if e.get("rating") == "red"),
-    }
+    report_count = sum(1 for e in activity_log if e["reported"])
     return render_template(
         "admin.html",
         logs=signin_log,
@@ -1076,7 +1112,7 @@ def admin():
         fail_count=fail_count,
         activity=activity_log,
         activity_total=len(activity_log),
-        rating_counts=rating_counts,
+        report_count=report_count,
         device_count=db.device_count(),
         db_enabled=db.enabled(),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -1088,6 +1124,20 @@ def admin():
         pro_status=request.args.get("pro_status"),
         pro_email=request.args.get("pro_email", ""),
     )
+
+
+@app.get("/admin/report/<job_id>/pdf")
+def admin_report_pdf(job_id: str):
+    """Download the PDF a user attached to their problem report. Admin only —
+    these are other people's documents."""
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    path = reported_pdf_path(job_id)
+    if path is None:
+        abort(404)
+    return send_file(path, mimetype="application/pdf",
+                     as_attachment=True,
+                     download_name=f"report-{job_id}.pdf")
 
 
 @app.post("/admin/user-password")
@@ -1432,32 +1482,23 @@ def fill():
     })
 
 
-@app.post("/api/rate")
-def rate():
-    """Record a user's quality rating for a filled assignment.
-    Body: {job_id, rating: 'green'|'yellow'|'red'}."""
-    data = request.get_json(silent=True) or {}
-    job_id = data.get("job_id")
-    rating = data.get("rating")
-    if rating not in VALID_RATINGS:
-        return jsonify({"error": "invalid rating"}), 400
-    if db.set_rating(str(job_id), rating):
-        return jsonify({"ok": True})
-    return jsonify({"error": "unknown job_id"}), 404
+@app.post("/api/report")
+def submit_report():
+    """File a user's problem report for a filled assignment, attaching the PDF
+    they uploaded so the fill can be reproduced. Body: {job_id, report}.
 
-
-@app.post("/api/feedback")
-def submit_feedback():
-    """Save a user's free-text feedback / bug report for a filled assignment.
-    Body: {job_id, feedback}."""
+    The report text goes to the database; the PDF is snapshotted to reports/.
+    A snapshot that fails to copy is not fatal — a report with no attachment
+    still beats losing the user's description of what went wrong."""
     data = request.get_json(silent=True) or {}
-    job_id = data.get("job_id")
-    text = str(data.get("feedback", "")).strip()[:2000]
+    job_id = str(data.get("job_id", ""))
+    text = str(data.get("report", "")).strip()[:2000]
     if not text:
-        return jsonify({"error": "empty feedback"}), 400
-    if db.set_feedback(str(job_id), text):
-        return jsonify({"ok": True})
-    return jsonify({"error": "unknown job_id"}), 404
+        return jsonify({"error": "empty report"}), 400
+    if not db.set_report(job_id, text):
+        return jsonify({"error": "unknown job_id"}), 404
+    _snapshot_reported_pdf(job_id)
+    return jsonify({"ok": True})
 
 
 @app.get("/api/fonts")

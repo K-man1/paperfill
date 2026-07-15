@@ -5,6 +5,8 @@ secret_key.txt
 # Generated at runtime — regenerated on the server, don't ship
 uploads/
 outputs/
+# PDFs users attached to problem reports — real documents, never commit
+reports/
 signin_log.json
 activity_log.json
 devices.json

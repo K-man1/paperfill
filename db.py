@@ -25,7 +25,6 @@ import requests
 
 _TIMEOUT = 8  # seconds; keep short so a slow DB never hangs a web request
 
-VALID_RATINGS = ("green", "yellow", "red")
 VALID_SIGNIN_RESULTS = ("user", "admin", "failed")
 
 
@@ -80,9 +79,9 @@ def record_signin(ip: str, ua: str, result: str) -> None:
 
 
 def record_fill(job_id: str, name: str, ip: str, style: str | None = None) -> None:
-    """Upsert one row per job. Omitting `rating`/`feedback` from the payload
-    means an existing rating/feedback is preserved on re-fill (PostgREST only
-    updates the columns present in the body)."""
+    """Upsert one row per job. Omitting `feedback` from the payload means an
+    existing report is preserved on re-fill (PostgREST only updates the
+    columns present in the body)."""
     if not enabled():
         return
     body = {"job_id": job_id, "name": name or "Untitled", "ip": ip}
@@ -99,47 +98,25 @@ def record_fill(job_id: str, name: str, ip: str, style: str | None = None) -> No
         print(f"[db] record_fill failed: {e}")
 
 
-def set_rating(job_id: str, rating: str) -> bool:
-    """Attach a rating to an existing assignment row.
-    Returns True if a matching row was updated, False otherwise."""
-    if rating not in VALID_RATINGS:
-        return False
+def set_report(job_id: str, text: str) -> bool:
+    """Attach a user's problem report to an existing assignment row. The text
+    lands in the legacy `feedback` column, which is what the admin dashboard
+    reads. Returns True if a matching row was updated, False otherwise."""
     if not enabled():
         return False
     try:
         r = requests.patch(
             _rest(f"assignments?job_id=eq.{requests.utils.quote(job_id, safe='')}"),
             headers=_headers({"Prefer": "return=representation"}),
-            json={"rating": rating},
+            json={"feedback": text},
             timeout=_TIMEOUT,
         )
         if r.status_code >= 400:
-            print(f"[db] set_rating HTTP {r.status_code}: {r.text[:200]}")
+            print(f"[db] set_report HTTP {r.status_code}: {r.text[:200]}")
             return False
         return bool(r.json())
     except (requests.RequestException, ValueError) as e:
-        print(f"[db] set_rating failed: {e}")
-        return False
-
-
-def set_feedback(job_id: str, feedback: str) -> bool:
-    """Attach free-text feedback to an existing assignment row.
-    Returns True if a matching row was updated, False otherwise."""
-    if not enabled():
-        return False
-    try:
-        r = requests.patch(
-            _rest(f"assignments?job_id=eq.{requests.utils.quote(job_id, safe='')}"),
-            headers=_headers({"Prefer": "return=representation"}),
-            json={"feedback": feedback},
-            timeout=_TIMEOUT,
-        )
-        if r.status_code >= 400:
-            print(f"[db] set_feedback HTTP {r.status_code}: {r.text[:200]}")
-            return False
-        return bool(r.json())
-    except (requests.RequestException, ValueError) as e:
-        print(f"[db] set_feedback failed: {e}")
+        print(f"[db] set_report failed: {e}")
         return False
 
 
@@ -181,7 +158,7 @@ def fetch_signins() -> list[dict]:
 
 
 def fetch_assignments() -> list[dict]:
-    return _get("assignments?select=job_id,name,ts,ip,rating,style,feedback&order=ts.asc")
+    return _get("assignments?select=job_id,name,ts,ip,style,feedback&order=ts.asc")
 
 
 def device_count() -> int:

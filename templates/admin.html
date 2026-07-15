@@ -186,7 +186,7 @@ tr:hover td { background: var(--paper); }
   border: 1px solid #fed7aa;
 }
 
-/* ---- Rating faces ---- */
+/* ---- Report flags ---- */
 .rating {
   display: inline-flex;
   align-items: center;
@@ -195,8 +195,6 @@ tr:hover td { background: var(--paper); }
   font-weight: 600;
 }
 .rating .face { font-size: 1.15rem; line-height: 1; }
-.rating-green { color: var(--green); }
-.rating-yellow { color: #b45309; }
 .rating-red { color: var(--red); }
 .rating-none { color: var(--ink-soft); font-weight: 400; font-style: italic; }
 .rating-summary {
@@ -208,6 +206,14 @@ tr:hover td { background: var(--paper); }
 }
 .rating-summary span { display: inline-flex; align-items: center; gap: 6px; }
 .rating-summary .face { font-size: 1.25rem; }
+.pdf-link {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent, #ff5a1f);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.pdf-link:hover { text-decoration: underline; }
 .empty {
   padding: 48px;
   text-align: center;
@@ -461,9 +467,8 @@ tr:hover td { background: var(--paper); }
 
   <div class="section-title">Assignments Filled</div>
   <div class="rating-summary">
-    <span class="rating-green"><span class="face">😀</span> {{ rating_counts.green }} perfect</span>
-    <span class="rating-yellow"><span class="face">😐</span> {{ rating_counts.yellow }} some mistakes</span>
-    <span class="rating-red"><span class="face">😞</span> {{ rating_counts.red }} screwed up</span>
+    <span class="rating-red"><span class="face">⚑</span> {{ report_count }} reported</span>
+    <span class="rating-none">{{ activity_total - report_count }} with no report</span>
   </div>
   <div class="table-wrap" style="margin-bottom:36px;">
     {% if activity %}
@@ -474,8 +479,8 @@ tr:hover td { background: var(--paper); }
           <th>Assignment</th>
           <th>Handwriting</th>
           <th>Filled</th>
-          <th>Rating</th>
-          <th>Feedback</th>
+          <th>Report</th>
+          <th>PDF</th>
         </tr>
       </thead>
       <tbody>
@@ -485,19 +490,20 @@ tr:hover td { background: var(--paper); }
           <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.name }}</td>
           <td style="font-size:0.82rem;">{{ entry.style or '—' }}</td>
           <td class="mono">{{ entry.timestamp }}</td>
-          <td>
-            {% if entry.rating == 'green' %}
-              <span class="rating rating-green"><span class="face">😀</span> Perfect</span>
-            {% elif entry.rating == 'yellow' %}
-              <span class="rating rating-yellow"><span class="face">😐</span> Some mistakes</span>
-            {% elif entry.rating == 'red' %}
-              <span class="rating rating-red"><span class="face">😞</span> Screwed up</span>
+          <td style="max-width:320px;font-size:0.82rem;">
+            {% if entry.reported %}
+              <span class="rating rating-red"><span class="face">⚑</span> Reported</span>
+              <div style="margin-top:4px;color:var(--ink-soft);">{{ entry.feedback }}</div>
             {% else %}
-              <span class="rating-none">Not rated</span>
+              <span class="rating-none">No report</span>
             {% endif %}
           </td>
-          <td style="max-width:280px;font-size:0.82rem;color:var(--ink-soft);">
-            {% if entry.feedback %}{{ entry.feedback }}{% else %}<span class="rating-none">—</span>{% endif %}
+          <td>
+            {% if entry.has_pdf %}
+              <a class="pdf-link" href="{{ url_for('admin_report_pdf', job_id=entry.job_id) }}">↓ Download</a>
+            {% else %}
+              <span class="rating-none">—</span>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
