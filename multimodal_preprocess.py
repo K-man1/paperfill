@@ -749,6 +749,32 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
                         underscore_length=ulen)],
         ))
 
+    # Multiple-choice questions are located deterministically here, not through
+    # the model's blank anchors. Option labels (A/B/C/D…) are reliable in the
+    # text layer, and the vision model is told to find BLANKS, not option lists —
+    # so an MC worksheet returns almost nothing on this path unless we add it.
+    # (This is the same detector the Standard path uses.)
+    if "multiple_choice" in active:
+        from preprocess import detect_multiple_choice_units
+        for pn in range(len(doc)):
+            pidx = page_index(pn)
+            if pidx is None:
+                continue
+            mc_units, _ = detect_multiple_choice_units(pidx.lines, pn, counter)
+            if not mc_units:
+                continue
+            # Drop any model-derived unit that overlaps an MC question's vertical
+            # band on this page, so an option line the model mistook for a blank
+            # isn't both circled and written into.
+            bands = [(u.bbox[1], u.bbox[3]) for u in mc_units]
+            def _in_mc_band(u):
+                if u.page != pn:
+                    return False
+                cy = (u.bbox[1] + u.bbox[3]) / 2
+                return any(t - 1 <= cy <= b + 1 for t, b in bands)
+            units = [u for u in units if not _in_mc_band(u)]
+            units.extend(mc_units)
+
     doc.close()
 
     if dropped:
