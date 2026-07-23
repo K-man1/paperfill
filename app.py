@@ -473,13 +473,15 @@ def _generate_hw_for_job(job_id: str) -> None:
     from handwriting.font_render import render_text_png
     from render import hw_wrap_width
     variants = font_store.font_variant_paths(font_id)
+    settings = font_store.get_settings(font_id)
     # Keep each overlay's bbox so handwriting wraps to the slot width.
     items = {ov["id"]: (ov.get("text", ""), ov.get("bbox"))
              for ov in job.get("overlays", [])}
     try:
         images = {
             ov_id: render_text_png(text, variants,
-                                   max_width_px=hw_wrap_width(bbox))
+                                   max_width_px=hw_wrap_width(bbox),
+                                   settings=settings)
             for ov_id, (text, bbox) in items.items()
             if str(text).strip() and bbox
         }
@@ -647,8 +649,9 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict
         "  - 'open_response': the prompt is a question. Return one answer "
         "    keyed by the unit's answer_key, kept to a few sentences.\n"
         "  - 'multiple_choice': the prompt is a question with an 'options' list, "
-        "    each option having a 'label' (A, B, C…) and text. Pick the ONE "
-        "    correct option and return just its label (e.g. \"C\") keyed by the "
+        "    each option having a 'label' (a letter A, B, C… or a Roman numeral "
+        "    I, II, III…) and text. Pick the ONE correct option and return just "
+        "    its label EXACTLY as shown (e.g. \"C\" or \"III\") keyed by the "
         "    unit's answer_key.\n"
         "Use the context in each prompt to figure out what kind of "
         "answer fits (a single word, a phrase, a conjugated verb form, "
@@ -717,9 +720,10 @@ _VISION_FILL_SYSTEM = (
     "a JSON list of the 'units' detected on that page. Each unit has an id and a "
     "prompt: 'inline_blanks'/'table' prompts contain {{slot_id}} placeholders "
     "(answer each slot_id); 'open_response' units are keyed by their answer_key.\n"
-    "'multiple_choice' units carry an 'options' list (each with a 'label' A/B/C… "
-    "and text): pick the ONE correct option and return just its label (e.g. "
-    "\"C\") keyed by the unit's answer_key.\n"
+    "'multiple_choice' units carry an 'options' list (each with a 'label' — a "
+    "letter A/B/C… or a Roman numeral I/II/III… — and text): pick the ONE correct "
+    "option and return just its label EXACTLY as shown (e.g. \"C\" or \"III\") "
+    "keyed by the unit's answer_key.\n"
     "Answer EVERY unit in the list — do not skip any. Read the PAGE IMAGE to "
     "understand each item: use any answer bank, word box, matching option list, "
     "table, diagram or worked example you can see. The image is authoritative; "
@@ -1221,6 +1225,20 @@ def handwriting_onboarding():
     return render_template("handwriting.html")
 
 
+@app.route("/handwriting/settings")
+def handwriting_settings():
+    """Pro page to tune the look of your handwriting font — letter/word spacing,
+    size, and pen thickness — with a live preview. Requires a built font."""
+    if not session.get("role"):
+        return redirect(url_for("login"))
+    if not _is_pro():
+        return redirect(url_for("pricing"))
+    if not _current_font_id():
+        # No font to tune yet — send them through the build flow first.
+        return redirect(url_for("handwriting_onboarding"))
+    return render_template("handwriting_settings.html")
+
+
 @app.route("/pricing")
 def pricing():
     """Free vs Pro comparison + the upgrade call-to-action. Viewable signed-out
@@ -1521,19 +1539,58 @@ def list_fonts_route():
     return jsonify({"fonts": font_store.list_fonts_for(session.get("user_sub", ""))})
 
 
+def _settings_from_args(font_id: str) -> dict:
+    """Merge any letter_spacing/font_size/word_spacing/pen_thickness query
+    params over the font's stored settings, so the live preview reflects the
+    slider positions without having to save first. Unknown/invalid params are
+    ignored by coerce_settings."""
+    stored = font_store.get_settings(font_id)
+    overrides = {k: request.args.get(k) for k in font_store.SETTING_RANGES
+                 if request.args.get(k) is not None}
+    return font_store.coerce_settings({**stored, **overrides})
+
+
 @app.get("/api/fonts/<font_id>/sample.png")
 @pro_required
 def font_sample(font_id: str):
-    """Render a sample in the user's font (onboarding preview). Pass ?text=...
-    to preview arbitrary text. A user may only sample their own font."""
+    """Render a sample in the user's font (onboarding + settings preview). Pass
+    ?text=... for arbitrary text, and any of the setting params (letter_spacing,
+    font_size, word_spacing, pen_thickness) to preview slider positions live. A
+    user may only sample their own font."""
     if font_id != _current_font_id():
         abort(404)
     text = (request.args.get("text") or "Sample").strip()[:120] or "Sample"
     from handwriting.font_render import render_text_png
-    png = render_text_png(text, font_store.font_variant_paths(font_id))
+    png = render_text_png(text, font_store.font_variant_paths(font_id),
+                          settings=_settings_from_args(font_id))
     if not png:
         abort(404)
     return send_file(io.BytesIO(png), mimetype="image/png")
+
+
+@app.get("/api/fonts/<font_id>/settings")
+@pro_required
+def get_font_settings(font_id: str):
+    """The font's tuned appearance settings plus the allowed slider ranges. A
+    user may only read their own font's settings."""
+    if font_id != _current_font_id():
+        abort(404)
+    return jsonify({"settings": font_store.get_settings(font_id),
+                    "ranges": font_store.SETTING_RANGES,
+                    "defaults": font_store.DEFAULT_SETTINGS})
+
+
+@app.post("/api/fonts/<font_id>/settings")
+@pro_required
+def save_font_settings(font_id: str):
+    """Persist the font's appearance settings (validated + clamped). They take
+    effect the next time a job is filled or re-rendered with this font. Own
+    font only."""
+    if font_id != _current_font_id():
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    clean = font_store.save_settings(font_id, data)
+    return jsonify({"ok": True, "settings": clean})
 
 
 @app.get("/api/fonts/template")

@@ -5,10 +5,11 @@ preprocessor. Text auto-fits to the slot bbox.
 """
 
 import os
+import re
 
 import fitz
 
-from handwriting.font_render import LINE_BAND_PX, RENDER_PX, BASELINE_FRAC
+from handwriting.font_render import RENDER_PX, BASELINE_FRAC
 
 
 # Tunables
@@ -39,7 +40,6 @@ HW_BASELINE_RAISE = 0.30
 
 _HW_SCALE_INLINE = HW_EM_INLINE / RENDER_PX
 _HW_SCALE_REGION = HW_EM_REGION / RENDER_PX
-_HW_BASELINE_OFF = BASELINE_FRAC * LINE_BAND_PX  # baseline depth within a band (render px)
 
 
 def hw_wrap_width(bbox) -> float | None:
@@ -172,8 +172,11 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
             scale = box_w / img_w
         draw_w, draw_h = img_w * scale, img_h * scale
         # Underscore sits ~a descender above the slot bottom; raise onto it.
+        # A single-line image is exactly one band tall, so its baseline sits at
+        # BASELINE_FRAC of img_h — derive it from the image so a font-size-scaled
+        # band (taller/shorter than LINE_BAND_PX) still lands on the underscore.
         baseline_y = y1 - 1 - HW_BASELINE_RAISE * HW_EM_INLINE
-        top = baseline_y - _HW_BASELINE_OFF * scale
+        top = baseline_y - BASELINE_FRAC * img_h * scale
         rect = fitz.Rect(x0 + 1, top, x0 + 1 + draw_w, top + draw_h)
     else:
         # Open-response region: wrapped lines, top-anchored next to the question.
@@ -266,12 +269,22 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
     doc.close()
 
 
-def _chosen_label(answer: str) -> str | None:
-    """Pull the option letter out of an LLM answer. It usually returns just
-    "C", but tolerate "C.", "c)", or "C) 2(3m-5n)" — take the first A–H letter."""
-    for ch in (answer or "").strip():
-        if "A" <= ch.upper() <= "H":
-            return ch.upper()
+def _match_option(answer: str, options: list[dict]) -> dict | None:
+    """Find the option the model chose. It usually returns just the label ("C",
+    "III"), but tolerate "C.", "c)", "C) 2(3m-5n)" or "III only" — compare the
+    answer's leading letter/numeral token against each option's label. Falls back
+    to the first character for a lettered list when the token doesn't match whole
+    (e.g. answer "Cfoo")."""
+    ans = (answer or "").strip().upper()
+    if not ans or not options:
+        return None
+    by_label = {str(o["label"]).upper(): o for o in options}
+    m = re.match(r"[A-Z]+", ans)
+    tok = m.group(0) if m else ""
+    if tok in by_label:
+        return by_label[tok]
+    if tok[:1] in by_label:
+        return by_label[tok[:1]]
     return None
 
 
@@ -305,9 +318,8 @@ def build_overlays_from_structure(structure: dict, answers: dict) -> list[dict]:
             })
             nid += 1
         elif u["type"] == "multiple_choice":
-            label = _chosen_label(answers.get(u["unit_id"], ""))
-            options = u.get("options") or []
-            match = next((o for o in options if o["label"] == label), None)
+            match = _match_option(answers.get(u["unit_id"], ""),
+                                  u.get("options") or [])
             if match is not None:
                 overlays.append({
                     **_OV_DEFAULTS,

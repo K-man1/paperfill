@@ -363,10 +363,20 @@ def detect_open_response_units(lines: list[dict], page_num: int,
 
 # ---------- multiple-choice detection --------------------------------------
 
-# An option line begins with a single letter label then '.' or ')' then a
-# space and the option text: "A. 0", "b) 2x + 6", "C. (3,2)". We allow labels
-# A–H (lower/upper) so five- or six-option items still parse.
-OPTION_LINE_RE = re.compile(r"^\s*([A-Ha-h])\s*[.)]\s+\S")
+# Option labels come in two systems: letters A–H, or Roman numerals I–XII. A
+# choice list is homogeneous — all lettered (opening at A) or all Roman (opening
+# at I). A label is 1–4 letters then '.' or ')' then a space and the option text:
+# "A. 0", "b) 2x + 6", "III. (4,1)".
+LABEL_LINE_RE = re.compile(r"^\s*([A-Za-z]{1,4})\s*[.)]\s+\S")
+# The same label, but sitting at a word boundary anywhere on an inline line
+# ("A. (-2,3)  B. (0,4) …" or "I. x>0  II. x<0  III. x=0").
+_INLINE_LABEL_RE = re.compile(r"(?:(?<=\s)|^)([A-Za-z]{1,4})[.)](?=\s)")
+
+# Roman numerals I–XII cover any realistic option list; a fixed table avoids the
+# ambiguity of parsing single letters like C/D/M as numerals.
+_ROMAN_SEQUENCE = ["I", "II", "III", "IV", "V", "VI",
+                   "VII", "VIII", "IX", "X", "XI", "XII"]
+_ROMAN_ORD = {r: i + 1 for i, r in enumerate(_ROMAN_SEQUENCE)}
 
 # Continuation lines (an option's text wrapped onto a second line) sit this
 # close below; anything further is the next option, question, or block.
@@ -389,77 +399,57 @@ def _delatin(ch: str) -> str:
     return _LABEL_HOMOGLYPHS.get(ch, ch)
 
 
-def _option_match(text: str):
-    """OPTION_LINE_RE match with the leading label de-homoglyphed, so a Cyrillic
-    'В.' is read as a Latin 'B.' option."""
-    stripped = text.lstrip()
-    if not stripped:
-        return None
-    return OPTION_LINE_RE.match(_delatin(stripped[0]) + stripped[1:])
+def _canon_token(token: str) -> str:
+    """De-homoglyph and uppercase a raw label token ('в' -> 'B', 'iii' -> 'III')."""
+    return "".join(_delatin(c) for c in token).upper()
+
+
+def _label_ordinal(token: str, system: str) -> int | None:
+    """1-based position of `token` within its system, or None if it isn't a valid
+    label there. Letters map A→1 … H→8; Roman numerals via _ROMAN_ORD."""
+    tok = _canon_token(token)
+    if system == "letter":
+        return ord(tok) - ord("A") + 1 if (len(tok) == 1 and "A" <= tok <= "H") else None
+    return _ROMAN_ORD.get(tok)
+
+
+def _label_start_system(token: str) -> str | None:
+    """Which system a choice list would use if it OPENED on `token`: letter lists
+    start at 'A', Roman lists at 'I'. Any other token can't open a list, which is
+    what disambiguates 'C'/'D'/'I' (letter vs numeral) — only the opener decides."""
+    tok = _canon_token(token)
+    if tok == "A":
+        return "letter"
+    if tok == "I":
+        return "roman"
+    return None
+
+
+def _option_token(text: str) -> str | None:
+    """The canonical label token at the very start of a line ('A', 'III'), or
+    None if the line doesn't begin with a label."""
+    m = LABEL_LINE_RE.match(text.lstrip())
+    return _canon_token(m.group(1)) if m else None
 
 
 def _option_label_bbox(line: dict) -> tuple[float, float, float, float]:
-    """Bbox of just the label glyphs at the start of an option line — the 'A'
-    and its '.'/')'. That is what the renderer circles, so we want it tight to
-    the letter, not the whole option text."""
+    """Bbox of just the label glyphs at the start of an option line — the letter
+    (or numeral) and its '.'/')'. That is what the renderer circles, so we want it
+    tight to the label, not the whole option text."""
     chars = line["chars"]
     end = 0
-    for i, c in enumerate(chars[:6]):        # label lives in the first few chars
+    for i, c in enumerate(chars[:8]):        # label lives in the first few chars
         end = i
         if c["c"] in ".)":
             break
     return bbox_of_chars(chars, 0, end)
 
 
-def _scan_inline_labels(line: dict) -> list[dict]:
-    """
-    Find option labels laid out along ONE line, e.g.
-    "A. (-2,3)  B. (0,4)  C. (3,2)  D. (1,4)". Returns
-    [{"label","bbox","start","end"}] for each 'X.'/'X)' whose letter sits at a
-    word boundary, in reading order. `start`/`end` are char indices so the
-    caller can slice out each option's text.
-    """
-    chars = line["chars"]
-    labels: list[dict] = []
-    for i, c in enumerate(chars):
-        ch = _delatin(c["c"])
-        if not ("A" <= ch.upper() <= "H"):
-            continue
-        prev = chars[i - 1]["c"] if i > 0 else " "
-        nxt = chars[i + 1]["c"] if i + 1 < len(chars) else ""
-        if prev.strip() == "" and nxt in ".)":     # boundary + punctuation
-            labels.append({
-                "label": ch.upper(),
-                "bbox": bbox_of_chars(chars, i, i + 1),
-                "start": i,
-            })
-    for a, b in zip(labels, labels[1:]):
-        a["end"] = b["start"]
-    if labels:
-        labels[-1]["end"] = len(chars)
-    return labels
-
-
-def _inline_mc_from_line(line: dict, page_num: int, counter: dict,
-                         stem_text: str) -> Unit | None:
-    """Build a multiple_choice unit from a single line whose labels run
-    A, B, C… inline. Returns None if the line isn't a clean choice list."""
-    labels = _scan_inline_labels(line)
-    # Require a clean ascending run A, B, C… of at least three to avoid firing
-    # on ordinary prose that happens to contain "a." or "b)".
-    if len(labels) < 3:
-        return None
-    for idx, lab in enumerate(labels):
-        if ord(lab["label"]) - ord("A") != idx:
-            return None
-
-    chars = line["chars"]
-    options = []
-    for lab in labels:
-        text = text_of_chars(chars[lab["start"]:lab["end"]]).strip()
-        options.append({"label": lab["label"], "text": text, "bbox": lab["bbox"]})
-
-    opt_text = " ".join(f"{o['label']}. {o['text'][2:].strip()}" for o in options)
+def _make_mc_unit(options: list[dict], page_num: int, counter: dict,
+                  stem_text: str) -> Unit:
+    """Assemble a multiple_choice Unit from resolved options (each with label,
+    text and label bbox) and the question stem. Shared by both layouts."""
+    opt_text = "  ".join(o["text"] for o in options)
     prompt = (stem_text + "  " + opt_text).strip() if stem_text else opt_text
     xs0 = [o["bbox"][0] for o in options]
     ys0 = [o["bbox"][1] for o in options]
@@ -472,8 +462,58 @@ def _inline_mc_from_line(line: dict, page_num: int, counter: dict,
         page=page_num,
         bbox=(min(xs0), min(ys0), max(xs1), max(ys1)),
         prompt_text=prompt,
-        options=options,
+        options=[{"label": o["label"], "text": o["text"], "bbox": o["bbox"]}
+                 for o in options],
     )
+
+
+def _scan_inline_labels(line: dict) -> list[dict]:
+    """
+    Find option labels laid out along ONE line, e.g. "A. (-2,3)  B. (0,4) …" or
+    "I. x>0  II. x<0  III. x=0". Returns [{"token","bbox","start","end"}] for each
+    label at a word boundary, in reading order. `start`/`end` are char indices so
+    the caller can slice out each option's text. line["text"] is a 1:1 join of
+    line["chars"], so a regex offset indexes straight into chars.
+    """
+    text, chars = line["text"], line["chars"]
+    out: list[dict] = []
+    for m in _INLINE_LABEL_RE.finditer(text):
+        s, punct = m.start(1), m.end(1)      # token is [s, punct); punct char at `punct`
+        out.append({
+            "token": _canon_token(m.group(1)),
+            "bbox": bbox_of_chars(chars, s, punct),   # label glyphs + the '.'/')'
+            "start": s,
+        })
+    for a, b in zip(out, out[1:]):
+        a["end"] = b["start"]
+    if out:
+        out[-1]["end"] = len(chars)
+    return out
+
+
+def _inline_mc_from_line(line: dict, page_num: int, counter: dict,
+                         stem_text: str) -> Unit | None:
+    """Build a multiple_choice unit from a single line whose labels run in
+    sequence inline (A,B,C… or I,II,III…). Returns None if the line isn't a
+    clean choice list."""
+    labels = _scan_inline_labels(line)
+    # Require a clean run of at least three to avoid firing on ordinary prose
+    # that happens to contain "a." or "b)".
+    if len(labels) < 3:
+        return None
+    system = _label_start_system(labels[0]["token"])
+    if system is None:
+        return None
+    for idx, lab in enumerate(labels):
+        if _label_ordinal(lab["token"], system) != idx + 1:
+            return None
+
+    chars = line["chars"]
+    options = []
+    for lab in labels:
+        text = text_of_chars(chars[lab["start"]:lab["end"]]).strip()
+        options.append({"label": lab["token"], "text": text, "bbox": lab["bbox"]})
+    return _make_mc_unit(options, page_num, counter, stem_text)
 
 
 def _gather_mc_stem(lines: list[dict], first_idx: int,
@@ -535,27 +575,29 @@ def detect_multiple_choice_units(lines: list[dict], page_num: int,
             i += 1
             continue
 
-        m = _option_match(line["text"])
-        # Stacked layout must open on label 'A' (the first option); a stray "B)"
-        # mid-sentence is not the start of a choice list.
-        if not m or m.group(1).upper() != "A":
+        # Stacked layout must open on the first label of a system — 'A' for
+        # letters, 'I' for Roman numerals; a stray "B)" or "II)" mid-page is not
+        # the start of a choice list.
+        first_tok = _option_token(line["text"])
+        system = _label_start_system(first_tok) if first_tok else None
+        if system is None:
             i += 1
             continue
 
-        # Walk forward collecting options in ascending-letter order. Each option
-        # is its label line plus any wrapped continuation lines beneath it.
+        # Walk forward collecting options in ascending order within that system.
+        # Each option is its label line plus any wrapped continuation lines.
         options: list[dict] = []
         opt_line_ids: list[int] = []
-        expected = 0  # ord offset from 'A' of the next label we expect
+        expected = 1  # position of the next label we expect (1-based)
         j = i
         while j < n:
             lj = lines[j]
-            mj = _option_match(lj["text"])
-            if mj and (ord(mj.group(1).upper()) - ord("A")) == expected:
+            tj = _option_token(lj["text"])
+            if tj is not None and _label_ordinal(tj, system) == expected:
                 if id(lj) in skip or id(lj) in consumed:
                     break
                 options.append({
-                    "label": mj.group(1).upper(),
+                    "label": tj,
                     "text": lj["text"].strip(),
                     "bbox": _option_label_bbox(lj),
                     "y1": lj["bbox"][3],
@@ -563,7 +605,7 @@ def detect_multiple_choice_units(lines: list[dict], page_num: int,
                 opt_line_ids.append(id(lj))
                 expected += 1
                 j += 1
-            elif options and not mj:
+            elif options and tj is None:
                 # Possibly a wrapped continuation of the current option.
                 gap = lj["bbox"][1] - options[-1]["y1"]
                 if 0 <= gap <= MC_CONT_GAP and id(lj) not in skip:
@@ -575,30 +617,12 @@ def detect_multiple_choice_units(lines: list[dict], page_num: int,
             else:
                 break
 
-        # Need at least A and B to be a real choice list.
+        # Need at least the first two labels to be a real choice list.
         if len(options) < 2:
             i += 1
             continue
 
-        opt_text = " ".join(f"{o['label']}. "
-                            f"{o['text'][len(o['label']) + 2:].strip()}"
-                            for o in options)
-        prompt = (stem_text + "  " + opt_text).strip() if stem_text else opt_text
-
-        xs0 = [o["bbox"][0] for o in options]
-        ys0 = [o["bbox"][1] for o in options]
-        xs1 = [o["bbox"][2] for o in options]
-        ys1 = [o["bbox"][3] for o in options]
-        counter["u"] += 1
-        units.append(Unit(
-            unit_id=f"u{counter['u']}",
-            type="multiple_choice",
-            page=page_num,
-            bbox=(min(xs0), min(ys0), max(xs1), max(ys1)),
-            prompt_text=prompt,
-            options=[{"label": o["label"], "text": o["text"], "bbox": o["bbox"]}
-                     for o in options],
-        ))
+        units.append(_make_mc_unit(options, page_num, counter, stem_text))
         consumed.update(opt_line_ids)
         consumed.update(id(l) for l in stem_lines)
         i = j
