@@ -146,20 +146,31 @@ def _overlay_to_html(ov: dict) -> str | None:
     return f'<p style="{css}">{_html_escape(text)}</p>'
 
 
-def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
+def _insert_handwriting_image(page, bbox, png_bytes: bytes,
+                              pen_thickness_mm: float | None = None) -> None:
     """Stamp a transparent handwriting PNG into the slot at a consistent writing
     size. The PNG is a stack of fixed-height (LINE_BAND_PX) line bands drawn at
     RENDER_PX em; scaling by _HW_SCALE lands the em at HW_EM_PX, so every answer
     — a single matching letter or a full sentence — reads at the same size.
     Single-line inline blanks place their baseline *on* the underscore; multi-
     line region answers top-anchor so they sit next to the question. The PNG
-    already has the paper knocked out to alpha, so it overlays cleanly."""
+    already has the paper knocked out to alpha, so it overlays cleanly.
+
+    If ``pen_thickness_mm`` is given, the ink's stroke width is recalibrated
+    here — not when the PNG was first rendered — because the true page scale
+    (including any shrink-to-fit for an oversized answer) is only known at this
+    point. That's what makes the millimetre setting land as an actual physical
+    stroke width on the page regardless of how big or small the answer got
+    written."""
     import io
+    import numpy as np
     from PIL import Image
+    from handwriting.font_render import MM_PER_PT, calibrate_stroke
 
     x0, y0, x1, y1 = bbox
     box_w, box_h = x1 - x0, y1 - y0
-    img_w, img_h = Image.open(io.BytesIO(png_bytes)).size
+    img = Image.open(io.BytesIO(png_bytes))
+    img_w, img_h = img.size
     if not (img_w and img_h):
         return
 
@@ -186,6 +197,17 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes) -> None:
             scale = box_h / img_h
         draw_w, draw_h = img_w * scale, img_h * scale
         rect = fitz.Rect(x0 + 1, y0, x0 + 1 + draw_w, y0 + draw_h)
+
+    if pen_thickness_mm:
+        # scale maps this PNG's own render-px to page-pt, so the render-px
+        # width that will land at the target mm is the physical target
+        # (converted to pt) divided by that same scale.
+        target_render_px = (pen_thickness_mm / MM_PER_PT) / scale
+        rgba = np.asarray(img.convert("RGBA"), dtype=np.uint8)
+        rgba[..., 3] = calibrate_stroke(rgba[..., 3], target_render_px)
+        buf = io.BytesIO()
+        Image.fromarray(rgba, "RGBA").save(buf, format="PNG")
+        png_bytes = buf.getvalue()
 
     page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
 
@@ -216,14 +238,17 @@ def _stamp_watermark(doc) -> None:
 
 
 def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
-                        images: dict[str, bytes] | None = None) -> None:
+                        images: dict[str, bytes] | None = None,
+                        pen_thickness_mm: float | None = None) -> None:
     """
     Render the flat overlay list onto a copy of the PDF. Each overlay carries
     its own formatting (font, size, bold/italic/underline) which is applied
     via PyMuPDF's HTML/Story renderer.
 
     If `images` maps an overlay id -> PNG bytes (rendered handwriting), that
-    overlay is stamped as an image instead of typeset text.
+    overlay is stamped as an image instead of typeset text. `pen_thickness_mm`,
+    if given, recalibrates every stamped answer's ink to that physical stroke
+    width (see `_insert_handwriting_image`).
     """
     images = images or {}
     doc = fitz.open(pdf_path)
@@ -246,7 +271,7 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
         png = images.get(ov.get("id"))
         if png:
             try:
-                _insert_handwriting_image(page, ov["bbox"], png)
+                _insert_handwriting_image(page, ov["bbox"], png, pen_thickness_mm)
                 continue
             except Exception:
                 pass  # fall through to text rendering on any image failure

@@ -1562,7 +1562,7 @@ def font_sample(font_id: str):
     text = (request.args.get("text") or "Sample").strip()[:120] or "Sample"
     from handwriting.font_render import render_text_png
     png = render_text_png(text, font_store.font_variant_paths(font_id),
-                          settings=_settings_from_args(font_id))
+                          settings=_settings_from_args(font_id), apply_pen=True)
     if not png:
         abort(404)
     return send_file(io.BytesIO(png), mimetype="image/png")
@@ -1702,9 +1702,12 @@ def upload_style():
 def _rerender_job(job_id: str) -> None:
     """Re-render the filled PDF + page PNG previews from the job's current overlays."""
     job = JOBS[job_id]
+    font_id = _font_id_from_style(job.get("style_id"))
+    pen_thickness = font_store.get_settings(font_id)["pen_thickness"] if font_id else None
     filled_path = OUTPUTS / f"{job_id}-filled.pdf"
     render_overlays_pdf(job["pdf_path"], job["overlays"], str(filled_path),
-                        images=_load_hw_images(job_id))
+                        images=_load_hw_images(job_id),
+                        pen_thickness_mm=pen_thickness)
     doc = fitz.open(str(filled_path))
     preview_dir = OUTPUTS / job_id
     for i, page in enumerate(doc):

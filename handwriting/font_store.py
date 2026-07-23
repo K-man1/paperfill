@@ -26,6 +26,42 @@ _INDEX = FONTS_DIR / "index.json"
 LABEL = "Your handwriting"   # fixed — users don't name their font anymore
 MAX_VARIANTS = 3
 
+# Per-user handwriting appearance knobs, tuned on /handwriting/settings.
+# letter_spacing / font_size / word_spacing are percentages (100 = the scanned
+# handwriting's natural size/spacing, unchanged). pen_thickness is a REAL,
+# calibrated stroke width in millimetres on the printed page — the renderer
+# measures the font's actual stroke and dilates/erodes it to hit this target,
+# so e.g. 0.3 always means a ~0.3mm line, regardless of what pen was used to
+# fill the template or how large a given answer is written. 0.4mm (a typical
+# fine ballpoint) is the default; a bold fountain-pen nib runs 0.8-1.2mm.
+DEFAULT_SETTINGS = {
+    "letter_spacing": 100.0,
+    "font_size": 100.0,
+    "word_spacing": 100.0,
+    "pen_thickness": 0.4,
+}
+SETTING_RANGES = {
+    "letter_spacing": (2.0, 300.0),
+    "font_size": (2.0, 300.0),
+    "word_spacing": (2.0, 300.0),
+    "pen_thickness": (0.1, 2.0),
+}
+
+
+def coerce_settings(raw: dict | None) -> dict:
+    """Return a full settings dict with every value validated and clamped to its
+    allowed range, filling anything missing or malformed with the default."""
+    out = dict(DEFAULT_SETTINGS)
+    raw = raw or {}
+    for key, (lo, hi) in SETTING_RANGES.items():
+        if raw.get(key) is None:
+            continue
+        try:
+            out[key] = max(lo, min(hi, float(raw[key])))
+        except (TypeError, ValueError):
+            pass
+    return out
+
 
 def user_font_id(sub: str) -> str:
     """Deterministic, unguessable font id for a user (their session subject).
@@ -95,10 +131,32 @@ def save_user_font(sub: str, otf_variants: list[bytes]) -> str:
         (FONTS_DIR / name).write_bytes(b)
 
     idx = _read_index()
+    # Rebuilding replaces the glyphs but keeps the appearance settings the user
+    # tuned — a fresh scan shouldn't silently reset their spacing/size choices.
+    prior = (idx.get(font_id) or {}).get("settings")
     idx[font_id] = {"label": LABEL, "owner": sub, "created": time.time(),
-                    "variants": len(variants)}
+                    "variants": len(variants), "settings": coerce_settings(prior)}
     _write_index(idx)
     return font_id
+
+
+def get_settings(font_id: str) -> dict:
+    """The font's tuned appearance settings, defaults filled in for anything
+    missing. Safe to call for a font that has never been tuned."""
+    entry = _read_index().get(font_id) or {}
+    return coerce_settings(entry.get("settings"))
+
+
+def save_settings(font_id: str, settings: dict) -> dict:
+    """Persist validated appearance settings for an existing font. Returns the
+    clamped settings actually stored. Raises KeyError if the font is unknown."""
+    idx = _read_index()
+    if font_id not in idx:
+        raise KeyError(font_id)
+    clean = coerce_settings(settings)
+    idx[font_id]["settings"] = clean
+    _write_index(idx)
+    return clean
 
 
 def user_font(sub: str) -> dict | None:
