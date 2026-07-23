@@ -1145,6 +1145,11 @@ button {
             <span class="fmt-card-name">Table / chart</span>
             <span class="fmt-card-sub">grid of cells to fill in</span>
           </label>
+          <label class="fmt-card selected">
+            <input type="checkbox" value="multiple_choice" checked>
+            <span class="fmt-card-name">Multiple choice</span>
+            <span class="fmt-card-sub">circle the right option A/B/C</span>
+          </label>
         </div>
       </div>
 
@@ -1846,6 +1851,7 @@ function positionOverlaysOnPage(pageIdx) {
 }
 
 function createOverlayEl(ov, scale) {
+  if (ov.kind === "circle") return createCircleOverlayEl(ov, scale);
   const el = document.createElement("div");
   el.className = "overlay";
   el.dataset.id = ov.id;
@@ -1905,6 +1911,47 @@ function createOverlayEl(ov, scale) {
   el.appendChild(drag);
   el.appendChild(del);
   el.appendChild(resize);
+  return el;
+}
+
+// A multiple-choice answer mark: a pen-blue ring around the chosen option's
+// label. Not editable text — draggable and deletable like other overlays, and
+// drawn to mirror the server's oval (same ~2.5pt padding around the letter box).
+function createCircleOverlayEl(ov, scale) {
+  const el = document.createElement("div");
+  el.className = "overlay ov-circle";
+  el.dataset.id = ov.id;
+  const pad = 2.5;
+  const [x0, y0, x1, y1] = ov.bbox;
+  el.style.left = ((x0 - pad) * scale) + "px";
+  el.style.top = ((y0 - pad) * scale) + "px";
+  el.style.width = ((x1 - x0) + 2 * pad) * scale + "px";
+  el.style.height = ((y1 - y0) + 2 * pad) * scale + "px";
+  el.style.border = "1.6px solid rgb(26,51,191)";
+  el.style.borderRadius = "50%";
+  el.style.background = "transparent";
+  el.style.pointerEvents = "auto";
+
+  const drag = document.createElement("div");
+  drag.className = "ov-drag";
+  drag.textContent = "⤧";
+  drag.title = "Drag to move";
+  attachDragMove(drag, el, ov);
+
+  const del = document.createElement("div");
+  del.className = "ov-delete";
+  del.textContent = "×";
+  del.title = "Delete";
+  del.addEventListener("pointerdown", e => e.stopPropagation());
+  del.addEventListener("click", e => {
+    e.stopPropagation();
+    overlays = overlays.filter(o => o.id !== ov.id);
+    el.remove();
+    dirty = true;
+  });
+
+  el.appendChild(drag);
+  el.appendChild(del);
   return el;
 }
 

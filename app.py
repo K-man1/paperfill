@@ -619,6 +619,12 @@ def strip_bboxes_for_llm(structure: dict) -> dict:
         elif u["type"] == "open_response":
             # The open-response answer is keyed by unit_id.
             clean["answer_key"] = u["unit_id"]
+        elif u["type"] == "multiple_choice":
+            # The model picks one option; the answer (its label) is keyed by
+            # unit_id. Send the labels + option text so it can choose.
+            clean["answer_key"] = u["unit_id"]
+            clean["options"] = [{"label": o["label"], "text": o["text"]}
+                                for o in (u.get("options") or [])]
         units_for_llm.append(clean)
     return {"units": units_for_llm}
 
@@ -640,6 +646,10 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict
         "    placeholders. Return the answer for each slot_id.\n"
         "  - 'open_response': the prompt is a question. Return one answer "
         "    keyed by the unit's answer_key, kept to a few sentences.\n"
+        "  - 'multiple_choice': the prompt is a question with an 'options' list, "
+        "    each option having a 'label' (A, B, C…) and text. Pick the ONE "
+        "    correct option and return just its label (e.g. \"C\") keyed by the "
+        "    unit's answer_key.\n"
         "Use the context in each prompt to figure out what kind of "
         "answer fits (a single word, a phrase, a conjugated verb form, "
         "a name, a date, etc.). Be accurate. If you genuinely don't know "
@@ -707,6 +717,9 @@ _VISION_FILL_SYSTEM = (
     "a JSON list of the 'units' detected on that page. Each unit has an id and a "
     "prompt: 'inline_blanks'/'table' prompts contain {{slot_id}} placeholders "
     "(answer each slot_id); 'open_response' units are keyed by their answer_key.\n"
+    "'multiple_choice' units carry an 'options' list (each with a 'label' A/B/C… "
+    "and text): pick the ONE correct option and return just its label (e.g. "
+    "\"C\") keyed by the unit's answer_key.\n"
     "Answer EVERY unit in the list — do not skip any. Read the PAGE IMAGE to "
     "understand each item: use any answer bank, word box, matching option list, "
     "table, diagram or worked example you can see. The image is authoritative; "
@@ -1677,7 +1690,7 @@ def update():
             except (TypeError, ValueError):
                 size = 11
             size = max(6.0, min(48.0, size))
-            cleaned.append({
+            entry = {
                 "id": str(ov.get("id", "")),
                 "page": page,
                 "bbox": bbox,
@@ -1688,7 +1701,13 @@ def update():
                 "bold": bool(ov.get("bold", False)),
                 "italic": bool(ov.get("italic", False)),
                 "underline": bool(ov.get("underline", False)),
-            })
+            }
+            # A "circle" overlay marks a multiple-choice answer — no text, drawn
+            # as an oval. Preserve the kind so an edited/moved circle survives a
+            # re-render instead of collapsing into an (empty) text box.
+            if ov.get("kind") == "circle":
+                entry["kind"] = "circle"
+            cleaned.append(entry)
         except (KeyError, TypeError, ValueError):
             continue
 

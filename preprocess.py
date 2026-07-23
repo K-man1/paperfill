@@ -9,6 +9,8 @@ Unit types produced:
   - inline_blanks: a sentence with one or more underscore runs to fill
   - table: a grid of cells, each potentially containing inline_blanks
   - open_response: a question followed by empty vertical space
+  - multiple_choice: a question stem plus lettered options (A/B/C/D); the
+    answer is the correct option's label and the renderer circles it
 """
 
 import fitz
@@ -75,9 +77,10 @@ def is_empty_bullet_line(line: dict) -> bool:
     return strip_bullet_prefix(line["text"]).strip() == ""
 
 
-# The four answer formats the user can ask us to detect. The scanned/OCR
+# The answer formats the user can ask us to detect. The scanned/OCR
 # path is not listed here \u2014 it fires automatically for image-only pages.
-ALL_FORMATS = ("inline_blanks", "open_response", "bullet_answer", "table")
+ALL_FORMATS = ("inline_blanks", "open_response", "bullet_answer", "table",
+               "multiple_choice")
 
 
 @dataclass
@@ -104,6 +107,10 @@ class Unit:
     answer_region: tuple[float, float, float, float] | None = None
     # Table only: rows of cells, each cell is a sub-unit ref.
     table_cells: list[list[dict]] | None = None
+    # Multiple choice only: the lettered options, in reading order. Each is
+    # {"label": "A", "text": "...", "bbox": (x0,y0,x1,y1)} where bbox bounds the
+    # option's label glyphs — the spot the renderer circles.
+    options: list[dict] | None = None
 
 
 def chars_of_span(span) -> list[dict]:
@@ -352,6 +359,226 @@ def detect_open_response_units(lines: list[dict], page_num: int,
             answer_region=answer_region,
         ))
     return units
+
+
+# ---------- multiple-choice detection --------------------------------------
+
+# An option line begins with a single letter label then '.' or ')' then a
+# space and the option text: "A. 0", "b) 2x + 6", "C. (3,2)". We allow labels
+# A–H (lower/upper) so five- or six-option items still parse.
+OPTION_LINE_RE = re.compile(r"^\s*([A-Ha-h])\s*[.)]\s+\S")
+
+# Continuation lines (an option's text wrapped onto a second line) sit this
+# close below; anything further is the next option, question, or block.
+MC_CONT_GAP = 6.0
+
+
+def _option_label_bbox(line: dict) -> tuple[float, float, float, float]:
+    """Bbox of just the label glyphs at the start of an option line — the 'A'
+    and its '.'/')'. That is what the renderer circles, so we want it tight to
+    the letter, not the whole option text."""
+    chars = line["chars"]
+    end = 0
+    for i, c in enumerate(chars[:6]):        # label lives in the first few chars
+        end = i
+        if c["c"] in ".)":
+            break
+    return bbox_of_chars(chars, 0, end)
+
+
+def _scan_inline_labels(line: dict) -> list[dict]:
+    """
+    Find option labels laid out along ONE line, e.g.
+    "A. (-2,3)  B. (0,4)  C. (3,2)  D. (1,4)". Returns
+    [{"label","bbox","start","end"}] for each 'X.'/'X)' whose letter sits at a
+    word boundary, in reading order. `start`/`end` are char indices so the
+    caller can slice out each option's text.
+    """
+    chars = line["chars"]
+    labels: list[dict] = []
+    for i, c in enumerate(chars):
+        ch = c["c"]
+        if not ("A" <= ch.upper() <= "H"):
+            continue
+        prev = chars[i - 1]["c"] if i > 0 else " "
+        nxt = chars[i + 1]["c"] if i + 1 < len(chars) else ""
+        if prev.strip() == "" and nxt in ".)":     # boundary + punctuation
+            labels.append({
+                "label": ch.upper(),
+                "bbox": bbox_of_chars(chars, i, i + 1),
+                "start": i,
+            })
+    for a, b in zip(labels, labels[1:]):
+        a["end"] = b["start"]
+    if labels:
+        labels[-1]["end"] = len(chars)
+    return labels
+
+
+def _inline_mc_from_line(line: dict, page_num: int, counter: dict,
+                         stem_text: str) -> Unit | None:
+    """Build a multiple_choice unit from a single line whose labels run
+    A, B, C… inline. Returns None if the line isn't a clean choice list."""
+    labels = _scan_inline_labels(line)
+    # Require a clean ascending run A, B, C… of at least three to avoid firing
+    # on ordinary prose that happens to contain "a." or "b)".
+    if len(labels) < 3:
+        return None
+    for idx, lab in enumerate(labels):
+        if ord(lab["label"]) - ord("A") != idx:
+            return None
+
+    chars = line["chars"]
+    options = []
+    for lab in labels:
+        text = text_of_chars(chars[lab["start"]:lab["end"]]).strip()
+        options.append({"label": lab["label"], "text": text, "bbox": lab["bbox"]})
+
+    opt_text = " ".join(f"{o['label']}. {o['text'][2:].strip()}" for o in options)
+    prompt = (stem_text + "  " + opt_text).strip() if stem_text else opt_text
+    xs0 = [o["bbox"][0] for o in options]
+    ys0 = [o["bbox"][1] for o in options]
+    xs1 = [o["bbox"][2] for o in options]
+    ys1 = [o["bbox"][3] for o in options]
+    counter["u"] += 1
+    return Unit(
+        unit_id=f"u{counter['u']}",
+        type="multiple_choice",
+        page=page_num,
+        bbox=(min(xs0), min(ys0), max(xs1), max(ys1)),
+        prompt_text=prompt,
+        options=options,
+    )
+
+
+def _gather_mc_stem(lines: list[dict], first_idx: int,
+                    consumed: set, skip: set) -> tuple[list[dict], str]:
+    """Collect the question stem printed above the option list: contiguous lines
+    up from `first_idx - 1`, stopping at a big vertical gap, an already-claimed
+    line, or a numbered/"Question" heading (which is kept as the stem's top)."""
+    stem_lines: list[dict] = []
+    prev_top = lines[first_idx]["bbox"][1]
+    k = first_idx - 1
+    while k >= 0:
+        lk = lines[k]
+        if id(lk) in consumed or id(lk) in skip:
+            break
+        if prev_top - lk["bbox"][3] > 26:        # paragraph break above the stem
+            break
+        stem_lines.append(lk)
+        prev_top = lk["bbox"][1]
+        if is_question_start(lk) or lk["text"].strip().lower().startswith("question"):
+            break
+        k -= 1
+    stem_lines.reverse()
+    stem_text = re.sub(r"\s+", " ",
+                       " ".join(l["text"] for l in stem_lines)).strip()
+    return stem_lines, stem_text
+
+
+def detect_multiple_choice_units(lines: list[dict], page_num: int,
+                                 counter: dict, skip_ids: set | None = None
+                                 ) -> tuple[list[Unit], set]:
+    """
+    Find multiple-choice questions and their stems. Two option layouts are
+    handled: stacked (each option on its own line) and inline (A…D all on one
+    line). The answer is the correct option's label; the renderer circles it.
+
+    Returns (units, consumed_ids). Consumed lines — options and stem alike —
+    are kept out of the other detectors so a choice list is never also read as
+    a stack of open-response prompts.
+    """
+    skip = set(skip_ids or ())
+    units: list[Unit] = []
+    consumed: set = set()
+    n = len(lines)
+
+    i = 0
+    while i < n:
+        line = lines[i]
+        if id(line) in skip or id(line) in consumed:
+            i += 1
+            continue
+
+        # Inline layout: this one line holds the whole A…D run.
+        stem_lines, stem_text = _gather_mc_stem(lines, i, consumed, skip)
+        inline_unit = _inline_mc_from_line(line, page_num, counter, stem_text)
+        if inline_unit is not None:
+            units.append(inline_unit)
+            consumed.add(id(line))
+            consumed.update(id(l) for l in stem_lines)
+            i += 1
+            continue
+
+        m = OPTION_LINE_RE.match(line["text"])
+        # Stacked layout must open on label 'A' (the first option); a stray "B)"
+        # mid-sentence is not the start of a choice list.
+        if not m or m.group(1).upper() != "A":
+            i += 1
+            continue
+
+        # Walk forward collecting options in ascending-letter order. Each option
+        # is its label line plus any wrapped continuation lines beneath it.
+        options: list[dict] = []
+        opt_line_ids: list[int] = []
+        expected = 0  # ord offset from 'A' of the next label we expect
+        j = i
+        while j < n:
+            lj = lines[j]
+            mj = OPTION_LINE_RE.match(lj["text"])
+            if mj and (ord(mj.group(1).upper()) - ord("A")) == expected:
+                if id(lj) in skip or id(lj) in consumed:
+                    break
+                options.append({
+                    "label": mj.group(1).upper(),
+                    "text": lj["text"].strip(),
+                    "bbox": _option_label_bbox(lj),
+                    "y1": lj["bbox"][3],
+                })
+                opt_line_ids.append(id(lj))
+                expected += 1
+                j += 1
+            elif options and not mj:
+                # Possibly a wrapped continuation of the current option.
+                gap = lj["bbox"][1] - options[-1]["y1"]
+                if 0 <= gap <= MC_CONT_GAP and id(lj) not in skip:
+                    options[-1]["text"] += " " + lj["text"].strip()
+                    opt_line_ids.append(id(lj))
+                    j += 1
+                else:
+                    break
+            else:
+                break
+
+        # Need at least A and B to be a real choice list.
+        if len(options) < 2:
+            i += 1
+            continue
+
+        opt_text = " ".join(f"{o['label']}. "
+                            f"{o['text'][len(o['label']) + 2:].strip()}"
+                            for o in options)
+        prompt = (stem_text + "  " + opt_text).strip() if stem_text else opt_text
+
+        xs0 = [o["bbox"][0] for o in options]
+        ys0 = [o["bbox"][1] for o in options]
+        xs1 = [o["bbox"][2] for o in options]
+        ys1 = [o["bbox"][3] for o in options]
+        counter["u"] += 1
+        units.append(Unit(
+            unit_id=f"u{counter['u']}",
+            type="multiple_choice",
+            page=page_num,
+            bbox=(min(xs0), min(ys0), max(xs1), max(ys1)),
+            prompt_text=prompt,
+            options=[{"label": o["label"], "text": o["text"], "bbox": o["bbox"]}
+                     for o in options],
+        ))
+        consumed.update(opt_line_ids)
+        consumed.update(id(l) for l in stem_lines)
+        i = j
+
+    return units, consumed
 
 
 # ---------- bullet-answer detection ----------------------------------------
@@ -821,10 +1048,21 @@ def preprocess_pdf(path: str, formats=None) -> dict:
         # Lines already consumed by a detector — kept out of the inline pass.
         covered: set = set()
 
+        # Detect multiple-choice questions first: an option list must not also
+        # be read as a stack of open-response prompts, so it claims its lines
+        # (options + stem) before the other detectors run.
+        if "multiple_choice" in active:
+            mc_units, mc_consumed = detect_multiple_choice_units(
+                non_table_lines, page_num, counter
+            )
+            all_units.extend(mc_units)
+            covered |= mc_consumed
+
         # Detect open-response question units (prompts with vertical gaps).
         if "open_response" in active:
             or_units = detect_open_response_units(
-                non_table_lines, page_num, page.rect, counter, obstacle_bboxes
+                [l for l in non_table_lines if id(l) not in covered],
+                page_num, page.rect, counter, obstacle_bboxes
             )
             all_units.extend(or_units)
             for u in or_units:

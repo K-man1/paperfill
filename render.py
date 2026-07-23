@@ -64,6 +64,13 @@ _OV_DEFAULTS = {
     "underline": False,
 }
 
+# Multiple-choice answer mark: a hand-drawn-looking oval around the chosen
+# option's label. Blue like a pen, a couple of points of padding so the ring
+# clears the letter, and a slightly heavy stroke so it reads as deliberate.
+_CIRCLE_COLOR = (0.10, 0.20, 0.75)
+_CIRCLE_WIDTH = 1.6
+_CIRCLE_PAD = 2.5
+
 
 def wrap_text_to_width(text: str, width: float, font: str, size: float) -> list[str]:
     """Greedy word-wrap to fit a given width."""
@@ -223,6 +230,16 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
             continue
         page = doc[page_idx]
 
+        if ov.get("kind") == "circle":
+            x0, y0, x1, y1 = ov["bbox"]
+            rect = fitz.Rect(x0 - _CIRCLE_PAD, y0 - _CIRCLE_PAD,
+                             x1 + _CIRCLE_PAD, y1 + _CIRCLE_PAD)
+            try:
+                page.draw_oval(rect, color=_CIRCLE_COLOR, width=_CIRCLE_WIDTH)
+            except Exception:
+                pass
+            continue
+
         png = images.get(ov.get("id"))
         if png:
             try:
@@ -249,11 +266,21 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
     doc.close()
 
 
+def _chosen_label(answer: str) -> str | None:
+    """Pull the option letter out of an LLM answer. It usually returns just
+    "C", but tolerate "C.", "c)", or "C) 2(3m-5n)" — take the first A–H letter."""
+    for ch in (answer or "").strip():
+        if "A" <= ch.upper() <= "H":
+            return ch.upper()
+    return None
+
+
 def build_overlays_from_structure(structure: dict, answers: dict) -> list[dict]:
     """
     Turn the preprocessor's structured units + LLM answers into a flat list
     of editable overlays. Inline blanks get a small region just above the
-    underscore; open-response answers use their detected answer_region.
+    underscore; open-response answers use their detected answer_region;
+    multiple-choice answers become a "circle" overlay on the chosen option.
     """
     overlays: list[dict] = []
     nid = 0
@@ -277,6 +304,19 @@ def build_overlays_from_structure(structure: dict, answers: dict) -> list[dict]:
                 "text": answers.get(u["unit_id"], ""),
             })
             nid += 1
+        elif u["type"] == "multiple_choice":
+            label = _chosen_label(answers.get(u["unit_id"], ""))
+            options = u.get("options") or []
+            match = next((o for o in options if o["label"] == label), None)
+            if match is not None:
+                overlays.append({
+                    **_OV_DEFAULTS,
+                    "id": f"ov{nid}", "page": page,
+                    "kind": "circle",
+                    "bbox": list(match["bbox"]),
+                    "text": "",
+                })
+                nid += 1
         elif u["type"] == "table":
             for row in u["table_cells"]:
                 for cell in row:
