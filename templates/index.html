@@ -1081,6 +1081,9 @@ button {
         {% if is_pro %}
           <span class="tier-badge pro">Pro</span>
           <a class="hw-link" href="{{ url_for('handwriting_onboarding') }}">✍️ Your handwriting</a>
+          {% if has_font %}
+          <a class="hw-link hw-settings-link" href="{{ url_for('handwriting_settings') }}" title="Adjust letter spacing, size, and pen thickness">⚙ Settings</a>
+          {% endif %}
         {% else %}
           <span class="tier-badge">Free</span>
           <a class="upgrade" href="{{ url_for('pricing') }}">✦ Upgrade to Pro</a>
