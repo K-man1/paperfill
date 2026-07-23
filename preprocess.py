@@ -372,6 +372,31 @@ OPTION_LINE_RE = re.compile(r"^\s*([A-Ha-h])\s*[.)]\s+\S")
 # close below; anything further is the next option, question, or block.
 MC_CONT_GAP = 6.0
 
+# Auto-generated worksheets (and PDFs mangled by copy/paste) sometimes render an
+# option label with a Cyrillic or Greek look-alike instead of the Latin letter —
+# e.g. "В." is U+0412 (Cyrillic Ve), not "B". Left as-is it breaks the A→B→C→D
+# sequence check, so a whole question goes undetected. Fold the common homoglyphs
+# back to Latin before reading a label.
+_LABEL_HOMOGLYPHS = {
+    "А": "A", "В": "B", "С": "C", "Е": "E", "Н": "H",   # Cyrillic
+    "Α": "A", "Β": "B", "Ε": "E", "Η": "H",             # Greek
+}
+
+
+def _delatin(ch: str) -> str:
+    """Map a Cyrillic/Greek label look-alike to its Latin letter (identity for
+    anything else)."""
+    return _LABEL_HOMOGLYPHS.get(ch, ch)
+
+
+def _option_match(text: str):
+    """OPTION_LINE_RE match with the leading label de-homoglyphed, so a Cyrillic
+    'В.' is read as a Latin 'B.' option."""
+    stripped = text.lstrip()
+    if not stripped:
+        return None
+    return OPTION_LINE_RE.match(_delatin(stripped[0]) + stripped[1:])
+
 
 def _option_label_bbox(line: dict) -> tuple[float, float, float, float]:
     """Bbox of just the label glyphs at the start of an option line — the 'A'
@@ -397,7 +422,7 @@ def _scan_inline_labels(line: dict) -> list[dict]:
     chars = line["chars"]
     labels: list[dict] = []
     for i, c in enumerate(chars):
-        ch = c["c"]
+        ch = _delatin(c["c"])
         if not ("A" <= ch.upper() <= "H"):
             continue
         prev = chars[i - 1]["c"] if i > 0 else " "
@@ -510,7 +535,7 @@ def detect_multiple_choice_units(lines: list[dict], page_num: int,
             i += 1
             continue
 
-        m = OPTION_LINE_RE.match(line["text"])
+        m = _option_match(line["text"])
         # Stacked layout must open on label 'A' (the first option); a stray "B)"
         # mid-sentence is not the start of a choice list.
         if not m or m.group(1).upper() != "A":
@@ -525,7 +550,7 @@ def detect_multiple_choice_units(lines: list[dict], page_num: int,
         j = i
         while j < n:
             lj = lines[j]
-            mj = OPTION_LINE_RE.match(lj["text"])
+            mj = _option_match(lj["text"])
             if mj and (ord(mj.group(1).upper()) - ord("A")) == expected:
                 if id(lj) in skip or id(lj) in consumed:
                     break
