@@ -173,6 +173,19 @@ def _role_for(email: str) -> str:
     return "admin" if (email or "").strip().lower() in ADMIN_EMAILS else "user"
 
 
+def _vision_model(is_pro: bool) -> str:
+    if is_pro:
+        return os.environ.get("VISION_MODEL_PRO", VISION_MODEL)
+    return VISION_MODEL
+
+
+def _ai_model(is_pro: bool) -> str:
+    normal = os.environ.get("AI_MODEL", "openai/gpt-5.5")
+    if is_pro:
+        return os.environ.get("AI_MODEL_PRO", normal)
+    return normal
+
+
 def _is_pro() -> bool:
     """True if the signed-in user is on the Pro tier. Admins are always Pro so
     the owner can use Pro features without paying themselves."""
@@ -631,7 +644,8 @@ def strip_bboxes_for_llm(structure: dict) -> dict:
     return {"units": units_for_llm}
 
 
-def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict[str, str]:
+def call_openai_to_fill(structure_for_llm: dict, instructions: str = "",
+                        is_pro: bool = False) -> dict[str, str]:
     """
     Single API call that returns a JSON object mapping slot_id / unit_id
     to the answer string. Uses Structured Outputs / JSON mode so we don't
@@ -688,7 +702,7 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "") -> dict
         user = structure_json
 
     response = get_openai_client().chat.completions.create(
-        model=os.environ.get("AI_MODEL", "openai/gpt-5.5"),
+        model=_ai_model(is_pro),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -744,7 +758,7 @@ _VISION_FILL_SYSTEM = (
 
 
 def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
-                          instructions: str = "") -> dict[str, str]:
+                          instructions: str = "", is_pro: bool = False) -> dict[str, str]:
     """One vision fill call for a single page's units + that page's image."""
     structure_json = json.dumps(structure_for_llm, ensure_ascii=False)
     instructions = (instructions or "").strip()
@@ -760,7 +774,7 @@ def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
     content.append({"type": "image_url", "image_url": {"url": data_uri}})
 
     response = get_openai_client().chat.completions.create(
-        model=VISION_MODEL,
+        model=_vision_model(is_pro),
         messages=[
             {"role": "system", "content": _VISION_FILL_SYSTEM},
             {"role": "user", "content": content},
@@ -776,7 +790,7 @@ def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
 
 
 def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
-                        instructions: str = "") -> dict[str, str]:
+                        instructions: str = "", is_pro: bool = False) -> dict[str, str]:
     """
     Answer-then-anchor fill, ONE call per page (run in parallel).
 
@@ -801,7 +815,7 @@ def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
         if pidx < 0 or pidx >= len(page_pngs):
             return {}
         sub = strip_bboxes_for_llm({"units": by_page[pidx]})
-        return _vision_fill_one_page(sub, page_pngs[pidx], instructions)
+        return _vision_fill_one_page(sub, page_pngs[pidx], instructions, is_pro)
 
     pages = sorted(by_page)
     answers: dict[str, str] = {}
@@ -845,7 +859,8 @@ def _flatten_answers(obj: dict) -> dict[str, str]:
     return out
 
 
-def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
+def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
+                           is_pro: bool = False) -> str:
     """
     Ask the vision model to answer a single worksheet item from a cropped
     screenshot — used when the AI left a question blank and the user snips it
@@ -880,7 +895,7 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
         })
 
     response = get_openai_client().chat.completions.create(
-        model=VISION_MODEL,
+        model=_vision_model(is_pro),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
@@ -895,7 +910,7 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "") -> str:
 
 
 def call_openai_to_refine(text: str, mode: str, instruction: str = "",
-                          ref: str = "") -> str:
+                          ref: str = "", is_pro: bool = False) -> str:
     """
     Rewrite a single box's text per a quick edit request from the floating
     toolbar: 'shorten', 'lengthen', or 'else' (a free-text instruction the user
@@ -936,7 +951,7 @@ def call_openai_to_refine(text: str, mode: str, instruction: str = "",
     user = "\n\n".join(parts)
 
     response = get_openai_client().chat.completions.create(
-        model=os.environ.get("AI_MODEL", "openai/gpt-5.5"),
+        model=_ai_model(is_pro),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -1478,12 +1493,12 @@ def fill():
     if VISION_FILL:
         try:
             page_pngs = _render_page_pngs(job["pdf_path"])
-            answers = call_vision_to_fill(job["structure"], page_pngs, instructions)
+            answers = call_vision_to_fill(job["structure"], page_pngs, instructions, _is_pro())
         except Exception as e:
             print(f"[fill] vision fill failed ({e}); falling back to text-only")
     if not answers:
         try:
-            answers = call_openai_to_fill(structure_for_llm, instructions)
+            answers = call_openai_to_fill(structure_for_llm, instructions, _is_pro())
         except Exception as e:
             return jsonify({"error": f"LLM call failed: {e}"}), 502
 
@@ -1831,7 +1846,7 @@ def snip():
         return jsonify({"error": f"could not crop page: {e}"}), 500
 
     try:
-        answer = call_vision_for_answer(png_bytes, job.get("fill_instructions", ""))
+        answer = call_vision_for_answer(png_bytes, job.get("fill_instructions", ""), _is_pro())
     except Exception as e:
         return jsonify({"error": f"vision call failed: {e}"}), 502
 
@@ -1864,7 +1879,7 @@ def refine():
 
     try:
         new_text = call_openai_to_refine(
-            text, mode, instruction, job.get("fill_instructions", ""))
+            text, mode, instruction, job.get("fill_instructions", ""), _is_pro())
     except Exception as e:
         return jsonify({"error": f"LLM call failed: {e}"}), 502
     if not new_text:
