@@ -97,22 +97,26 @@ def _page_is_transposed(blank_boxes: list[list[float]]) -> bool:
 
 
 def _call_vision(page, client) -> dict:
+    from llm_client import call_context
     pix = page.get_pixmap(dpi=VISION_DPI)
     data_uri = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
-    resp = client.chat.completions.create(
-        model=VISION_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Locate every answer blank on this page."},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ],
-            },
-        ],
-        response_format={"type": "json_object"},
-    )
+    # Labelled "ocr": this is the automatic scanned-page path, which is worth
+    # telling apart from the detector the user explicitly picked.
+    with call_context("ocr"):
+        resp = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Locate every answer blank on this page."},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ],
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
     content = resp.choices[0].message.content or "{}"
     return extract_json_object(content)
 

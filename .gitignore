@@ -13,6 +13,8 @@ devices.json
 user_password.txt
 # Per-user daily upload counts (see usage.py) — runtime state, resets daily
 usage.json
+# AI price list (see costs.py) — per-deployment config, edited from /admin
+ai_rates.json
 ads_enabled.txt
 adsense_client.txt
 adsense_slot.txt

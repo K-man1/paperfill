@@ -44,13 +44,16 @@ if _env_path.exists():
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
+import costs
 import db
+import stats
 import usage
 from json_utils import extract_json_object
 from preprocess import preprocess_pdf
 from multimodal_preprocess import multimodal_preprocess_pdf
 from render import render_overlays_pdf, build_overlays_from_structure
 from vision_preprocess import VISION_MODEL, VISION_DPI
+from llm_client import call_context
 from handwriting import font_store
 from context_sources import (extract_file_text, fetch_youtube_transcript,
                              assemble_context)
@@ -733,14 +736,15 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "",
     else:
         user = structure_json
 
-    response = get_openai_client().chat.completions.create(
-        model=_ai_model(is_pro),
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        response_format={"type": "json_object"},
-    )
+    with call_context("text_fill", is_pro=is_pro):
+        response = get_openai_client().chat.completions.create(
+            model=_ai_model(is_pro),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            response_format={"type": "json_object"},
+        )
     content = response.choices[0].message.content or "{}"
     parsed = extract_json_object(content)
     flat = _flatten_answers(parsed)
@@ -805,14 +809,15 @@ def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
     data_uri = "data:image/png;base64," + base64.b64encode(png).decode()
     content.append({"type": "image_url", "image_url": {"url": data_uri}})
 
-    response = get_openai_client().chat.completions.create(
-        model=_vision_model(is_pro),
-        messages=[
-            {"role": "system", "content": _VISION_FILL_SYSTEM},
-            {"role": "user", "content": content},
-        ],
-        response_format={"type": "json_object"},
-    )
+    with call_context("vision_fill", is_pro=is_pro):
+        response = get_openai_client().chat.completions.create(
+            model=_vision_model(is_pro),
+            messages=[
+                {"role": "system", "content": _VISION_FILL_SYSTEM},
+                {"role": "user", "content": content},
+            ],
+            response_format={"type": "json_object"},
+        )
     raw = response.choices[0].message.content or "{}"
     flat = _flatten_answers(extract_json_object(raw))
     if not flat:
@@ -926,14 +931,15 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
                      "(prefer it over your own knowledge):\n" + instructions[:SNIP_REF_MAX]),
         })
 
-    response = get_openai_client().chat.completions.create(
-        model=_vision_model(is_pro),
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_content},
-        ],
-        response_format={"type": "json_object"},
-    )
+    with call_context("ask_ai", is_pro=is_pro):
+        response = get_openai_client().chat.completions.create(
+            model=_vision_model(is_pro),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            response_format={"type": "json_object"},
+        )
     content = response.choices[0].message.content or "{}"
     ans = extract_json_object(content).get("answer", "")
     if isinstance(ans, (int, float)):
@@ -982,14 +988,15 @@ def call_openai_to_refine(text: str, mode: str, instruction: str = "",
     parts.append("Current text:\n" + text)
     user = "\n\n".join(parts)
 
-    response = get_openai_client().chat.completions.create(
-        model=_ai_model(is_pro),
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        response_format={"type": "json_object"},
-    )
+    with call_context("refine", is_pro=is_pro):
+        response = get_openai_client().chat.completions.create(
+            model=_ai_model(is_pro),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            response_format={"type": "json_object"},
+        )
     content = response.choices[0].message.content or "{}"
     out = extract_json_object(content).get("text", "")
     if isinstance(out, (int, float)):
@@ -1152,9 +1159,47 @@ def _fmt_ts(iso: str | None) -> str:
 def admin():
     if session.get("role") != "admin":
         return redirect(url_for("login"))
+
+    # Window and display timezone are query params so the dashboard can be
+    # re-sliced without a code change. Clamped: `days` feeds range() sizes.
+    try:
+        days = max(7, min(365, int(request.args.get("days", 30))))
+    except (TypeError, ValueError):
+        days = 30
+    try:
+        tz_offset = max(-14.0, min(14.0, float(request.args.get("tz", "0"))))
+    except (TypeError, ValueError):
+        tz_offset = 0.0
+
+    # Eight independent HTTP round-trips to Supabase. Serially that's several
+    # seconds of pure latency, so fan them out — they don't depend on each
+    # other. Each fetch already swallows its own errors and returns [].
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = {
+        "signins": db.fetch_signins,
+        "assignments": db.fetch_assignments,
+        "users": db.fetch_users,
+        "ai_calls": db.fetch_ai_calls,
+        "payments": db.fetch_payments,
+        "devices_daily": db.fetch_devices_daily,
+        "devices_hourly": db.fetch_devices_hourly,
+        "device_total": db.device_count,
+    }
+    with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+        futures = {k: ex.submit(fn) for k, fn in jobs.items()}
+        data = {k: f.result() for k, f in futures.items()}
+
+    s = stats.build(
+        signins=data["signins"], assignments=data["assignments"],
+        users=data["users"], ai_calls=data["ai_calls"],
+        payments=data["payments"], devices_daily=data["devices_daily"],
+        devices_hourly=data["devices_hourly"], device_total=data["device_total"],
+        days=days, tz_offset=tz_offset,
+    )
+
     # Read from the shared database so every worker shows the same numbers.
-    signin_log = db.fetch_signins()
-    activity_log = db.fetch_assignments()
+    signin_log = data["signins"]
+    activity_log = data["assignments"]
     for e in signin_log:
         e["timestamp"] = _fmt_ts(e.get("ts"))
     for e in activity_log:
@@ -1177,7 +1222,15 @@ def admin():
         activity=activity_log,
         activity_total=len(activity_log),
         report_count=report_count,
-        device_count=db.device_count(),
+        device_count=data["device_total"],
+        s=s,
+        days=days,
+        tz_offset=tz_offset,
+        rate_card=costs.load(),
+        rate_models=sorted(set(costs.known_models())
+                           | {r["name"] for r in s["money"]["by_model"]
+                              if r["name"] != "—"}),
+        rates_status=request.args.get("rates_status"),
         db_enabled=db.enabled(),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         current_user_password=get_user_password(),
@@ -1234,6 +1287,30 @@ def grant_pro():
     ok = db.set_user_pro(email, grant)
     status = ("granted" if grant else "revoked") if ok else "nouser"
     return redirect(url_for("admin", pro_status=status, pro_email=email))
+
+
+@app.post("/admin/ai-rates")
+def change_ai_rates():
+    """Save the AI price list used to cost every future call.
+
+    Rates are entered here rather than hardcoded because they're provider
+    policy, not facts we can know — and a guessed price would silently make the
+    profit chart wrong. Editing rates does NOT rewrite past calls: each row
+    stores the cost computed when it happened.
+    """
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    models = {}
+    # Fields arrive as rate_in[<model>] / rate_out[<model>].
+    for key, val in request.form.items():
+        if key.startswith("rate_in[") and key.endswith("]"):
+            name = key[8:-1]
+            models.setdefault(name, {})["in"] = val
+        elif key.startswith("rate_out[") and key.endswith("]"):
+            name = key[9:-1]
+            models.setdefault(name, {})["out"] = val
+    costs.save(models, request.form.get("primary_free") == "on")
+    return redirect(url_for("admin", rates_status="ok") + "#money")
 
 
 @app.post("/admin/ads")
@@ -1342,6 +1419,17 @@ def stripe_webhook():
         obj = event.get("data", {}).get("object", {}) or {}
         email = ((obj.get("customer_details") or {}).get("email")
                  or obj.get("customer_email") or "").strip().lower()
+        # Book the revenue regardless of whether we can match the email to an
+        # account: the money arrived either way, and a P&L that silently drops
+        # unmatched sales is worse than useless. Keyed on the Stripe event id,
+        # which is unique, so Stripe's retries can't double-count it.
+        db.record_payment(
+            email=email,
+            amount_cents=obj.get("amount_total") or 0,
+            currency=obj.get("currency") or "usd",
+            event_id=str(event.get("id") or ""),
+            livemode=bool(event.get("livemode")),
+        )
         if email and db.set_user_pro(email, True):
             print(f"[stripe] upgraded {email} to Pro")
         else:

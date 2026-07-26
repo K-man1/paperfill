@@ -60,34 +60,34 @@ def _extract_text(data: bytes) -> str:
 
 
 def _extract_image(data: bytes, mime: str) -> str:
-    """OCR / describe an image with the vision model (reuses the proxy client)."""
-    from openai import OpenAI
+    """OCR / describe an image with the vision model.
 
-    api_key = (os.environ.get("AI_API_KEY")
-               or os.environ.get("HCAI_API_KEY")
-               or os.environ.get("OPENAI_API_KEY"))
-    if not api_key:
+    Goes through llm_client rather than building a raw OpenAI client so these
+    tokens are metered like every other call — reference-image OCR was the one
+    path whose spend was invisible — and so it inherits the same fallback.
+    """
+    from llm_client import build_client, call_context
+
+    try:
+        client = build_client()
+    except RuntimeError:
         return "[image attached, but no API key configured to read it]"
-    client = OpenAI(
-        api_key=api_key,
-        base_url=(os.environ.get("AI_BASE_URL")
-                  or os.environ.get("OPENAI_BASE_URL", "https://ai.hackclub.com/proxy/v1")),
-    )
     data_uri = f"data:{mime};base64," + base64.b64encode(data).decode()
-    resp = client.chat.completions.create(
-        model=VISION_MODEL,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": (
-                    "Transcribe all text in this image verbatim. If it is a "
-                    "diagram or photo with little text, describe what it shows "
-                    "in a few sentences. Output only the transcription/description."
-                )},
-                {"type": "image_url", "image_url": {"url": data_uri}},
-            ],
-        }],
-    )
+    with call_context("context_image"):
+        resp = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": (
+                        "Transcribe all text in this image verbatim. If it is a "
+                        "diagram or photo with little text, describe what it shows "
+                        "in a few sentences. Output only the transcription/description."
+                    )},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            }],
+        )
     return resp.choices[0].message.content or ""
 
 

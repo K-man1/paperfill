@@ -120,6 +120,39 @@ def set_report(job_id: str, text: str) -> bool:
         return False
 
 
+def record_ai_call(row: dict) -> None:
+    """Append one metered LLM call. Called from llm_client's writer thread, so
+    it must swallow everything — a telemetry failure must never surface."""
+    if not enabled():
+        return
+    try:
+        requests.post(_rest("ai_calls"), headers=_headers(), json=row,
+                      timeout=_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"[db] record_ai_call failed: {e}")
+
+
+def record_payment(email: str, amount_cents: int, currency: str,
+                   event_id: str, livemode: bool) -> None:
+    """Record one completed checkout. `stripe_event_id` is UNIQUE and we ignore
+    duplicates, which is what makes this safe against Stripe's retries — a
+    webhook redelivery must not book the same revenue twice."""
+    if not enabled():
+        return
+    try:
+        requests.post(
+            _rest("payments"),
+            headers=_headers({"Prefer": "resolution=ignore-duplicates"}),
+            json={"email": email, "amount_cents": int(amount_cents or 0),
+                  "currency": (currency or "usd").lower(),
+                  "stripe_event_id": event_id or None,
+                  "livemode": bool(livemode)},
+            timeout=_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        print(f"[db] record_payment failed: {e}")
+
+
 def record_device(device_id: str, ip: str, ua: str) -> None:
     """Insert a newly-seen device, ignoring the row if it somehow already exists."""
     if not enabled():
@@ -161,8 +194,58 @@ def fetch_assignments() -> list[dict]:
     return _get("assignments?select=job_id,name,ts,ip,style,feedback&order=ts.asc")
 
 
+def fetch_ai_calls(limit: int = 20000) -> list[dict]:
+    """Metered LLM calls, newest first. Capped because this table grows with
+    every fill and the dashboard only ever plots a window of it."""
+    return _get("ai_calls?select=ts,purpose,model,provider,prompt_tokens,"
+                f"output_tokens,total_tokens,cost_usd,latency_ms,ok,error,"
+                f"is_pro,job_id&order=ts.desc&limit={int(limit)}")
+
+
+def fetch_payments() -> list[dict]:
+    return _get("payments?select=ts,email,amount_cents,currency,livemode"
+                "&order=ts.asc")
+
+
+def fetch_users() -> list[dict]:
+    """Accounts, for signup-over-time and Free/Pro split. No secrets: password
+    hashes and verification tokens are deliberately not selected."""
+    return _get("users?select=email,name,is_pro,email_verified,created_at,"
+                "google_sub&order=created_at.asc")
+
+
+def fetch_devices_daily() -> list[dict]:
+    """One row per day from the devices_daily view. The devices table has six
+    figures of rows — aggregating in Postgres keeps them out of this process."""
+    return _get("devices_daily?select=day,devices&order=day.asc")
+
+
+def fetch_devices_hourly() -> list[dict]:
+    return _get("devices_hourly?select=dow,hour,devices")
+
+
+def count_rows(table: str) -> int:
+    """Row count without transferring the rows. PostgREST returns the total in
+    the Content-Range header when asked for an exact count, so this replaces a
+    ~115k-row download that the admin page used to do on every load."""
+    if not enabled():
+        return 0
+    try:
+        r = requests.get(
+            _rest(f"{table}?select=*&limit=0"),
+            headers=_headers({"Prefer": "count=exact"}),
+            timeout=_TIMEOUT,
+        )
+        # Header looks like "0-24/1234" or "*/1234".
+        total = r.headers.get("Content-Range", "").split("/")[-1]
+        return int(total) if total.isdigit() else 0
+    except (requests.RequestException, ValueError) as e:
+        print(f"[db] count_rows({table}) failed: {e}")
+        return 0
+
+
 def device_count() -> int:
-    return len(_get("devices?select=device_id"))
+    return count_rows("devices")
 
 
 # ---- User accounts -------------------------------------------------------

@@ -6,7 +6,7 @@
 <title>Paperfill — Admin Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
   --paper: #f5f1e8;
@@ -23,314 +23,182 @@
   --red: #dc2626;
   --red-bg: #fef2f2;
   --red-border: #fecaca;
+  --blue: #2563eb;
+  --purple: #7c3aed;
   --serif: "Fraunces", "Times New Roman", serif;
   --sans: "IBM Plex Sans", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
-body {
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--sans);
-  min-height: 100vh;
-}
+body { background: var(--paper); color: var(--ink); font-family: var(--sans); min-height: 100vh; }
 
 /* ---- Header ---- */
 header {
-  background: var(--ink);
-  color: #fff;
-  padding: 0 32px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 56px;
+  background: var(--ink); color: #fff; padding: 0 32px;
+  display: flex; align-items: center; justify-content: space-between;
+  height: 56px; position: sticky; top: 0; z-index: 20;
 }
-.logo {
-  font-family: var(--serif);
-  font-size: 1.25rem;
-  font-weight: 800;
-  letter-spacing: -0.3px;
-}
+.logo { font-family: var(--serif); font-size: 1.25rem; font-weight: 800; letter-spacing: -0.3px; }
 .logo span { color: var(--accent); }
 .badge {
-  background: var(--accent);
-  color: #fff;
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 20px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-left: 10px;
+  background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 600;
+  padding: 2px 8px; border-radius: 20px; text-transform: uppercase;
+  letter-spacing: 0.08em; margin-left: 10px;
 }
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  font-size: 0.85rem;
+.header-right { display: flex; align-items: center; gap: 16px; font-size: 0.85rem; white-space: nowrap; }
+/* The timestamp wraps to four lines on a phone and blows out the header. It's
+   the least important thing up there, so drop it first. */
+@media (max-width: 640px) {
+  header { padding: 0 16px; }
+  .header-right .stamp { display: none; }
 }
-.header-right a {
-  color: #ccc;
-  text-decoration: none;
-}
+.header-right a { color: #ccc; text-decoration: none; }
 .header-right a:hover { color: #fff; }
+.logout-btn {
+  display: inline-block; padding: 7px 16px; background: transparent;
+  border: 1px solid #555; color: #ccc; border-radius: 6px;
+  font-family: var(--sans); font-size: 0.82rem; cursor: pointer;
+  text-decoration: none; transition: border-color 0.15s, color 0.15s;
+}
+.logout-btn:hover { border-color: #aaa; color: #fff; }
 
-/* ---- Main layout ---- */
-main {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 36px 24px 60px;
+/* ---- Nav strip ---- */
+.subnav {
+  position: sticky; top: 56px; z-index: 19; background: var(--paper-deep);
+  border-bottom: 1px solid var(--rule); padding: 0 32px;
+  display: flex; gap: 4px; overflow-x: auto;
 }
-h1 {
-  font-family: var(--serif);
-  font-size: 1.8rem;
-  font-weight: 800;
-  margin: 0 0 6px;
+.subnav a {
+  padding: 11px 14px; font-size: 0.82rem; font-weight: 500; color: var(--ink-soft);
+  text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent;
 }
-.page-subtitle {
-  color: var(--ink-soft);
-  font-size: 0.9rem;
-  margin: 0 0 32px;
+.subnav a:hover { color: var(--ink); }
+.subnav a.on { color: var(--accent-deep); border-bottom-color: var(--accent); }
+
+/* ---- Layout ---- */
+main { max-width: 1180px; margin: 0 auto; padding: 30px 24px 80px; }
+h1 { font-family: var(--serif); font-size: 1.8rem; font-weight: 800; margin: 0 0 4px; }
+.page-subtitle { color: var(--ink-soft); font-size: 0.9rem; margin: 0 0 22px; }
+section { scroll-margin-top: 110px; }
+.section-title {
+  font-family: var(--serif); font-size: 1.25rem; font-weight: 700;
+  margin: 40px 0 4px; padding-top: 6px;
 }
+.section-note { color: var(--ink-soft); font-size: 0.85rem; margin: 0 0 16px; max-width: 720px; }
+
+/* ---- Controls ---- */
+.controls {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: #fff; border: 1px solid var(--rule); border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 26px;
+}
+.controls label { font-size: 0.75rem; font-weight: 600; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.05em; }
+.controls select {
+  padding: 6px 10px; border: 1px solid var(--rule); border-radius: 6px;
+  font-family: var(--sans); font-size: 0.85rem; background: var(--paper); color: var(--ink);
+}
+.controls .spacer { flex: 1; }
 
 /* ---- Stat cards ---- */
-.stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
-  margin-bottom: 36px;
-}
-.stat-card {
-  background: #fff;
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  padding: 20px 24px;
-}
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.stat-card { background: #fff; border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px; }
+.stat-card.hero { border-color: var(--accent); border-left-width: 4px; }
 .stat-label {
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 8px;
+  font-size: 0.7rem; font-weight: 600; color: var(--ink-soft);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 7px;
 }
-.stat-value {
-  font-family: var(--serif);
-  font-size: 2rem;
-  font-weight: 800;
-  line-height: 1;
-}
+.stat-value { font-family: var(--serif); font-size: 1.75rem; font-weight: 800; line-height: 1; }
 .stat-value.green { color: var(--green); }
 .stat-value.red { color: var(--red); }
+.stat-value.accent { color: var(--accent-deep); }
+.stat-value.blue { color: var(--blue); }
+.stat-sub { font-size: 0.75rem; color: var(--ink-soft); margin-top: 6px; }
 
-/* ---- Table ---- */
-.section-title {
-  font-family: var(--serif);
-  font-size: 1.15rem;
-  font-weight: 700;
-  margin: 0 0 14px;
+/* ---- Chart cards ---- */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+@media (max-width: 900px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+.card { background: #fff; border: 1px solid var(--rule); border-radius: 12px; padding: 18px 20px; }
+.card h3 {
+  font-family: var(--sans); font-size: 0.78rem; font-weight: 600; margin: 0 0 2px;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft);
 }
-.table-wrap {
-  background: #fff;
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  overflow: hidden;
-}
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.875rem;
-}
-thead {
-  background: var(--paper-deep);
-}
+.card .cap { font-size: 0.78rem; color: var(--ink-soft); margin: 0 0 12px; }
+.chart { width: 100%; display: block; overflow: visible; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.75rem; color: var(--ink-soft); margin-top: 10px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.empty-chart { padding: 30px 0; text-align: center; color: var(--ink-soft); font-size: 0.85rem; font-style: italic; }
+
+/* ---- Tables ---- */
+.table-wrap { background: #fff; border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
+table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+thead { background: var(--paper-deep); }
 th {
-  text-align: left;
-  padding: 12px 16px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-align: left; padding: 11px 14px; font-size: 0.72rem; font-weight: 600;
+  color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.06em;
   border-bottom: 1px solid var(--rule);
 }
-td {
-  padding: 13px 16px;
-  border-bottom: 1px solid var(--rule-soft);
-  vertical-align: middle;
-}
+td { padding: 11px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
-tr:hover td { background: var(--paper); }
+tbody tr:hover td { background: var(--paper); }
+td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem; }
 .mono { font-family: var(--mono); font-size: 0.82rem; }
-.pill {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 20px;
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-.pill-user {
-  background: var(--green-bg);
-  color: var(--green);
-  border: 1px solid var(--green-border);
-}
-.pill-admin {
-  background: var(--red-bg);
-  color: var(--red);
-  border: 1px solid var(--red-border);
-}
-.pill-fail {
-  background: #fff7ed;
-  color: #c2410c;
-  border: 1px solid #fed7aa;
-}
+.pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
+.pill-user { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.pill-admin { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+.pill-fail { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+.empty { padding: 40px; text-align: center; color: var(--ink-soft); font-size: 0.9rem; }
 
 /* ---- Report flags ---- */
-.rating {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-  font-weight: 600;
-}
+.rating { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; font-weight: 600; }
 .rating .face { font-size: 1.15rem; line-height: 1; }
 .rating-red { color: var(--red); }
 .rating-none { color: var(--ink-soft); font-weight: 400; font-style: italic; }
-.rating-summary {
-  display: flex;
-  gap: 18px;
-  align-items: center;
-  margin: -6px 0 18px;
-  font-size: 0.9rem;
-}
+.rating-summary { display: flex; gap: 18px; align-items: center; margin: -4px 0 14px; font-size: 0.9rem; }
 .rating-summary span { display: inline-flex; align-items: center; gap: 6px; }
 .rating-summary .face { font-size: 1.25rem; }
-.pdf-link {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--accent, #ff5a1f);
-  text-decoration: none;
-  white-space: nowrap;
-}
+.pdf-link { font-size: 0.78rem; font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
 .pdf-link:hover { text-decoration: underline; }
-.empty {
-  padding: 48px;
-  text-align: center;
-  color: var(--ink-soft);
-  font-size: 0.9rem;
-}
 
-/* ---- Access control card ---- */
+/* ---- Settings ---- */
 .settings-card {
-  background: #fff;
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  padding: 22px 24px;
-  margin-bottom: 36px;
-  max-width: 520px;
+  background: #fff; border: 1px solid var(--rule); border-radius: 12px;
+  padding: 20px 22px; margin-bottom: 18px; max-width: 560px;
 }
-.settings-card .hint {
-  color: var(--ink-soft);
-  font-size: 0.85rem;
-  margin: 0 0 18px;
-}
+.settings-card.wide { max-width: none; }
+.settings-card .hint { color: var(--ink-soft); font-size: 0.85rem; margin: 0 0 16px; }
 .settings-card .current {
-  font-family: var(--mono);
-  background: var(--paper-deep);
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: 0.85rem;
+  font-family: var(--mono); background: var(--paper-deep); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 2px 8px; font-size: 0.85rem;
 }
-.field { margin-bottom: 14px; }
+.field { margin-bottom: 13px; }
 .field label {
-  display: block;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 6px;
+  display: block; font-size: 0.75rem; font-weight: 600; color: var(--ink-soft);
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;
 }
-.field input {
-  width: 100%;
-  padding: 9px 12px;
-  border: 1px solid var(--rule);
-  border-radius: 7px;
-  font-family: var(--mono);
-  font-size: 0.9rem;
-  background: var(--paper);
-  color: var(--ink);
+.field input, .field textarea {
+  width: 100%; padding: 9px 12px; border: 1px solid var(--rule); border-radius: 7px;
+  font-family: var(--mono); font-size: 0.9rem; background: var(--paper); color: var(--ink);
 }
-.field input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-/* Checkboxes shouldn't stretch to full width like text inputs do. */
-.field.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.field.checkbox input[type=checkbox] {
-  width: auto;
-  margin: 0;
-  accent-color: var(--accent);
-  flex: 0 0 auto;
-}
-.field.checkbox label {
-  margin: 0;
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 0.95rem;
-  color: var(--ink);
-}
+.field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+.field.checkbox { display: flex; align-items: center; gap: 10px; }
+.field.checkbox input[type=checkbox] { width: auto; margin: 0; accent-color: var(--accent); flex: 0 0 auto; }
+.field.checkbox label { margin: 0; text-transform: none; letter-spacing: 0; font-size: 0.95rem; color: var(--ink); }
 .save-btn {
-  padding: 9px 20px;
-  background: var(--accent);
-  border: none;
-  color: #fff;
-  border-radius: 7px;
-  font-family: var(--sans);
-  font-size: 0.88rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
+  padding: 9px 20px; background: var(--accent); border: none; color: #fff;
+  border-radius: 7px; font-family: var(--sans); font-size: 0.88rem;
+  font-weight: 600; cursor: pointer; transition: background 0.15s;
 }
 .save-btn:hover { background: var(--accent-deep); }
-.banner {
-  border-radius: 8px;
-  padding: 11px 14px;
-  font-size: 0.85rem;
-  margin-bottom: 18px;
-}
-.banner-ok {
-  background: var(--green-bg);
-  color: var(--green);
-  border: 1px solid var(--green-border);
-}
-.banner-err {
-  background: var(--red-bg);
-  color: var(--red);
-  border: 1px solid var(--red-border);
-}
-
-/* ---- Logout ---- */
-.logout-btn {
-  display: inline-block;
-  padding: 7px 16px;
-  background: transparent;
-  border: 1px solid #555;
-  color: #ccc;
-  border-radius: 6px;
-  font-family: var(--sans);
-  font-size: 0.82rem;
-  cursor: pointer;
-  text-decoration: none;
-  transition: border-color 0.15s, color 0.15s;
-}
-.logout-btn:hover { border-color: #aaa; color: #fff; }
+.banner { border-radius: 8px; padding: 11px 14px; font-size: 0.85rem; margin-bottom: 16px; }
+.banner-ok { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.banner-err { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+.banner-info { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.rate-row { display: grid; grid-template-columns: 1fr 130px 130px; gap: 10px; align-items: center; margin-bottom: 8px; }
+.rate-row .m { font-family: var(--mono); font-size: 0.82rem; word-break: break-all; }
+.rate-row input { padding: 7px 10px; }
+.rate-head { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-soft); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -340,217 +208,959 @@ tr:hover td { background: var(--paper); }
     <span class="badge">Admin</span>
   </div>
   <div class="header-right">
-    <span>{{ now }}</span>
+    <span class="stamp">{{ now }}</span>
+    <a href="/">App</a>
     <a href="/logout" class="logout-btn">Sign out</a>
   </div>
 </header>
 
+<nav class="subnav" id="subnav">
+  <a href="#money">Money</a>
+  <a href="#usage">Usage</a>
+  <a href="#product">Product</a>
+  <a href="#accounts">Accounts</a>
+  <a href="#reliability">AI health</a>
+  <a href="#audience">Audience</a>
+  <a href="#security">Security</a>
+  <a href="#settings">Settings</a>
+  <a href="#logs">Logs</a>
+</nav>
+
 <main>
-  <h1>Sign-in Dashboard</h1>
-  <p class="page-subtitle">Access attempts, filled assignments, and devices — stored in Supabase.</p>
+  <h1>Dashboard</h1>
+  <p class="page-subtitle">
+    Every number below is computed from the Supabase tables — nothing is sampled or estimated
+    except AI cost, which uses the rate card you configure under Money.
+  </p>
 
   {% if not db_enabled %}
-  <div class="banner banner-err" style="max-width:none;">
+  <div class="banner banner-err">
     Supabase isn't configured, so no data is being recorded or shown.
     Set <code>SUPABASE_URL</code> and <code>SUPABASE_SECRET_KEY</code> in the
     server's <code>.env</code> and restart.
   </div>
   {% endif %}
 
+  <form class="controls" method="get" action="/admin" id="controls">
+    <label for="days">Window</label>
+    <select name="days" id="days" onchange="this.form.submit()">
+      {% for d in [7, 14, 30, 60, 90, 180, 365] %}
+      <option value="{{ d }}" {% if days == d %}selected{% endif %}>Last {{ d }} days</option>
+      {% endfor %}
+    </select>
+    <label for="tz">Timezone</label>
+    <select name="tz" id="tz" onchange="this.form.submit()">
+      {% for off, name in [(0,'UTC'), (-4,'EDT (UTC-4)'), (-5,'EST (UTC-5)'), (-7,'PDT (UTC-7)'), (-8,'PST (UTC-8)'), (1,'CET (UTC+1)'), (5.5,'IST (UTC+5:30)'), (8,'CST (UTC+8)')] %}
+      <option value="{{ off }}" {% if tz_offset == off %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <span class="spacer"></span>
+    <span style="font-size:0.78rem;color:var(--ink-soft);">
+      Hour-of-day charts are shown in {{ 'UTC' if tz_offset == 0 else 'UTC%+g'|format(tz_offset) }}
+    </span>
+  </form>
+
+  <!-- ============ HEADLINE ============ -->
   <div class="stats">
-    <div class="stat-card">
-      <div class="stat-label">Total Attempts</div>
-      <div class="stat-value">{{ total }}</div>
+    <div class="stat-card hero">
+      <div class="stat-label">Revenue</div>
+      <div class="stat-value green">${{ '%.2f'|format(s.money.revenue) }}</div>
+      <div class="stat-sub">{{ s.money.payment_count }} paid checkout{{ '' if s.money.payment_count == 1 else 's' }}</div>
+    </div>
+    <div class="stat-card hero">
+      <div class="stat-label">AI spend</div>
+      <div class="stat-value red">${{ '%.4f'|format(s.money.cost) }}</div>
+      <div class="stat-sub">{{ '{:,}'.format(s.money.tokens_total) }} tokens</div>
+    </div>
+    <div class="stat-card hero">
+      <div class="stat-label">Profit</div>
+      <div class="stat-value {{ 'green' if s.money.profit >= 0 else 'red' }}">${{ '%.2f'|format(s.money.profit) }}</div>
+      <div class="stat-sub">{{ (s.money.margin_pct ~ '% margin') if s.money.revenue else 'no revenue yet' }}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">User Logins</div>
-      <div class="stat-value green">{{ user_count }}</div>
+      <div class="stat-label">Worksheets filled</div>
+      <div class="stat-value">{{ s.product.total }}</div>
+      <div class="stat-sub">{{ s.product.handwriting }} in handwriting</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Admin Logins</div>
-      <div class="stat-value red">{{ admin_count }}</div>
+      <div class="stat-label">Accounts</div>
+      <div class="stat-value blue">{{ s.accounts.total }}</div>
+      <div class="stat-sub">{{ s.accounts.pro }} Pro · {{ s.accounts.pro_pct }}%</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Failed Attempts</div>
-      <div class="stat-value" style="color:#c2410c;">{{ fail_count }}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">New Devices</div>
-      <div class="stat-value" style="color:#2563eb;">{{ device_count }}</div>
+      <div class="stat-label">Devices seen</div>
+      <div class="stat-value">{{ '{:,}'.format(device_count) }}</div>
+      <div class="stat-sub">{{ s.product.unique_ips }} IPs filled a sheet</div>
     </div>
   </div>
 
-  <div class="section-title">Access Control</div>
-  <div class="settings-card">
-    {% if pw_status == 'ok' %}
-      <div class="banner banner-ok">User access code updated. New sign-ins must use the new code.</div>
-    {% elif pw_status == 'mismatch' %}
-      <div class="banner banner-err">The two codes didn't match. Nothing was changed.</div>
-    {% elif pw_status == 'short' %}
-      <div class="banner banner-err">Code must be at least 3 characters. Nothing was changed.</div>
-    {% elif pw_status == 'conflict' %}
-      <div class="banner banner-err">That code is already the admin code. Pick a different one.</div>
-    {% endif %}
-    <p class="hint">
-      Change the access code users sign in with. The current code is
-      <span class="current">{{ current_user_password }}</span>.
-      The admin code is unaffected.
+  <!-- ============ MONEY ============ -->
+  <section id="money">
+    <div class="section-title">Money</div>
+    <p class="section-note">
+      Revenue comes from Stripe checkout events. AI spend is token counts (a fact
+      from the provider) multiplied by your configured rates (not a fact — set them below).
     </p>
-    <form method="post" action="/admin/user-password" autocomplete="off">
-      <div class="field">
-        <label for="new_password">New user code</label>
-        <input type="text" id="new_password" name="new_password" required autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="confirm_password">Confirm new code</label>
-        <input type="text" id="confirm_password" name="confirm_password" required autocomplete="off" />
-      </div>
-      <button type="submit" class="save-btn">Update user code</button>
-    </form>
-  </div>
 
-  <div class="section-title">Pro Membership</div>
-  <div class="settings-card">
-    {% if pro_status == 'granted' %}
-      <div class="banner banner-ok">Pro granted to <span class="current">{{ pro_email }}</span>. It applies on their next sign-in (or immediately if they re-open the app).</div>
-    {% elif pro_status == 'revoked' %}
-      <div class="banner banner-ok">Pro revoked for <span class="current">{{ pro_email }}</span>.</div>
-    {% elif pro_status == 'nouser' %}
-      <div class="banner banner-err">No account found for <span class="current">{{ pro_email }}</span>. They need to sign in once before Pro can be set.</div>
-    {% elif pro_status == 'empty' %}
-      <div class="banner banner-err">Enter an email address.</div>
+    {% if s.money.uncosted_calls %}
+    <div class="banner banner-info">
+      <b>{{ s.money.uncosted_calls }} AI call{{ '' if s.money.uncosted_calls == 1 else 's' }} could not be costed</b>
+      — no rate is configured for their model, so they're excluded from spend and profit
+      rather than counted as free. Set the rate under <b>AI rate card</b> below to include them.
+    </div>
     {% endif %}
-    <p class="hint">
-      Paid upgrades flip to Pro automatically via the Stripe webhook. Use this to
-      grant a comp, fix a mismatched checkout email, or revoke access. Matched by
-      email (case-insensitive).
-    </p>
-    <form method="post" action="/admin/grant-pro" autocomplete="off">
-      <div class="field">
-        <label for="pro_email">Account email</label>
-        <input type="email" id="pro_email" name="email" required autocomplete="off" placeholder="user@example.com" />
-      </div>
-      <button type="submit" class="save-btn" name="action" value="grant">Grant Pro</button>
-      <button type="submit" class="save-btn" name="action" value="revoke" style="background:transparent;border:1px solid var(--rule, #c9c0a8);color:inherit;">Revoke Pro</button>
-    </form>
-  </div>
 
-  <div class="section-title">Ads</div>
-  <div class="settings-card">
-    {% if ads_status == 'ok' %}
-      <div class="banner banner-ok">Ad settings updated.</div>
-    {% endif %}
-    <p class="hint">
-      When enabled, a full-screen HilltopAds <strong>VAST</strong> video ad plays
-      while the worksheet fills, with a progress bar at the bottom. The worksheet
-      reveals once the video finishes (or is skipped after its skip offset). Ads
-      stay off until at least one tag is set. Paste your HilltopAds
-      <strong>VAST tag URL(s)</strong>, one per line — they're tried in order, so
-      the second acts as a fallback if the first fails to load.
-    </p>
-    <form method="post" action="/admin/ads" autocomplete="off">
-      <div class="field checkbox">
-        <input type="checkbox" id="ads_enabled" name="ads_enabled"
-               {% if ads_enabled %}checked{% endif %} />
-        <label for="ads_enabled">Include Ads</label>
+    <div class="grid2">
+      <div class="card">
+        <h3>Revenue vs AI spend</h3>
+        <p class="cap">Daily, last {{ days }} days.</p>
+        <div id="c-pnl"></div>
+        <div class="legend">
+          <span><i style="background:#16a34a"></i>Revenue</span>
+          <span><i style="background:#dc2626"></i>AI spend</span>
+        </div>
       </div>
-      <div class="field">
-        <label for="vast_tags">VAST tag URLs (one per line)</label>
-        <textarea id="vast_tags" name="vast_tags" rows="4"
-                  placeholder="https://…/vast-tag-1&#10;https://…/vast-tag-2"
-                  autocomplete="off" spellcheck="false"
-                  style="width:100%;font-family:var(--mono,monospace);">{{ vast_tags }}</textarea>
+      <div class="card">
+        <h3>Cumulative profit</h3>
+        <p class="cap">Revenue minus AI spend, running total.</p>
+        <div id="c-profit"></div>
       </div>
-      <button type="submit" class="save-btn">Save ad settings</button>
-    </form>
-  </div>
+    </div>
 
-  <div class="section-title">Assignments Filled</div>
-  <div class="rating-summary">
-    <span class="rating-red"><span class="face">⚑</span> {{ report_count }} reported</span>
-    <span class="rating-none">{{ activity_total - report_count }} with no report</span>
-  </div>
-  <div class="table-wrap" style="margin-bottom:36px;">
-    {% if activity %}
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Assignment</th>
-          <th>Handwriting</th>
-          <th>Filled</th>
-          <th>Report</th>
-          <th>PDF</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for entry in activity|reverse %}
-        <tr>
-          <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
-          <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.name }}</td>
-          <td style="font-size:0.82rem;">{{ entry.style or '—' }}</td>
-          <td class="mono">{{ entry.timestamp }}</td>
-          <td style="max-width:320px;font-size:0.82rem;">
-            {% if entry.reported %}
-              <span class="rating rating-red"><span class="face">⚑</span> Reported</span>
-              <div style="margin-top:4px;color:var(--ink-soft);">{{ entry.feedback }}</div>
-            {% else %}
-              <span class="rating-none">No report</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if entry.has_pdf %}
-              <a class="pdf-link" href="{{ url_for('admin_report_pdf', job_id=entry.job_id) }}">↓ Download</a>
-            {% else %}
-              <span class="rating-none">—</span>
-            {% endif %}
-          </td>
-        </tr>
+    <div class="grid2" style="margin-top:18px;">
+      <div class="card">
+        <h3>Token spend by feature</h3>
+        <p class="cap">Which part of the product burns the tokens.</p>
+        <div id="c-purpose"></div>
+      </div>
+      <div class="card">
+        <h3>Spend by model</h3>
+        <p class="cap">Calls, tokens and cost per model.</p>
+        <div class="table-wrap" style="border:none;">
+          <table>
+            <thead><tr><th>Model</th><th class="num">Calls</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+            <tbody>
+              {% for m in s.money.by_model %}
+              <tr>
+                <td class="mono">{{ m.name }}</td>
+                <td class="num">{{ '{:,}'.format(m.calls) }}</td>
+                <td class="num">{{ '{:,}'.format(m.tokens) }}</td>
+                <td class="num">${{ '%.4f'|format(m.cost) }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="empty">No AI calls recorded yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title" style="font-size:1rem;">AI rate card</div>
+    <div class="settings-card wide">
+      {% if rates_status == 'ok' %}
+        <div class="banner banner-ok">Rates saved. They apply to calls made from now on — past rows keep the cost they were recorded with.</div>
+      {% endif %}
+      <p class="hint">
+        Prices in <b>USD per 1,000,000 tokens</b>, taken from your provider's pricing page.
+        These are deliberately not guessed for you: a wrong rate here would make the profit
+        number above confidently wrong. A model left at 0 with the free-proxy box unticked
+        is reported as <i>uncosted</i>, not as free.
+      </p>
+      <form method="post" action="/admin/ai-rates" autocomplete="off">
+        <div class="field checkbox" style="margin-bottom:16px;">
+          <input type="checkbox" id="primary_free" name="primary_free"
+                 {% if rate_card._provider_primary_is_free %}checked{% endif %} />
+          <label for="primary_free">Primary provider is free (the Hack Club AI proxy) — bill only fallback calls</label>
+        </div>
+        <div class="rate-row">
+          <span class="rate-head">Model</span>
+          <span class="rate-head">$ / 1M input</span>
+          <span class="rate-head">$ / 1M output</span>
+        </div>
+        {% for m in rate_models %}
+        <div class="rate-row">
+          <span class="m">{{ m }}</span>
+          <input type="number" step="0.0001" min="0" name="rate_in[{{ m }}]"
+                 value="{{ rate_card.models.get(m, {}).get('in', 0) }}" />
+          <input type="number" step="0.0001" min="0" name="rate_out[{{ m }}]"
+                 value="{{ rate_card.models.get(m, {}).get('out', 0) }}" />
+        </div>
         {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty">No assignments filled yet.</div>
-    {% endif %}
-  </div>
+        <button type="submit" class="save-btn" style="margin-top:12px;">Save rates</button>
+      </form>
+    </div>
+  </section>
 
-  <div class="section-title">Sign-in Log</div>
-  <div class="table-wrap">
-    {% if logs %}
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Timestamp</th>
-          <th>IP Address</th>
-          <th>Result</th>
-          <th>User Agent</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for entry in logs|reverse %}
-        <tr>
-          <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
-          <td class="mono">{{ entry.timestamp }}</td>
-          <td class="mono">{{ entry.ip }}</td>
-          <td>
-            {% if entry.result == 'user' %}
-              <span class="pill pill-user">User</span>
-            {% elif entry.result == 'admin' %}
-              <span class="pill pill-admin">Admin</span>
-            {% else %}
-              <span class="pill pill-fail">Failed</span>
-            {% endif %}
-          </td>
-          <td style="color:var(--ink-soft);font-size:0.8rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.ua }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty">No sign-in attempts yet.</div>
+  <!-- ============ USAGE ============ -->
+  <section id="usage">
+    <div class="section-title">Usage</div>
+    <p class="section-note">
+      When people actually use the thing. Peak activity is
+      <b>{{ s.time_of_day.peak_dow_label }}</b> around <b>{{ s.time_of_day.peak_hour_label }}</b>.
+    </p>
+
+    <div class="card">
+      <h3>Worksheets filled — hour of day × day of week</h3>
+      <p class="cap">Darker means more fills started in that hour.</p>
+      <div id="c-heat"></div>
+    </div>
+
+    <div class="grid2" style="margin-top:18px;">
+      <div class="card">
+        <h3>Fills by hour of day</h3>
+        <p class="cap">All history, folded into 24 hours.</p>
+        <div id="c-hour"></div>
+      </div>
+      <div class="card">
+        <h3>Sign-ins by hour of day</h3>
+        <p class="cap">Includes failed attempts.</p>
+        <div id="c-hour-signin"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:18px;">
+      <h3>Daily activity</h3>
+      <p class="cap">Last {{ days }} days.</p>
+      <div id="c-activity"></div>
+      <div class="legend">
+        <span><i style="background:#ff5a1f"></i>Fills</span>
+        <span><i style="background:#2563eb"></i>Sign-ins</span>
+        <span><i style="background:#7c3aed"></i>Signups</span>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:18px;">
+      <div class="card">
+        <h3>New devices per day</h3>
+        <p class="cap">First time a browser was seen. Traffic, not usage.</p>
+        <div id="c-devices"></div>
+      </div>
+      <div class="card">
+        <h3>First-touch traffic — hour × day</h3>
+        <p class="cap">All {{ '{:,}'.format(device_count) }} devices, aggregated in Postgres.</p>
+        <div id="c-devheat"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PRODUCT ============ -->
+  <section id="product">
+    <div class="section-title">Product</div>
+    <p class="section-note">How the filler is being used, and how often it goes wrong.</p>
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Handwriting use</div>
+        <div class="stat-value accent">{{ s.product.handwriting_pct }}%</div>
+        <div class="stat-sub">{{ s.product.handwriting }} of {{ s.product.total }} fills</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Problem reports</div>
+        <div class="stat-value {{ 'red' if s.product.report_pct > 10 else '' }}">{{ s.product.report_pct }}%</div>
+        <div class="stat-sub">{{ s.product.reported }} reported</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Fills per account</div>
+        <div class="stat-value">{{ s.accounts.fills_per_user }}</div>
+        <div class="stat-sub">across {{ s.accounts.total }} accounts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Repeat usage</div>
+        <div class="stat-value">{{ s.product.repeat_pct }}%</div>
+        <div class="stat-sub">fills from returning IPs</div>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:18px;">
+      <div class="card">
+        <h3>Fill style</h3>
+        <p class="cap">Typed vs handwriting fonts.</p>
+        <div id="c-styles"></div>
+      </div>
+      <div class="card">
+        <h3>Busiest IPs</h3>
+        <p class="cap">Fills per source address.</p>
+        <div id="c-ips"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ACCOUNTS ============ -->
+  <section id="accounts">
+    <div class="section-title">Accounts</div>
+    <p class="section-note">Signups, tier split, and how far people get down the funnel.</p>
+    <div class="grid3">
+      <div class="card">
+        <h3>Free vs Pro</h3>
+        <p class="cap">{{ s.accounts.pro }} of {{ s.accounts.total }} on Pro.</p>
+        <div id="c-tier"></div>
+      </div>
+      <div class="card">
+        <h3>Sign-up method</h3>
+        <p class="cap">Google OAuth vs email/password.</p>
+        <div id="c-method"></div>
+      </div>
+      <div class="card">
+        <h3>Funnel</h3>
+        <p class="cap">Devices → accounts → Pro → paid. Bars are √-scaled so the
+           small stages stay visible; the numbers are exact.</p>
+        <div id="c-funnel"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px;">
+      <h3>Signups per day</h3>
+      <p class="cap">Last {{ days }} days.</p>
+      <div id="c-signups"></div>
+    </div>
+  </section>
+
+  <!-- ============ RELIABILITY ============ -->
+  <section id="reliability">
+    <div class="section-title">AI health</div>
+    <p class="section-note">
+      Whether the model layer is actually working. A rising fallback rate means the free
+      primary provider is failing and calls are landing on the paid one — which is what
+      turns AI spend from $0 into real money.
+    </p>
+    {# With no calls recorded, every rate here is 0 — which must render as "no
+       data", not as a red 0% success rate implying a total outage. #}
+    {% set has_ai = s.reliability.total > 0 %}
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Success rate</div>
+        <div class="stat-value {{ ('green' if s.reliability.success_pct >= 95 else 'red') if has_ai else '' }}">
+          {{ (s.reliability.success_pct ~ '%') if has_ai else '—' }}</div>
+        <div class="stat-sub">{{ (s.reliability.failed ~ ' failed of ' ~ s.reliability.total) if has_ai else 'no calls recorded yet' }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Fallback rate</div>
+        <div class="stat-value {{ 'red' if has_ai and s.reliability.fallback_pct > 10 else '' }}">
+          {{ (s.reliability.fallback_pct ~ '%') if has_ai else '—' }}</div>
+        <div class="stat-sub">{{ s.reliability.fallback_calls }} paid-provider calls</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Latency p50</div>
+        <div class="stat-value">{{ ((s.reliability.p50_ms / 1000)|round(1) ~ 's') if has_ai else '—' }}</div>
+        <div class="stat-sub">median AI call</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Latency p95</div>
+        <div class="stat-value {{ 'red' if has_ai and s.reliability.p95_ms > 60000 else '' }}">
+          {{ ((s.reliability.p95_ms / 1000)|round(1) ~ 's') if has_ai else '—' }}</div>
+        <div class="stat-sub">slowest 1 in 20</div>
+      </div>
+    </div>
+    {% if not has_ai %}
+    <div class="banner banner-info" style="margin-top:14px;">
+      No AI calls have been metered yet. Token, cost and latency tracking starts the
+      first time a worksheet is filled after this deploy — none of it can be backfilled,
+      because these numbers were never recorded before.
+    </div>
     {% endif %}
-  </div>
+    <div class="grid2" style="margin-top:18px;">
+      <div class="card">
+        <h3>Latency by feature</h3>
+        <p class="cap">p50 and p95, in seconds.</p>
+        <div class="table-wrap" style="border:none;">
+          <table>
+            <thead><tr><th>Feature</th><th class="num">Calls</th><th class="num">p50</th><th class="num">p95</th></tr></thead>
+            <tbody>
+              {% for r in s.reliability.latency_by_purpose %}
+              <tr>
+                <td>{{ r.name }}</td>
+                <td class="num">{{ r.calls }}</td>
+                <td class="num">{{ (r.p50 / 1000)|round(1) }}s</td>
+                <td class="num">{{ (r.p95 / 1000)|round(1) }}s</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="empty">No AI calls recorded yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Top errors</h3>
+        <p class="cap">Exception types from failed calls.</p>
+        <div class="table-wrap" style="border:none;">
+          <table>
+            <thead><tr><th>Error</th><th class="num">Count</th></tr></thead>
+            <tbody>
+              {% for name, n in s.reliability.top_errors %}
+              <tr><td class="mono">{{ name or '—' }}</td><td class="num">{{ n }}</td></tr>
+              {% else %}
+              <tr><td colspan="2" class="empty">No failures recorded.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ AUDIENCE ============ -->
+  <section id="audience">
+    <div class="section-title">Audience</div>
+    <p class="section-note">Parsed from sign-in user-agent strings, so it's a rough split rather than exact.</p>
+    <div class="grid3">
+      <div class="card"><h3>Browser</h3><p class="cap">Share of sign-ins.</p><div id="c-browser"></div></div>
+      <div class="card"><h3>Operating system</h3><p class="cap">Share of sign-ins.</p><div id="c-os"></div></div>
+      <div class="card"><h3>Device type</h3><p class="cap">Mobile vs desktop.</p><div id="c-kind"></div></div>
+    </div>
+  </section>
+
+  <!-- ============ SECURITY ============ -->
+  <section id="security">
+    <div class="section-title">Security</div>
+    <p class="section-note">Sign-in outcomes and repeat failures.</p>
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Total attempts</div>
+        <div class="stat-value">{{ s.security.total }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Successful</div>
+        <div class="stat-value green">{{ s.security.user + s.security.admin }}</div>
+        <div class="stat-sub">{{ s.security.admin }} admin</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Failed</div>
+        <div class="stat-value {{ 'red' if s.security.fail_pct > 25 else '' }}">{{ s.security.failed }}</div>
+        <div class="stat-sub">{{ s.security.fail_pct }}% of attempts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Unique IPs</div>
+        <div class="stat-value blue">{{ s.security.unique_ips }}</div>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:18px;">
+      <div class="card">
+        <h3>Failed sign-ins per day</h3>
+        <p class="cap">A spike here is someone guessing.</p>
+        <div id="c-fails"></div>
+      </div>
+      <div class="card">
+        <h3>IPs with most failures</h3>
+        <p class="cap">Repeat offenders.</p>
+        <div class="table-wrap" style="border:none;">
+          <table>
+            <thead><tr><th>IP</th><th class="num">Failures</th></tr></thead>
+            <tbody>
+              {% for ip, n in s.security.top_failed_ips %}
+              <tr><td class="mono">{{ ip }}</td><td class="num">{{ n }}</td></tr>
+              {% else %}
+              <tr><td colspan="2" class="empty">No failed sign-ins.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SETTINGS ============ -->
+  <section id="settings">
+    <div class="section-title">Settings</div>
+
+    <div class="section-title" style="font-size:1rem;">Access control</div>
+    <div class="settings-card">
+      {% if pw_status == 'ok' %}
+        <div class="banner banner-ok">User access code updated. New sign-ins must use the new code.</div>
+      {% elif pw_status == 'mismatch' %}
+        <div class="banner banner-err">The two codes didn't match. Nothing was changed.</div>
+      {% elif pw_status == 'short' %}
+        <div class="banner banner-err">Code must be at least 3 characters. Nothing was changed.</div>
+      {% elif pw_status == 'conflict' %}
+        <div class="banner banner-err">That code is already the admin code. Pick a different one.</div>
+      {% endif %}
+      <p class="hint">
+        Change the access code users sign in with. The current code is
+        <span class="current">{{ current_user_password }}</span>. The admin code is unaffected.
+      </p>
+      <form method="post" action="/admin/user-password" autocomplete="off">
+        <div class="field">
+          <label for="new_password">New user code</label>
+          <input type="text" id="new_password" name="new_password" required autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="confirm_password">Confirm new code</label>
+          <input type="text" id="confirm_password" name="confirm_password" required autocomplete="off" />
+        </div>
+        <button type="submit" class="save-btn">Update user code</button>
+      </form>
+    </div>
+
+    <div class="section-title" style="font-size:1rem;">Pro membership</div>
+    <div class="settings-card">
+      {% if pro_status == 'granted' %}
+        <div class="banner banner-ok">Pro granted to <span class="current">{{ pro_email }}</span>. It applies on their next sign-in (or immediately if they re-open the app).</div>
+      {% elif pro_status == 'revoked' %}
+        <div class="banner banner-ok">Pro revoked for <span class="current">{{ pro_email }}</span>.</div>
+      {% elif pro_status == 'nouser' %}
+        <div class="banner banner-err">No account found for <span class="current">{{ pro_email }}</span>. They need to sign in once before Pro can be set.</div>
+      {% elif pro_status == 'empty' %}
+        <div class="banner banner-err">Enter an email address.</div>
+      {% endif %}
+      <p class="hint">
+        Paid upgrades flip to Pro automatically via the Stripe webhook. Use this to grant a
+        comp, fix a mismatched checkout email, or revoke access. Comps granted here are
+        deliberately <i>not</i> counted as revenue.
+      </p>
+      <form method="post" action="/admin/grant-pro" autocomplete="off">
+        <div class="field">
+          <label for="pro_email_input">Account email</label>
+          <input type="email" id="pro_email_input" name="email" required autocomplete="off" placeholder="user@example.com" />
+        </div>
+        <button type="submit" class="save-btn" name="action" value="grant">Grant Pro</button>
+        <button type="submit" class="save-btn" name="action" value="revoke" style="background:transparent;border:1px solid var(--rule);color:inherit;">Revoke Pro</button>
+      </form>
+    </div>
+
+    <div class="section-title" style="font-size:1rem;">Ads</div>
+    <div class="settings-card">
+      {% if ads_status == 'ok' %}
+        <div class="banner banner-ok">Ad settings updated.</div>
+      {% endif %}
+      <p class="hint">
+        When enabled, a full-screen HilltopAds <strong>VAST</strong> video ad plays while the
+        worksheet fills. Ads stay off until at least one tag is set. Paste your VAST tag URL(s),
+        one per line — they're tried in order.
+      </p>
+      <form method="post" action="/admin/ads" autocomplete="off">
+        <div class="field checkbox">
+          <input type="checkbox" id="ads_enabled" name="ads_enabled" {% if ads_enabled %}checked{% endif %} />
+          <label for="ads_enabled">Include Ads</label>
+        </div>
+        <div class="field">
+          <label for="vast_tags">VAST tag URLs (one per line)</label>
+          <textarea id="vast_tags" name="vast_tags" rows="4"
+                    placeholder="https://…/vast-tag-1&#10;https://…/vast-tag-2"
+                    autocomplete="off" spellcheck="false">{{ vast_tags }}</textarea>
+        </div>
+        <button type="submit" class="save-btn">Save ad settings</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============ LOGS ============ -->
+  <section id="logs">
+    <div class="section-title">Assignments filled</div>
+    <div class="rating-summary">
+      <span class="rating-red"><span class="face">⚑</span> {{ report_count }} reported</span>
+      <span class="rating-none">{{ activity_total - report_count }} with no report</span>
+    </div>
+    <div class="table-wrap" style="margin-bottom:30px;">
+      {% if activity %}
+      <table>
+        <thead>
+          <tr><th>#</th><th>Assignment</th><th>Style</th><th>Filled</th><th>Report</th><th>PDF</th></tr>
+        </thead>
+        <tbody>
+          {% for entry in activity|reverse %}
+          <tr>
+            <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
+            <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.name }}</td>
+            <td style="font-size:0.82rem;">{{ entry.style or '—' }}</td>
+            <td class="mono">{{ entry.timestamp }}</td>
+            <td style="max-width:320px;font-size:0.82rem;">
+              {% if entry.reported %}
+                <span class="rating rating-red"><span class="face">⚑</span> Reported</span>
+                <div style="margin-top:4px;color:var(--ink-soft);">{{ entry.feedback }}</div>
+              {% else %}
+                <span class="rating-none">No report</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if entry.has_pdf %}
+                <a class="pdf-link" href="{{ url_for('admin_report_pdf', job_id=entry.job_id) }}">↓ Download</a>
+              {% else %}
+                <span class="rating-none">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty">No assignments filled yet.</div>
+      {% endif %}
+    </div>
+
+    <div class="section-title">Sign-in log</div>
+    <div class="table-wrap">
+      {% if logs %}
+      <table>
+        <thead><tr><th>#</th><th>Timestamp</th><th>IP address</th><th>Result</th><th>User agent</th></tr></thead>
+        <tbody>
+          {% for entry in logs|reverse %}
+          <tr>
+            <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
+            <td class="mono">{{ entry.timestamp }}</td>
+            <td class="mono">{{ entry.ip }}</td>
+            <td>
+              {% if entry.result == 'user' %}<span class="pill pill-user">User</span>
+              {% elif entry.result == 'admin' %}<span class="pill pill-admin">Admin</span>
+              {% else %}<span class="pill pill-fail">Failed</span>{% endif %}
+            </td>
+            <td style="color:var(--ink-soft);font-size:0.8rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.ua }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty">No sign-in attempts yet.</div>
+      {% endif %}
+    </div>
+  </section>
 </main>
+
+<script>
+const S = {{ s | tojson }};
+
+// ---- Tiny SVG chart kit -------------------------------------------------
+// Hand-rolled rather than pulling in a charting library: the whole page is
+// ~10 chart types, and a CDN dependency on an admin page is a runtime failure
+// mode (and a tracking vector) for no real benefit. Every chart is a plain
+// <svg> with a viewBox, so it scales with its card and needs no resize logic.
+const C = {
+  ink: '#1a1814', soft: '#4a4438', rule: '#c9c0a8', ruleSoft: '#ddd5bf',
+  accent: '#ff5a1f', green: '#16a34a', red: '#dc2626', blue: '#2563eb',
+  purple: '#7c3aed', paper: '#f5f1e8',
+};
+const PALETTE = [C.accent, C.blue, C.green, C.purple, '#d97706', '#0891b2', '#be185d', C.soft];
+const NS = 'http://www.w3.org/2000/svg';
+
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function mount(id, w, h) {
+  const host = document.getElementById(id);
+  if (!host) return null;
+  host.innerHTML = '';
+  const s = el('svg', { viewBox: `0 0 ${w} ${h}`, class: 'chart', preserveAspectRatio: 'xMidYMid meet' });
+  host.appendChild(s);
+  return s;
+}
+function empty(id, msg) {
+  const host = document.getElementById(id);
+  if (host) host.innerHTML = `<div class="empty-chart">${msg || 'No data yet.'}</div>`;
+}
+function tip(node, text) { el('title', {}, node).textContent = text; }
+function fmt(n, dp) {
+  if (dp != null) return n.toFixed(dp);
+  // Snap away float residue (14.000000000000002) before stringifying.
+  const r = Math.round(n * 1e6) / 1e6;
+  return r >= 1000 ? r.toLocaleString() : String(r);
+}
+// Round an axis maximum up to something a human would pick, so gridlines land
+// on readable numbers instead of 0.37 / 0.74 / 1.11.
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const r = v / mag;
+  return (r <= 1 ? 1 : r <= 2 ? 2 : r <= 5 ? 5 : 10) * mag;
+}
+// Counts are whole numbers, so their gridlines must be too: snapping the top of
+// the axis to a multiple of the division count turns 20 over 3 divisions from
+// "20 / 13.333 / 6.667 / 0" into "21 / 14 / 7 / 0".
+function axisMax(v, divs, money) {
+  const m = niceMax(v);
+  return money ? m : Math.ceil(m / divs) * divs;
+}
+
+/** Multi-series line chart. series: [{name,color,points:[{label,value}]}] */
+function lineChart(id, series, opts) {
+  opts = opts || {};
+  const pts = series[0] ? series[0].points : [];
+  if (!pts.length || !series.some(s => s.points.some(p => p.value > 0))) return empty(id, opts.emptyMsg);
+  const W = 720, H = opts.height || 220, L = 52, R = 12, T = 12, B = 30;
+  const svg = mount(id, W, H); if (!svg) return;
+  const iw = W - L - R, ih = H - T - B;
+  const max = axisMax(Math.max(...series.flatMap(s => s.points.map(p => p.value))),
+                      4, opts.money);
+  const x = i => L + (pts.length === 1 ? iw / 2 : (i / (pts.length - 1)) * iw);
+  const y = v => T + ih - (v / max) * ih;
+
+  for (let g = 0; g <= 4; g++) {
+    const gy = T + (g / 4) * ih;
+    el('line', { x1: L, y1: gy, x2: W - R, y2: gy, stroke: C.ruleSoft, 'stroke-width': 1 }, svg);
+    const lbl = el('text', { x: L - 8, y: gy + 4, 'text-anchor': 'end', fill: C.soft,
+                             'font-size': 10, 'font-family': 'IBM Plex Mono, monospace' }, svg);
+    // (max * (4 - g)) / 4 rather than max * (1 - g/4): the former stays exact
+    // for integer maxima, the latter drifts into 14.000000000000002.
+    lbl.textContent = (opts.money ? '$' : '') + fmt((max * (4 - g)) / 4, opts.dp);
+  }
+  series.forEach(s => {
+    const d = s.points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+    if (opts.area) {
+      el('path', { d: `${d} L${x(pts.length - 1)},${T + ih} L${x(0)},${T + ih} Z`,
+                   fill: s.color, opacity: 0.12 }, svg);
+    }
+    el('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2,
+                 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+    s.points.forEach((p, i) => {
+      if (p.value <= 0 && !opts.dots) return;
+      const c = el('circle', { cx: x(i), cy: y(p.value), r: 2.6, fill: s.color }, svg);
+      tip(c, `${p.label} · ${s.name}: ${opts.money ? '$' : ''}${fmt(p.value, opts.dp)}`);
+    });
+  });
+  // Only a handful of date labels — one per day is unreadable at 90+ days.
+  const step = Math.max(1, Math.ceil(pts.length / 7));
+  pts.forEach((p, i) => {
+    if (i % step && i !== pts.length - 1) return;
+    const t = el('text', { x: x(i), y: H - 10, 'text-anchor': 'middle', fill: C.soft,
+                           'font-size': 9.5, 'font-family': 'IBM Plex Mono, monospace' }, svg);
+    t.textContent = p.label.slice(5);
+  });
+}
+
+/** Vertical bars from an array of numbers, labelled by index. */
+function barChart(id, values, opts) {
+  opts = opts || {};
+  if (!values.some(v => v > 0)) return empty(id, opts.emptyMsg);
+  const W = 720, H = opts.height || 190, L = 40, R = 10, T = 12, B = 26;
+  const svg = mount(id, W, H); if (!svg) return;
+  const iw = W - L - R, ih = H - T - B;
+  const max = axisMax(Math.max(...values), 3, false);
+  const bw = iw / values.length;
+  for (let g = 0; g <= 3; g++) {
+    const gy = T + (g / 3) * ih;
+    el('line', { x1: L, y1: gy, x2: W - R, y2: gy, stroke: C.ruleSoft }, svg);
+    const t = el('text', { x: L - 7, y: gy + 4, 'text-anchor': 'end', fill: C.soft,
+                           'font-size': 10, 'font-family': 'IBM Plex Mono, monospace' }, svg);
+    t.textContent = fmt((max * (3 - g)) / 3);
+  }
+  values.forEach((v, i) => {
+    const h = (v / max) * ih;
+    const r = el('rect', { x: L + i * bw + bw * 0.15, y: T + ih - h,
+                           width: bw * 0.7, height: Math.max(h, v > 0 ? 1.5 : 0),
+                           fill: opts.color || C.accent, rx: 1.5 }, svg);
+    tip(r, `${opts.labelFn ? opts.labelFn(i) : i}: ${v}`);
+  });
+  values.forEach((v, i) => {
+    if (opts.labelEvery && i % opts.labelEvery) return;
+    const t = el('text', { x: L + i * bw + bw / 2, y: H - 9, 'text-anchor': 'middle',
+                           fill: C.soft, 'font-size': 9.5,
+                           'font-family': 'IBM Plex Mono, monospace' }, svg);
+    t.textContent = opts.labelFn ? opts.labelFn(i) : i;
+  });
+}
+
+/** Horizontal labelled bars. rows: [{name, value, sub}] */
+function hbars(id, rows, opts) {
+  opts = opts || {};
+  rows = (rows || []).filter(r => r.value > 0);
+  if (!rows.length) return empty(id, opts.emptyMsg);
+  const rowH = 30, W = 560, H = rows.length * rowH + 10;
+  const svg = mount(id, W, H); if (!svg) return;
+  const labelW = opts.labelW || 150, barMax = W - labelW - 90;
+  const max = Math.max(...rows.map(r => r.value));
+  rows.forEach((r, i) => {
+    const y = i * rowH + 6;
+    const t = el('text', { x: 0, y: y + 14, fill: C.ink, 'font-size': 11.5 }, svg);
+    t.textContent = r.name.length > 24 ? r.name.slice(0, 23) + '…' : r.name;
+    tip(t, r.name);
+    el('rect', { x: labelW, y: y + 3, width: barMax, height: 15, fill: C.paper, rx: 2 }, svg);
+    const bar = el('rect', { x: labelW, y: y + 3, width: Math.max((r.value / max) * barMax, 2),
+                             height: 15, fill: opts.colors ? PALETTE[i % PALETTE.length] : (opts.color || C.accent),
+                             rx: 2 }, svg);
+    tip(bar, `${r.name}: ${r.sub || fmt(r.value)}`);
+    const v = el('text', { x: labelW + barMax + 8, y: y + 15, fill: C.soft, 'font-size': 11,
+                           'font-family': 'IBM Plex Mono, monospace' }, svg);
+    v.textContent = r.sub || fmt(r.value);
+  });
+}
+
+/** Donut with an inline legend. rows: [name, value][] */
+function donut(id, rows, opts) {
+  opts = opts || {};
+  rows = (rows || []).map(r => Array.isArray(r) ? { name: r[0], value: r[1] } : r)
+                     .filter(r => r.value > 0);
+  const total = rows.reduce((a, r) => a + r.value, 0);
+  if (!total) return empty(id, opts.emptyMsg);
+  const W = 300, H = 180, cx = 82, cy = 90, rOut = 66, rIn = 40;
+  const svg = mount(id, W, H); if (!svg) return;
+  let a0 = -Math.PI / 2;
+  rows.forEach((r, i) => {
+    const frac = r.value / total, a1 = a0 + frac * Math.PI * 2;
+    const color = opts.colors ? opts.colors[i % opts.colors.length] : PALETTE[i % PALETTE.length];
+    // A single 100% slice can't be drawn as an arc (start == end), so draw it
+    // as a ring instead of leaving the chart blank.
+    if (frac >= 0.9999) {
+      el('circle', { cx, cy, r: (rOut + rIn) / 2, fill: 'none', stroke: color,
+                     'stroke-width': rOut - rIn }, svg);
+    } else {
+      const p = (a, rad) => `${(cx + rad * Math.cos(a)).toFixed(2)},${(cy + rad * Math.sin(a)).toFixed(2)}`;
+      const big = frac > 0.5 ? 1 : 0;
+      const path = el('path', {
+        d: `M${p(a0, rOut)} A${rOut},${rOut} 0 ${big} 1 ${p(a1, rOut)} L${p(a1, rIn)} A${rIn},${rIn} 0 ${big} 0 ${p(a0, rIn)} Z`,
+        fill: color }, svg);
+      tip(path, `${r.name}: ${r.value} (${(frac * 100).toFixed(1)}%)`);
+    }
+    const ly = 22 + i * 19;
+    el('rect', { x: 172, y: ly - 8, width: 10, height: 10, fill: color, rx: 2 }, svg);
+    const t = el('text', { x: 188, y: ly + 1, fill: C.ink, 'font-size': 11 }, svg);
+    t.textContent = `${r.name} · ${(frac * 100).toFixed(0)}%`;
+    a0 = a1;
+  });
+  const c = el('text', { x: cx, y: cy + 2, 'text-anchor': 'middle', fill: C.ink,
+                         'font-size': 20, 'font-weight': 700, 'font-family': 'Fraunces, serif' }, svg);
+  c.textContent = fmt(total);
+  const l = el('text', { x: cx, y: cy + 18, 'text-anchor': 'middle', fill: C.soft, 'font-size': 10 }, svg);
+  l.textContent = opts.centerLabel || 'total';
+}
+
+/** 7×24 heatmap. grid[dow][hour] */
+function heatmap(id, grid, max, opts) {
+  opts = opts || {};
+  if (!max) return empty(id, opts.emptyMsg);
+  const cw = 27, ch = 22, L = 36, T = 18;
+  const W = L + 24 * cw + 10, H = T + 7 * ch + 22;
+  const svg = mount(id, W, H); if (!svg) return;
+  const days = S.time_of_day.dow_names;
+  for (let h = 0; h < 24; h += 2) {
+    const t = el('text', { x: L + h * cw + cw / 2, y: 12, 'text-anchor': 'middle',
+                           fill: C.soft, 'font-size': 9.5,
+                           'font-family': 'IBM Plex Mono, monospace' }, svg);
+    t.textContent = String(h).padStart(2, '0');
+  }
+  for (let d = 0; d < 7; d++) {
+    const t = el('text', { x: L - 7, y: T + d * ch + 15, 'text-anchor': 'end', fill: C.soft,
+                           'font-size': 10 }, svg);
+    t.textContent = days[d];
+    for (let h = 0; h < 24; h++) {
+      const v = grid[d][h];
+      // Square-root ramp: with one very busy hour a linear ramp washes every
+      // other cell out to near-white and the pattern disappears.
+      const k = v ? 0.12 + 0.88 * Math.sqrt(v / max) : 0;
+      const r = el('rect', { x: L + h * cw + 1, y: T + d * ch + 1, width: cw - 2, height: ch - 2,
+                             rx: 2, fill: v ? C.accent : '#f0ece0', opacity: v ? k : 1,
+                             stroke: C.ruleSoft, 'stroke-width': 0.5 }, svg);
+      tip(r, `${days[d]} ${String(h).padStart(2, '0')}:00 — ${v}`);
+    }
+  }
+  const ly = T + 7 * ch + 15;
+  const lt = el('text', { x: L, y: ly, fill: C.soft, 'font-size': 9.5 }, svg);
+  lt.textContent = 'less';
+  for (let i = 0; i < 5; i++) {
+    el('rect', { x: L + 32 + i * 15, y: ly - 8, width: 12, height: 10, rx: 2,
+                 fill: C.accent, opacity: 0.12 + 0.88 * Math.sqrt((i + 1) / 5) }, svg);
+  }
+  const rt = el('text', { x: L + 32 + 5 * 15 + 4, y: ly, fill: C.soft, 'font-size': 9.5 }, svg);
+  rt.textContent = `more (peak ${max})`;
+}
+
+/** Funnel: stages narrowing top to bottom.
+ *
+ * Bar widths are SQUARE-ROOT scaled, not linear. This funnel spans ~115k
+ * devices down to a handful of accounts, and on a linear scale every stage
+ * after the first collapses to an invisible 3px sliver with its label spilling
+ * off the bar. Sqrt keeps the later stages legible while preserving the
+ * ordering; the caption says so, and the exact numbers are printed anyway, so
+ * nothing is being hidden by the distortion.
+ */
+function funnel(id, stages) {
+  const rows = stages.filter(s => s.value >= 0);
+  if (!rows.length || !rows[0].value) return empty(id);
+  const W = 300, rowH = 42, H = rows.length * rowH + 6;
+  const svg = mount(id, W, H); if (!svg) return;
+  const max = Math.sqrt(rows[0].value);
+  const barTop = 16, barH = 15;
+  rows.forEach((r, i) => {
+    const y = i * rowH + 4;
+    // Name and value live above the bar in ink, so they stay readable no
+    // matter how narrow the bar gets.
+    const t = el('text', { x: 0, y: y + 11, fill: C.ink, 'font-size': 11.5, 'font-weight': 600 }, svg);
+    t.textContent = `${r.name} · ${fmt(r.value)}`;
+    if (i > 0 && rows[i - 1].value) {
+      const p = el('text', { x: W, y: y + 11, 'text-anchor': 'end', fill: C.soft,
+                             'font-size': 10, 'font-family': 'IBM Plex Mono, monospace' }, svg);
+      // A 4-in-115,000 conversion is 0.0035%, which "toFixed(2)" flattens to a
+      // meaningless 0.00%. Keep significant digits when the rate is tiny.
+      const v = (r.value / rows[i - 1].value) * 100;
+      p.textContent = (v > 0 && v < 0.1 ? Number(v.toPrecision(2)) : v.toFixed(1)) + '% of prev';
+    }
+    el('rect', { x: 0, y: y + barTop, width: W, height: barH, fill: C.paper, rx: 2 }, svg);
+    const w = r.value > 0 ? Math.max((Math.sqrt(r.value) / max) * W, 3) : 0;
+    const rect = el('rect', { x: 0, y: y + barTop, width: w, height: barH, rx: 2,
+                              fill: PALETTE[i % PALETTE.length], opacity: 0.9 }, svg);
+    tip(rect, `${r.name}: ${r.value}`);
+  });
+}
+
+// ---- Render -------------------------------------------------------------
+const M = S.money, A = S.activity, T = S.time_of_day;
+
+lineChart('c-pnl', [
+  { name: 'Revenue', color: C.green, points: M.revenue_series },
+  { name: 'AI spend', color: C.red, points: M.cost_series },
+], { money: true, dp: 4, emptyMsg: 'No revenue or costed AI calls yet — this fills in as money moves.' });
+
+// Cumulative profit, computed client-side from the two daily series.
+(function () {
+  let run = 0;
+  const pts = M.revenue_series.map((p, i) => {
+    run += p.value - (M.cost_series[i] ? M.cost_series[i].value : 0);
+    return { label: p.label, value: run };
+  });
+  lineChart('c-profit', [{ name: 'Profit', color: C.green, points: pts }],
+            { money: true, dp: 2, area: true, dots: true,
+              emptyMsg: 'Nothing to plot until there is revenue or costed spend.' });
+})();
+
+hbars('c-purpose', M.by_purpose.map(p => ({
+  name: p.name, value: p.tokens,
+  sub: `${p.tokens.toLocaleString()} tok · $${p.cost.toFixed(4)}`,
+})), { colors: true, emptyMsg: 'No AI calls recorded yet.' });
+
+heatmap('c-heat', T.grid, T.max, { emptyMsg: 'No fills recorded yet.' });
+barChart('c-hour', T.by_hour, { labelEvery: 2, labelFn: i => String(i).padStart(2, '0'),
+                                emptyMsg: 'No fills recorded yet.' });
+barChart('c-hour-signin', T.signin_by_hour, { color: C.blue, labelEvery: 2,
+         labelFn: i => String(i).padStart(2, '0'), emptyMsg: 'No sign-ins recorded yet.' });
+
+lineChart('c-activity', [
+  { name: 'Fills', color: C.accent, points: A.fills },
+  { name: 'Sign-ins', color: C.blue, points: A.signins },
+  { name: 'Signups', color: C.purple, points: A.signups },
+], { height: 240 });
+
+lineChart('c-devices', [{ name: 'Devices', color: C.blue, points: A.devices }], { area: true });
+heatmap('c-devheat', S.device_heat.grid, S.device_heat.max);
+
+donut('c-styles', S.product.styles, { centerLabel: 'fills' });
+hbars('c-ips', S.product.top_ips.map(r => ({ name: r[0], value: r[1] })), { labelW: 130 });
+
+donut('c-tier', [['Pro', S.accounts.pro], ['Free', S.accounts.free]],
+      { colors: [C.accent, C.soft], centerLabel: 'accounts' });
+donut('c-method', [['Google', S.accounts.google], ['Email', S.accounts.email]],
+      { colors: [C.blue, C.purple], centerLabel: 'accounts' });
+funnel('c-funnel', [
+  { name: 'Devices', value: S.device_total },
+  { name: 'Accounts', value: S.accounts.total },
+  { name: 'Pro', value: S.accounts.pro },
+  { name: 'Paid', value: S.accounts.paid },
+]);
+lineChart('c-signups', [{ name: 'Signups', color: C.purple, points: A.signups }], { area: true });
+
+donut('c-browser', S.clients.browsers, { centerLabel: 'sign-ins' });
+donut('c-os', S.clients.os, { centerLabel: 'sign-ins' });
+donut('c-kind', S.clients.kinds, { colors: [C.blue, C.accent], centerLabel: 'sign-ins' });
+
+lineChart('c-fails', [{ name: 'Failed', color: C.red, points: A.failed_signins }], { area: true });
+
+// ---- Nav highlighting ---------------------------------------------------
+const links = [...document.querySelectorAll('.subnav a')];
+const sections = links.map(a => document.querySelector(a.getAttribute('href')));
+function syncNav() {
+  let active = 0;
+  sections.forEach((sec, i) => { if (sec && sec.getBoundingClientRect().top <= 140) active = i; });
+  links.forEach((a, i) => a.classList.toggle('on', i === active));
+}
+window.addEventListener('scroll', syncNav, { passive: true });
+syncNav();
+</script>
 </body>
 </html>

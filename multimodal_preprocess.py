@@ -249,26 +249,28 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
     else:
         doc_parts = _page_image_parts(pdf_path)
 
-    resp = client.chat.completions.create(
-        model=model,
-        temperature=0,
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": [
-                {"type": "text", "text": user_text},
-                *doc_parts,
-            ]},
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "answer_spaces",
-                "schema": ANSWER_SPACE_SCHEMA,
-                "strict": True,
+    from llm_client import call_context
+    with call_context("detect"):
+        resp = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "text", "text": user_text},
+                    *doc_parts,
+                ]},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer_spaces",
+                    "schema": ANSWER_SPACE_SCHEMA,
+                    "strict": True,
+                },
             },
-        },
-        extra_body=extra_body or None,
-    )
+            extra_body=extra_body or None,
+        )
     content = resp.choices[0].message.content or "{}"
     from json_utils import extract_json_object
 
