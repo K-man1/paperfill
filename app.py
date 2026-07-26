@@ -45,6 +45,7 @@ if _env_path.exists():
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 import db
+import usage
 from json_utils import extract_json_object
 from preprocess import preprocess_pdf
 from multimodal_preprocess import multimodal_preprocess_pdf
@@ -141,17 +142,22 @@ def _inject_auth_flags():
     """Make auth/tier flags available to every template: login.html uses
     email_auth to show/hide the email forms; the filler and pricing pages use
     is_pro / is_admin / the account fields to render the right experience."""
+    pro = _is_pro()
     return {
         "email_auth": EMAIL_AUTH_ENABLED,
         "is_authed": bool(session.get("role")),
         "is_admin": session.get("role") == "admin",
-        "is_pro": _is_pro(),
+        "is_pro": pro,
         "has_font": bool(_current_font_id()),
         "acct_name": session.get("user_name", ""),
         "acct_email": session.get("user_email", ""),
         "acct_picture": session.get("user_picture", ""),
         "stripe_payment_link": STRIPE_PAYMENT_LINK,
         "pro_price": PRO_PRICE,
+        # Free-tier meter. Pro is unmetered, so uploads_left is None there and
+        # templates should check is_pro before showing a count.
+        "free_daily_uploads": usage.FREE_DAILY_UPLOADS,
+        "uploads_left": None if pro else usage.remaining(_user_key()),
     }
 
 PASSWORD_ADMIN = os.environ.get("ADMIN_PASSWORD", "alien")
@@ -190,6 +196,32 @@ def _is_pro() -> bool:
     """True if the signed-in user is on the Pro tier. Admins are always Pro so
     the owner can use Pro features without paying themselves."""
     return bool(session.get("is_pro")) or session.get("role") == "admin"
+
+
+def _user_key() -> str:
+    """Stable per-account key for the upload quota. Prefers the session subject
+    (Google sub, or "email:<addr>" for password accounts) and falls back to the
+    address, so the count follows the account rather than the browser."""
+    return session.get("user_sub") or session.get("user_email") or ""
+
+
+# The three things Pro actually buys, in one place: the pricing page, the
+# upgrade card on the filler, and the limit message all read from this list so
+# they can never drift out of sync.
+def _pro_benefits() -> list[dict]:
+    return [
+        {"title": "Unlimited daily uploads",
+         "detail": f"Free is capped at {usage.FREE_DAILY_UPLOADS} worksheets a day."},
+        {"title": "A smarter AI model",
+         "detail": "Pro fills run on a stronger model, so answers are better."},
+        {"title": "Fill in your own handwriting",
+         "detail": "Turn your real handwriting into a font and write with it."},
+    ]
+
+
+@app.context_processor
+def _inject_pro_benefits():
+    return {"pro_benefits": _pro_benefits()}
 
 
 # ---- Pro tier / billing --------------------------------------------------
@@ -1230,9 +1262,11 @@ def index():
 
 
 @app.route("/handwriting")
-def handwriting_onboarding():
-    """Pro onboarding: print a template, photograph the filled page, and build
-    a handwriting font from it (see /api/fonts)."""
+def handwriting_page():
+    """The one handwriting page: build a font from a printed template, then
+    tune how it looks (spacing, size, pen thickness) with a live preview.
+    Setup and settings used to be two separate pages; they're one flow now,
+    with the page showing whichever half applies to you."""
     if not session.get("role"):
         return redirect(url_for("login"))
     if not _is_pro():
@@ -1242,16 +1276,9 @@ def handwriting_onboarding():
 
 @app.route("/handwriting/settings")
 def handwriting_settings():
-    """Pro page to tune the look of your handwriting font — letter/word spacing,
-    size, and pen thickness — with a live preview. Requires a built font."""
-    if not session.get("role"):
-        return redirect(url_for("login"))
-    if not _is_pro():
-        return redirect(url_for("pricing"))
-    if not _current_font_id():
-        # No font to tune yet — send them through the build flow first.
-        return redirect(url_for("handwriting_onboarding"))
-    return render_template("handwriting_settings.html")
+    """Legacy URL. The settings live on /handwriting itself now — kept as a
+    redirect so old bookmarks and links don't 404."""
+    return redirect(url_for("handwriting_page"))
 
 
 @app.route("/pricing")
@@ -1349,6 +1376,20 @@ def upload():
     if ext not in ALLOWED_EXT:
         return jsonify({"error": "only PDF files allowed"}), 400
 
+    # Free tier: check the daily quota BEFORE doing any work, but don't spend it
+    # until the PDF actually parses (below) — a worksheet we couldn't read
+    # shouldn't cost the user one of their three. This is the real enforcement;
+    # the upgrade card in the UI is only a hint.
+    metered = not _is_pro()
+    if metered and usage.remaining(_user_key()) <= 0:
+        return jsonify({
+            "error": f"You've used all {usage.FREE_DAILY_UPLOADS} free uploads for "
+                     "today. Upgrade to Pro for unlimited uploads.",
+            "limit_reached": True,
+            "uploads_left": 0,
+            "upgrade_url": url_for("pricing"),
+        }), 402
+
     sweep_old_jobs()  # opportunistic cleanup of stale jobs
 
     job_id = new_job_id()
@@ -1387,6 +1428,9 @@ def upload():
         pdf_path.unlink(missing_ok=True)
         return jsonify({"error": f"could not parse PDF: {e}"}), 400
 
+    # The PDF parsed, so this upload counts. Pro stays unmetered.
+    uploads_left = usage.consume(_user_key()) if metered else None
+
     # Render preview images of each page so the frontend can show
     # what was uploaded.
     doc = fitz.open(str(pdf_path))
@@ -1419,6 +1463,8 @@ def upload():
         "page_count": page_count,
         "unit_count": structure["unit_count"],
         "slot_count": structure["slot_count"],
+        # None for Pro (unmetered); the UI only shows a count on Free.
+        "uploads_left": uploads_left,
         "units": [
             {
                 "unit_id": u["unit_id"],

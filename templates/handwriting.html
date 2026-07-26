@@ -5,146 +5,324 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Paperfill — Your Handwriting</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{--paper:#f5f1e8;--ink:#1a1814;--ink-soft:#4a4438;--rule:#c9c0a8;--accent:#ff5a1f;--accent-deep:#c93f10;--serif:"Fraunces",serif;--sans:"IBM Plex Sans",system-ui,sans-serif;}
 *{box-sizing:border-box;}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.5;}
 .wrap{max-width:680px;margin:0 auto;padding:42px 22px 80px;}
-h1{font-family:var(--serif);font-weight:800;font-size:34px;margin:0 0 6px;}
+a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
+h1{font-family:var(--serif);font-weight:800;font-size:34px;margin:14px 0 6px;}
 .lede{color:var(--ink-soft);margin:0 0 28px;}
 .pro{display:inline-block;background:var(--accent);color:#fff;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:20px;vertical-align:middle;margin-left:8px;}
-.step{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:20px 22px;margin:0 0 18px;}
-.step h2{font-family:var(--serif);font-size:19px;margin:0 0 8px;}
+
+/* The page has two halves — build and tune. Which one leads depends on whether
+   a font exists yet, so both are in the DOM and the body class picks. JS flips
+   the class after a build so the page becomes the tuning studio in place. */
+.only-font{display:none;}
+body.has-font .only-font{display:block;}
+body.has-font #setup{display:none;}
+body.has-font #setup.open{display:block;}
+body.has-font .only-empty{display:none;}
+
+h2.section{font-family:var(--serif);font-size:22px;margin:34px 0 4px;}
+h2.section:first-of-type{margin-top:0;}
+.section-note{color:var(--ink-soft);font-size:14px;margin:0 0 14px;}
+
+/* ---- Preview: paper with one writing rule, the ink sits on top ---- */
+.preview{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:26px 22px;margin:0 0 14px;overflow-x:auto;overflow-y:hidden;min-height:120px;display:flex;align-items:center;}
+.preview .sheet{position:relative;width:100%;min-width:min-content;}
+.preview .rule-line{position:absolute;left:0;right:0;bottom:14px;border-bottom:1.5px solid var(--rule);}
+#sample{display:block;position:relative;height:64px;width:auto;max-width:none;margin-bottom:10px;}
+.preview .empty{color:var(--ink-soft);font-style:italic;}
+.testrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 22px;}
+.testrow input[type=text]{flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--rule);border-radius:8px;font:inherit;}
+
+/* ---- Cards, steps, sliders ---- */
+.card{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:8px 22px 18px;margin:0 0 18px;}
+.step{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:20px 22px;margin:0 0 14px;}
+.step h3{font-family:var(--serif);font-size:18px;margin:0 0 8px;font-weight:600;}
 .step p{margin:0 0 14px;color:var(--ink-soft);font-size:15px;}
-.btn{display:inline-block;background:var(--ink);color:var(--paper);border:none;border-radius:8px;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;}
-.btn.accent{background:var(--accent);} .btn.accent:hover{background:var(--accent-deep);}
-.btn:disabled{opacity:.5;cursor:default;}
-input[type=text]{width:100%;padding:10px 12px;border:1px solid var(--rule);border-radius:8px;font:inherit;margin-bottom:12px;}
+.control{padding:16px 0;border-bottom:1px solid #ece5d3;}
+.control:last-child{border-bottom:none;}
+.control .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;}
+.control .name{font-weight:600;font-size:15px;}
+.control .val{font-variant-numeric:tabular-nums;font-weight:600;color:var(--accent-deep);}
+.control .hint{font-size:13px;color:var(--ink-soft);margin:0 0 10px;}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;border-radius:6px;background:linear-gradient(var(--rule),var(--rule));outline:none;cursor:pointer;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:var(--accent);border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.25);cursor:pointer;}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--accent);border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.25);cursor:pointer;}
+
 input[type=file]{display:block;margin-bottom:14px;font:inherit;}
 .vlabel{display:block;font-size:13px;font-weight:600;margin:4px 0 6px;}
 .vlabel .req{color:var(--accent-deep);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;}
 .vlabel .opt{color:var(--ink-soft);font-weight:400;font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;}
+
+.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:none;border-radius:8px;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;}
+.btn.accent{background:var(--accent);} .btn.accent:hover{background:var(--accent-deep);}
+.btn.ghost{background:transparent;color:var(--ink-soft);border:1px solid var(--rule);}
+.btn:disabled{opacity:.5;cursor:default;}
+.linkbtn{background:none;border:none;padding:0;font:inherit;font-size:14px;color:var(--accent-deep);font-weight:600;text-decoration:underline;cursor:pointer;}
+.saved{color:#2e7d32;font-weight:600;font-size:14px;opacity:0;transition:opacity .2s;}
+.saved.show{opacity:1;}
 .note{font-size:13px;color:var(--ink-soft);}
-#result{display:none;background:#eef7ee;border-color:#bcdcbc;}
-#result img{max-width:100%;border:1px solid var(--rule);border-radius:8px;background:#fff;margin-top:10px;}
-.err{color:var(--accent-deep);font-weight:500;margin-top:10px;display:none;}
-a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
+.err{color:var(--accent-deep);font-weight:500;font-size:14px;}
+.rebuild-row{margin:26px 0 0;font-size:14px;color:var(--ink-soft);}
+.done{background:#eef7ee;border:1px solid #bcdcbc;border-radius:10px;padding:12px 16px;margin:0 0 18px;font-weight:500;display:none;}
 </style>
 </head>
-<body>
+<body class="{{ 'has-font' if has_font else '' }}">
 <div class="wrap">
   <a class="back" href="/">← Back to Paperfill</a>
-  <h1>Make it your handwriting <span class="pro">Pro</span></h1>
-  <p class="lede">Turn your own handwriting into a font, right here — no apps, no sign-ups.
-     Once built, it shows up as a style when you fill a worksheet.</p>
+  <h1>Your handwriting <span class="pro">Pro</span></h1>
+  <p class="lede">Turn your real handwriting into a font, then tune how it looks.
+     Once it's built, <strong>✎ My handwriting</strong> shows up in the editor
+     when you fill a worksheet.</p>
 
-  <div class="step">
-    <h2>1 · Print the template</h2>
-    <p>Download the template (2 pages) and print it on plain paper.</p>
-    <a class="btn" href="/api/fonts/template">Download template (PDF)</a>
+  <div class="done" id="done">✓ Your handwriting is ready — tune it below.</div>
+
+  <!-- ===== Tune (only once a font exists) ===== -->
+  <div class="only-font">
+    <h2 class="section">Preview</h2>
+    <p class="section-note">Type anything to see it in your own hand.</p>
+    <div class="preview">
+      <div class="sheet">
+        <!-- Hidden until it has a src: an <img> with no source renders as a
+             broken-image icon on the first paint, before the font loads. -->
+        <img id="sample" alt="handwriting preview" style="display:none;" />
+        <span class="empty" id="empty" style="display:none;">Type something to preview…</span>
+        <div class="rule-line"></div>
+      </div>
+    </div>
+    <div class="testrow">
+      <input type="text" id="testtext" maxlength="120"
+             value="The quick brown fox jumps over the lazy dog"
+             placeholder="Type a sentence to preview…" />
+    </div>
+
+    <h2 class="section">Fine-tune the look</h2>
+    <p class="section-note">Drag a slider and watch the preview update. Saved
+       settings apply the next time you fill or re-render a worksheet.</p>
+    <div class="card">
+      <div class="control">
+        <div class="row"><span class="name">Letter spacing</span><span class="val" id="letter_spacing_v">100%</span></div>
+        <p class="hint">Space between letters. Lower squeezes them together; higher spreads them out.</p>
+        <input type="range" id="letter_spacing" min="2" max="300" step="1" value="100" />
+      </div>
+      <div class="control">
+        <div class="row"><span class="name">Font size</span><span class="val" id="font_size_v">100%</span></div>
+        <p class="hint">How large the writing is in each answer slot.</p>
+        <input type="range" id="font_size" min="2" max="300" step="1" value="100" />
+      </div>
+      <div class="control">
+        <div class="row"><span class="name">Word spacing</span><span class="val" id="word_spacing_v">100%</span></div>
+        <p class="hint">The gap between words.</p>
+        <input type="range" id="word_spacing" min="2" max="300" step="1" value="100" />
+      </div>
+      <div class="control">
+        <div class="row"><span class="name">Pen thickness</span><span class="val" id="pen_thickness_v">0.4 mm</span></div>
+        <p class="hint">The real stroke width on the page, in millimetres — a fine ballpoint is around 0.3–0.4mm, a bold marker 0.8mm+.</p>
+        <input type="range" id="pen_thickness" min="0.1" max="2.0" step="0.1" value="0.4" />
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn accent" id="save" type="button">Save settings</button>
+      <button class="btn ghost" id="reset" type="button">Reset to defaults</button>
+      <span class="saved" id="saved">Saved ✓</span>
+      <span class="err" id="save-err"></span>
+    </div>
+
+    <p class="rebuild-row">
+      Not quite you?
+      <button class="linkbtn" id="rebuild" type="button">Rebuild from a new template</button>
+    </p>
   </div>
 
-  <div class="step">
-    <h2>2 · Fill it in — up to 3 times</h2>
-    <p>Write each character in your own handwriting, staying inside the lines.
-       For the most natural result, print and fill the template <strong>2–3
-       times</strong> — we blend the copies so repeated letters don't look
-       stamped. One copy works too.</p>
-  </div>
+  <!-- ===== Build (leads when there's no font; on demand once there is) ===== -->
+  <div id="setup">
+    <h2 class="section only-empty">Set it up — three steps</h2>
+    <h2 class="section only-font">Rebuild your handwriting</h2>
+    <p class="section-note">Print a template, write on it, upload it back. Takes
+       about five minutes.</p>
 
-  <div class="step">
-    <h2>3 · Upload your copies</h2>
-    <p>Upload each filled copy (both pages — a PDF, or photos of the pages).
-       Copy 1 is required; 2 and 3 are optional but make your handwriting look
-       more real.</p>
-    <form id="form">
-      <label class="vlabel">Copy 1 <span class="req">required</span></label>
-      <input type="file" id="v1" accept="image/*,application/pdf" multiple required />
-      <label class="vlabel">Copy 2 <span class="opt">optional</span></label>
-      <input type="file" id="v2" accept="image/*,application/pdf" multiple />
-      <label class="vlabel">Copy 3 <span class="opt">optional</span></label>
-      <input type="file" id="v3" accept="image/*,application/pdf" multiple />
+    <div class="step">
+      <h3>1 · Print the template</h3>
+      <p>Download the template (2 pages) and print it on plain paper.</p>
+      <a class="btn" href="/api/fonts/template">Download template (PDF)</a>
+    </div>
 
-      <button class="btn accent" id="go" type="submit">Build my handwriting</button>
-      <span class="note" id="status"></span>
-      <div class="err" id="err"></div>
-    </form>
-  </div>
+    <div class="step">
+      <h3>2 · Fill it in — up to 3 times</h3>
+      <p>Write each character in your own handwriting, staying inside the lines.
+         For the most natural result, print and fill the template
+         <strong>2–3 times</strong> — we blend the copies so repeated letters
+         don't look stamped. One copy works too.</p>
+    </div>
 
-  <div class="step" id="result">
-    <h2>✓ Your handwriting is ready</h2>
-    <p>Type anything below to see it. Then head back and toggle
-       <strong>✍️ My handwriting</strong> when you fill a worksheet.</p>
-    <p><a class="btn" href="/handwriting/settings">Adjust the look →</a></p>
-    <form id="testform" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-      <input type="text" id="testtext" placeholder="Type something to test…" maxlength="120"
-             value="The quick brown fox." style="flex:1;min-width:200px;margin:0;" />
-      <button class="btn" id="testbtn" type="submit">Test it</button>
-    </form>
-    <img id="sample" alt="handwriting sample" />
+    <div class="step">
+      <h3>3 · Upload your copies</h3>
+      <p>Upload each filled copy (both pages — a PDF, or photos of the pages).
+         Copy 1 is required; 2 and 3 are optional but make your handwriting look
+         more real.</p>
+      <form id="form">
+        <label class="vlabel">Copy 1 <span class="req">required</span></label>
+        <input type="file" id="v1" accept="image/*,application/pdf" multiple required />
+        <label class="vlabel">Copy 2 <span class="opt">optional</span></label>
+        <input type="file" id="v2" accept="image/*,application/pdf" multiple />
+        <label class="vlabel">Copy 3 <span class="opt">optional</span></label>
+        <input type="file" id="v3" accept="image/*,application/pdf" multiple />
+
+        <div class="actions">
+          <button class="btn accent" id="go" type="submit">Build my handwriting</button>
+          <span class="note" id="status"></span>
+        </div>
+        <div class="err" id="build-err" style="margin-top:10px;"></div>
+      </form>
+    </div>
   </div>
 </div>
 
 <script>
-let builtFontId = null;
+const KEYS = ["letter_spacing", "font_size", "word_spacing", "pen_thickness"];
+const DEFAULTS = {letter_spacing:100, font_size:100, word_spacing:100, pen_thickness:0.4};
+let fontId = null;
+let previewTimer = null;
 
-function renderSample() {
-  if (!builtFontId) return;
-  const text = document.getElementById("testtext").value.trim() || "Sample";
-  document.getElementById("sample").src =
-    "/api/fonts/" + encodeURIComponent(builtFontId) + "/sample.png?text=" +
-    encodeURIComponent(text) + "&t=" + Date.now();
+const el = (id) => document.getElementById(id);
+
+function fmt(key, v) {
+  return key === "pen_thickness" ? v.toFixed(1) + " mm" : Math.round(v) + "%";
 }
 
-document.getElementById("testform").addEventListener("submit", (e) => {
-  e.preventDefault();
-  renderSample();
+// Font size is applied to the preview purely in CSS (instant, no refetch): the
+// backend renders letter/word spacing and pen thickness relative to the em, so
+// scaling the image height is faithful to the saved font-size effect.
+function applyFontSizeToPreview() {
+  const fs = parseFloat(el("font_size").value) / 100;
+  el("sample").style.height = Math.max(fs * 64, 2) + "px";
+}
+
+function updatePreview() {
+  if (!fontId) return;
+  const text = el("testtext").value.trim();
+  const img = el("sample"), empty = el("empty");
+  if (!text) { img.style.display = "none"; empty.style.display = "inline"; return; }
+  empty.style.display = "none"; img.style.display = "block";
+  const p = new URLSearchParams({ text });
+  // font_size drives CSS height only, so it's left out of the render request.
+  for (const k of ["letter_spacing", "word_spacing", "pen_thickness"]) p.set(k, el(k).value);
+  p.set("t", Date.now());
+  img.src = "/api/fonts/" + encodeURIComponent(fontId) + "/sample.png?" + p.toString();
+}
+
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(updatePreview, 120);
+}
+
+function markDirty() { el("saved").classList.remove("show"); }
+
+// Wire each slider: readout + font-size CSS are instant; the ink refetch is
+// debounced so dragging doesn't fire a request per pixel.
+for (const key of KEYS) {
+  const slider = el(key);
+  slider.addEventListener("input", () => {
+    el(key + "_v").textContent = fmt(key, parseFloat(slider.value));
+    markDirty();
+    if (key === "font_size") applyFontSizeToPreview();
+    else schedulePreview();
+  });
+}
+el("testtext").addEventListener("input", schedulePreview);
+
+function setValues(s) {
+  for (const key of KEYS) {
+    const v = s[key] != null ? s[key] : DEFAULTS[key];
+    el(key).value = v;
+    el(key + "_v").textContent = fmt(key, parseFloat(v));
+  }
+  applyFontSizeToPreview();
+  updatePreview();
+}
+
+el("reset").addEventListener("click", () => { setValues(DEFAULTS); markDirty(); });
+
+el("save").addEventListener("click", async () => {
+  if (!fontId) return;
+  const save = el("save"), err = el("save-err");
+  err.textContent = ""; save.disabled = true;
+  const body = {};
+  for (const key of KEYS) body[key] = parseFloat(el(key).value);
+  try {
+    const r = await fetch("/api/fonts/" + encodeURIComponent(fontId) + "/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "save failed");
+    setValues(data.settings);   // reflect the server's clamped values
+    el("saved").classList.add("show");
+  } catch (ex) {
+    err.textContent = "Couldn't save: " + ex.message;
+  } finally { save.disabled = false; }
 });
 
-// On load, restore the user's existing font (if any) so a page refresh doesn't
-// appear to wipe it — the font lives on the server, the page just forgot it.
-async function restoreExistingFont() {
+// The build half stays hidden once a font exists, until it's asked for.
+el("rebuild").addEventListener("click", () => {
+  el("setup").classList.add("open");
+  el("setup").scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+// ---- Load the user's font (if any) and its settings --------------------
+// The body class is server-rendered from has_font so there's no flash; this
+// just fills in the id and slider values.
+async function loadFont() {
   try {
     const r = await fetch("/api/fonts");
-    if (!r.ok) return;
+    if (!r.ok) return false;
     const data = await r.json();
     const fonts = (data && data.fonts) || [];
-    if (!fonts.length) return;
-    builtFontId = fonts[0].id;
-    document.getElementById("result").style.display = "block";
-    renderSample();
-  } catch (_) { /* not signed in / network — leave the build flow as-is */ }
+    if (!fonts.length) { document.body.classList.remove("has-font"); return false; }
+    fontId = fonts[0].id;
+    document.body.classList.add("has-font");
+    const sr = await fetch("/api/fonts/" + encodeURIComponent(fontId) + "/settings");
+    const sd = await sr.json();
+    setValues((sd && sd.settings) || DEFAULTS);
+    return true;
+  } catch (_) {
+    return false;   // network/auth hiccup — leave the build flow usable
+  }
 }
-restoreExistingFont();
+loadFont();
 
-const form = document.getElementById("form");
-form.addEventListener("submit", async (e) => {
+el("form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const v1 = document.getElementById("v1").files;
+  const v1 = el("v1").files;
   if (!v1.length) return;
-  const go = document.getElementById("go"), status = document.getElementById("status"),
-        err = document.getElementById("err");
-  err.style.display = "none"; go.disabled = true;
+  const go = el("go"), status = el("status"), err = el("build-err");
+  err.textContent = ""; go.disabled = true;
   status.textContent = "Building your handwriting… this takes a few seconds.";
   const fd = new FormData();
   for (const f of v1) fd.append("version1", f);
-  for (const f of document.getElementById("v2").files) fd.append("version2", f);
-  for (const f of document.getElementById("v3").files) fd.append("version3", f);
+  for (const f of el("v2").files) fd.append("version2", f);
+  for (const f of el("v3").files) fd.append("version3", f);
   try {
     const r = await fetch("/api/fonts", { method: "POST", body: fd });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "build failed");
-    status.textContent = data.variants > 1
-      ? `Blended ${data.variants} copies.` : "";
-    builtFontId = data.font_id;
-    document.getElementById("result").style.display = "block";
-    renderSample();
+    status.textContent = data.variants > 1 ? `Blended ${data.variants} copies.` : "";
+    // Turn the page into the tuning studio in place: the new font replaces the
+    // old one, so re-read its stored settings rather than assuming defaults.
+    el("setup").classList.remove("open");
+    el("done").style.display = "block";
+    await loadFont();
+    window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (ex) {
     status.textContent = "";
     err.textContent = "Couldn't build your handwriting: " + ex.message +
       " — make sure all four corner squares are visible and the photo is sharp.";
-    err.style.display = "block";
   } finally { go.disabled = false; }
 });
 </script>

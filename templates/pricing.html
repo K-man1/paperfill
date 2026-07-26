@@ -48,17 +48,20 @@ li.no::before{content:"—";position:absolute;left:0;color:var(--rule);font-weig
   {% endif %}
 
   <h1>Simple pricing</h1>
-  <p class="lede">Paperfill is free to use. Go Pro to fill worksheets in your own handwriting.</p>
+  <p class="lede">Paperfill is free to use. Go Pro for unlimited uploads, a smarter
+     AI model, and worksheets filled in your own handwriting.</p>
 
   <div class="grid">
     <div class="card">
       <div class="tier">Free</div>
       <div class="price"><b>$0</b> forever</div>
       <ul>
-        <li class="yes">AI worksheet filling</li>
+        <li class="yes">{{ free_daily_uploads }} worksheet uploads a day</li>
         <li class="yes">Standard &amp; AI-Vision detection</li>
         <li class="yes">Edit, refine &amp; ask-AI tools</li>
         <li class="yes">Download filled PDFs</li>
+        <li class="no">Unlimited daily uploads</li>
+        <li class="no">The smarter AI model</li>
         <li class="no">Your-handwriting fonts</li>
       </ul>
       {% if not is_authed %}
@@ -76,9 +79,9 @@ li.no::before{content:"—";position:absolute;left:0;color:var(--rule);font-weig
       <div class="price"><b>{{ pro_price }}</b></div>
       <ul>
         <li class="yes">Everything in Free</li>
-        <li class="yes"><b>Fill in your own handwriting</b></li>
-        <li class="yes">Build a font from your writing</li>
-        <li class="yes">Unlimited handwriting styles</li>
+        {% for b in pro_benefits %}
+        <li class="yes"><b>{{ b.title }}</b> — {{ b.detail }}</li>
+        {% endfor %}
         <li class="yes">Priority on new features</li>
       </ul>
       {% if is_pro %}

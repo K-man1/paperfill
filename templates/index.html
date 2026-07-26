@@ -123,6 +123,63 @@ header.masthead {
   color: var(--ink-soft);
 }
 .tier-badge.pro { background: var(--accent); border-color: var(--accent); color: #fff; }
+.acct .acct-meter { color: var(--ink-soft); text-transform: none; letter-spacing: 0; }
+
+/* ---- Free-tier upgrade card (top of the upload stage) ---- */
+.upgrade-card {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  background: #fff;
+  border: 1px solid var(--accent);
+  border-left-width: 4px;
+  border-radius: 4px;
+  padding: 16px 20px;
+  margin: 0 0 22px;
+}
+.upgrade-copy { flex: 1; min-width: 260px; }
+.upgrade-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.upgrade-meter {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+.upgrade-card.spent { border-color: var(--accent-deep); background: #fff6f2; }
+.upgrade-card.spent .upgrade-meter { color: var(--accent-deep); font-weight: 600; }
+.upgrade-benefits { list-style: none; margin: 0; padding: 0; }
+.upgrade-benefits li {
+  position: relative;
+  padding-left: 20px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+.upgrade-benefits li::before {
+  content: "✦";
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+}
+.upgrade-benefits b { color: var(--ink); font-weight: 600; }
+.upgrade-btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 13px 20px;
+  border-radius: 2px;
+  background: var(--accent);
+  color: var(--paper);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.upgrade-btn:hover { background: var(--accent-deep); }
+@media (max-width: 560px) { .upgrade-btn { width: 100%; text-align: center; } }
 
 /* ---- Stage system ---- */
 .stage { display: none; }
@@ -1080,12 +1137,10 @@ button {
       <span class="acct acct-left">
         {% if is_pro %}
           <span class="tier-badge pro">Pro</span>
-          <a class="hw-link" href="{{ url_for('handwriting_onboarding') }}">✍️ Your handwriting</a>
-          {% if has_font %}
-          <a class="hw-link hw-settings-link" href="{{ url_for('handwriting_settings') }}" title="Adjust letter spacing, size, and pen thickness">⚙ Settings</a>
-          {% endif %}
+          <a class="hw-link" href="{{ url_for('handwriting_page') }}">✍️ Your handwriting</a>
         {% else %}
           <span class="tier-badge">Free</span>
+          <span class="acct-meter" id="uploads-left-chip">{{ uploads_left }}/{{ free_daily_uploads }} uploads left today</span>
           <a class="upgrade" href="{{ url_for('pricing') }}">✦ Upgrade to Pro</a>
         {% endif %}
       </span>
@@ -1107,6 +1162,25 @@ button {
 
   <!-- ===== STAGE 1: Upload ===== -->
   <section class="stage active" id="stage-upload">
+
+    {% if not is_pro %}
+    <!-- Free-tier upgrade card. The benefit list comes from pro_benefits in
+         app.py so it can't drift from the pricing page. -->
+    <div class="upgrade-card" id="upgrade-card">
+      <div class="upgrade-copy">
+        <div class="upgrade-head">
+          <span class="tier-badge">Free</span>
+          <span class="upgrade-meter" id="uploads-left-text">{{ uploads_left }} of {{ free_daily_uploads }} uploads left today</span>
+        </div>
+        <ul class="upgrade-benefits">
+          {% for b in pro_benefits %}
+          <li><b>{{ b.title }}</b> — {{ b.detail }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      <a class="upgrade-btn" href="{{ url_for('pricing') }}">✦ Upgrade to Pro · {{ pro_price }}</a>
+    </div>
+    {% endif %}
 
     <div class="instructions-box">
       <div class="fmt-block" id="detector-block">
@@ -1223,9 +1297,9 @@ button {
           <a class="hw-cta locked" href="{{ url_for('pricing') }}" title="Fill in your own handwriting — a Pro feature">✎ Handwriting · Pro</a>
         {% elif has_font %}
           <button class="hw-cta" id="hw-toggle" type="button" aria-pressed="false" title="Fill the worksheet in your own handwriting">✎ My handwriting</button>
-          <a class="hw-redo" href="{{ url_for('handwriting_onboarding') }}" title="Rebuild your handwriting font">redo</a>
+          <a class="hw-redo" href="{{ url_for('handwriting_page') }}" title="Adjust or rebuild your handwriting">adjust</a>
         {% else %}
-          <a class="hw-cta" href="{{ url_for('handwriting_onboarding') }}" title="Turn your real handwriting into a font">✎ Set up your handwriting</a>
+          <a class="hw-cta" href="{{ url_for('handwriting_page') }}" title="Turn your real handwriting into a font">✎ Set up your handwriting</a>
         {% endif %}
       </div>
       <button class="btn-ghost" id="add-box-btn">+ Add box</button>
@@ -1350,6 +1424,20 @@ function clearError() {
   $("error-detail").textContent = "";
 }
 function setStatus(msg) { const el = $("status-line"); if (el) el.textContent = msg; }
+
+// ---- Free-tier upload meter -------------------------------------------
+// The count is server-truth: rendered on load, then refreshed from whatever
+// /api/upload reports. Pro users have no card and no chip, so every lookup
+// here no-ops. This is display only — the limit itself is enforced server-side.
+const FREE_DAILY_UPLOADS = {{ free_daily_uploads }};
+function setUploadsLeft(n) {
+  if (n == null) return;             // Pro: unmetered
+  const text = $("uploads-left-text"), chip = $("uploads-left-chip"),
+        card = $("upgrade-card");
+  if (text) text.textContent = n + " of " + FREE_DAILY_UPLOADS + " uploads left today";
+  if (chip) chip.textContent = n + "/" + FREE_DAILY_UPLOADS + " uploads left today";
+  if (card) card.classList.toggle("spent", n <= 0);
+}
 
 let currentJob = null;
 
@@ -1733,7 +1821,14 @@ async function handleUpload(file) {
         gatherContext(),
       ]);
       const data = await r.json();
-      if (!r.ok) throw new Error(data.error || "Upload failed");
+      if (!r.ok) {
+        // A 402 means the free daily quota is spent. Carry the flag on the
+        // error so the catch below can update the meter, not just the banner.
+        const e = new Error(data.error || "Upload failed");
+        e.uploadsLeft = data.uploads_left;
+        throw e;
+      }
+      setUploadsLeft(data.uploads_left);
       currentJob = data;
       setStatus("Filling with AI… (this can take up to 60 s)");
       const r2 = await fetch("/api/fill", {
@@ -1764,6 +1859,7 @@ async function handleUpload(file) {
     history.replaceState(null, "", "?job=" + encodeURIComponent(currentJob.job_id));
     setStatus("Ready to edit");
   } catch (err) {
+    if (err.uploadsLeft != null) setUploadsLeft(err.uploadsLeft);
     showError(err.message);
     setStatus("Ready");
   } finally {
