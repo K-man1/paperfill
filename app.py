@@ -487,7 +487,7 @@ def _require_pro_for_ww2explained():
             return jsonify({"error": "Pro required on this domain"}), 402
         return None
     if not _is_pro():
-        return redirect(url_for("pricing"))
+        return redirect(url_for("pricing", ww2_only=1))
     return None
 
 
@@ -1415,8 +1415,14 @@ def handwriting_settings():
 def pricing():
     """Free vs Pro comparison + the upgrade call-to-action. Viewable signed-out
     so it can double as a marketing page; the upgrade button routes to /login
-    first when there's no session (we need to know who's buying)."""
-    return render_template("pricing.html", upgraded=False)
+    first when there's no session (we need to know who's buying).
+
+    ww2_only=1 is set when the ww2explained.com gate redirects a non-Pro
+    visitor here — shows a one-off notice. It's intentionally separate from
+    _pro_benefits() so ww2explained.com access never shows up as a Pro perk
+    on this page, the upgrade card, or the limit message."""
+    return render_template("pricing.html", upgraded=False,
+                            ww2_only=bool(request.args.get("ww2_only")))
 
 
 @app.route("/upgrade/success")

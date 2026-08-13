@@ -16,6 +16,8 @@ a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
 h1{font-family:var(--serif);font-weight:800;font-size:38px;margin:18px 0 6px;text-align:center;}
 .lede{color:var(--ink-soft);margin:0 auto 30px;text-align:center;max-width:520px;}
 .banner{background:#eef4ec;border:1px solid #cadcc4;border-radius:10px;padding:14px 18px;margin:0 0 24px;font-weight:500;}
+.banner.restricted{background:#fbeee7;border-color:#f0c9b4;}
+.banner.restricted a{color:var(--accent-deep);}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
 @media(max-width:640px){.grid{grid-template-columns:1fr;}}
 .card{background:#fff;border:1px solid var(--rule);border-radius:14px;padding:26px 24px;display:flex;flex-direction:column;}
@@ -46,6 +48,8 @@ li.no::before{content:"\00d7";position:absolute;left:0;color:var(--rule);font-we
       {% if is_pro %}You're on <b>Pro</b> now. Handwriting and everything else is unlocked. <a href="/">Start filling</a>
       {% else %}Thanks! Your payment is processing. Pro usually activates within a few seconds. Refresh this page, or <a href="{{ url_for('upgrade_success') }}">check again</a>.{% endif %}
     </div>
+  {% elif ww2_only %}
+    <div class="banner restricted">This domain is only available to Pro accounts. Sign in and upgrade below to continue &mdash; or use <a href="https://paperfill.hackclub.app/">paperfill.hackclub.app</a> for free.</div>
   {% endif %}
 
   <h1>Simple pricing</h1>
