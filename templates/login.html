@@ -5,17 +5,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Paperfill — Sign In</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --paper: #f5f1e8;
-  --paper-deep: #ebe5d4;
-  --ink: #1a1814;
-  --ink-soft: #4a4438;
-  --rule: #c9c0a8;
-  --rule-soft: #ddd5bf;
+  --paper: #f7f4ee;
+  --paper-deep: #ece7dc;
+  --ink: #1f1d1a;
+  --ink-soft: #5c564c;
+  --rule: #d5cec1;
+  --rule-soft: #e6e1d6;
   --accent: #ff5a1f;
   --accent-deep: #c93f10;
   --serif: "Fraunces", "Times New Roman", serif;
@@ -36,11 +37,11 @@ body {
 .card {
   background: #fff;
   border: 1px solid var(--rule);
-  border-radius: 16px;
-  padding: 48px 40px 40px;
+  border-radius: 10px;
+  padding: 44px 40px 40px;
   width: 100%;
   max-width: 400px;
-  box-shadow: 0 2px 0 rgba(0,0,0,0.04), 0 24px 48px -16px rgba(26,24,20,0.18);
+  box-shadow: 0 8px 24px -12px rgba(31,29,26,0.22);
   text-align: center;
 }
 .logo {
@@ -144,10 +145,10 @@ input:focus { border-color: var(--accent); }
 .notice {
   margin: 0 0 16px;
   padding: 10px 14px;
-  background: #eefaf0;
-  border: 1px solid #b8e6c4;
+  background: #eef4ec;
+  border: 1px solid #cadcc4;
   border-radius: 8px;
-  color: #1f7a3d;
+  color: #40643a;
   font-size: 0.85rem;
   text-align: left;
 }
@@ -155,7 +156,7 @@ button[type="submit"] {
   margin-top: 6px;
   width: 100%;
   padding: 13px;
-  background: var(--accent);
+  background: var(--ink);
   color: #fff;
   font-family: var(--sans);
   font-size: 0.95rem;
@@ -165,7 +166,7 @@ button[type="submit"] {
   cursor: pointer;
   transition: background 0.15s;
 }
-button[type="submit"]:hover { background: var(--accent-deep); }
+button[type="submit"]:hover { background: #35302a; }
 .toggle {
   margin-top: 22px;
   font-size: 0.85rem;

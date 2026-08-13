@@ -170,9 +170,15 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
     """
     today = shift(datetime.now(timezone.utc), tz_offset)
 
+    # Stripe test-mode events use the same webhook and shape as real ones —
+    # only `livemode` tells them apart. Counting test checkouts as revenue
+    # would make the P&L confidently wrong, so they're dropped here rather
+    # than at the fetch layer (the raw rows may still be useful elsewhere).
+    live_payments = [p for p in (payments or []) if p.get("livemode")]
+
     rev_by_day: dict = Counter()
     revenue_cents = 0
-    for p in payments or []:
+    for p in live_payments:
         dt = shift(parse_ts(p.get("ts")), tz_offset)
         cents = int(p.get("amount_cents") or 0)
         revenue_cents += cents
@@ -231,8 +237,8 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
         "cost": cost_total,
         "profit": profit,
         "margin_pct": pct(profit, revenue) if revenue else 0.0,
-        "payment_count": len(payments or []),
-        "arpu": (revenue / len(payments)) if payments else 0.0,
+        "payment_count": len(live_payments),
+        "arpu": (revenue / len(live_payments)) if live_payments else 0.0,
         "uncosted_calls": uncosted,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
@@ -245,6 +251,53 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
         "by_model": sorted(
             ({"name": k, **v} for k, v in by_model.items()),
             key=lambda r: -r["tokens"]),
+    }
+
+
+def hack_club_budget(ai_calls, rate_card: dict, cap_usd: float) -> dict:
+    """How much of *today's* Hack Club AI proxy credit has been drawn down.
+
+    Hack Club funds the "primary" provider with a fixed daily allowance that
+    resets at UTC midnight and does not carry over — unused credit from
+    yesterday is just gone, and today starts back at the full cap. So this
+    sums only calls timestamped on today's UTC date, not a running lifetime
+    total. Deliberately UTC and not the dashboard's display tz_offset: the
+    number needs to line up with when Hack Club's meter actually resets, not
+    with how the admin prefers charts labeled.
+
+    Calls on "primary" cost us $0 (that's the whole point of the proxy), but
+    Hack Club is still paying real per-token rates on the other end. We
+    estimate that draw with the same rate card used for fallback pricing,
+    deliberately ignoring the "primary is free" flag here — that flag
+    describes our bill, not theirs. A model missing from the rate card is
+    counted as uncosted, same convention as money().
+    """
+    today = datetime.now(timezone.utc).date()
+    models = (rate_card or {}).get("models") or {}
+    spent = 0.0
+    uncosted = 0
+    for c in ai_calls or []:
+        if (c.get("provider") or "") != "primary":
+            continue
+        ts = parse_ts(c.get("ts"))
+        if ts is None or ts.date() != today:
+            continue
+        rate = models.get(c.get("model") or "")
+        if not rate:
+            uncosted += 1
+            continue
+        p_tok = int(c.get("prompt_tokens") or 0)
+        o_tok = int(c.get("output_tokens") or 0)
+        spent += (p_tok / 1_000_000.0 * float(rate.get("in", 0))
+                  + o_tok / 1_000_000.0 * float(rate.get("out", 0)))
+    remaining = max(0.0, cap_usd - spent)
+    return {
+        "cap": cap_usd,
+        "spent": spent,
+        "remaining": remaining,
+        "pct_used": pct(spent, cap_usd),
+        "uncosted_calls": uncosted,
+        "exhausted": spent >= cap_usd,
     }
 
 
@@ -419,6 +472,7 @@ def devices_heatmap(rows) -> dict:
 
 def build(*, signins, assignments, users, ai_calls, payments,
           devices_daily, devices_hourly, device_total,
+          rate_card: dict | None = None, hack_club_cap_usd: float = 3.0,
           days: int = 30, tz_offset: float = 0.0) -> dict:
     """Everything the dashboard needs, in one dict."""
     return {
@@ -426,6 +480,7 @@ def build(*, signins, assignments, users, ai_calls, payments,
         "activity": activity(assignments, signins, users, devices_daily,
                              days, tz_offset),
         "money": money(ai_calls, payments, days, tz_offset),
+        "hack_club": hack_club_budget(ai_calls, rate_card or {}, hack_club_cap_usd),
         "reliability": reliability(ai_calls),
         "accounts": accounts(users, assignments, payments),
         "product": product(assignments),

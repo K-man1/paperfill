@@ -1,17 +1,25 @@
 """
-Per-user daily upload quota — the one hard limit on the Free tier.
+Per-user daily AI-credit budget — the one hard limit on the Free tier.
 
-Free accounts get FREE_DAILY_UPLOADS worksheet uploads per UTC day; Pro is
-unmetered. Counts live in a single JSON file next to the app rather than in the
-database: this is on the hot path of every upload, and the numbers are cheap to
-lose (a missing file just hands everyone a fresh day).
+Free accounts get FREE_DAILY_CREDITS credits per UTC day; Pro is unmetered.
+1 credit = CREDIT_TOKENS tokens (prompt + output, straight from the
+provider's own usage figures) spent answering that user's worksheets.
+Counts live in a single JSON file next to the app rather than in the
+database: credit consumption is on the hot path of every metered AI call,
+and the numbers are cheap to lose (a missing file just hands everyone a
+fresh day).
 
-Two gunicorn workers share that file, so every read-modify-write runs under an
-exclusive flock. Without it, two uploads landing at once both read "2 used" and
-both write "3" — a lost update that quietly gives away a free upload.
+Two gunicorn workers share that file, so every read-modify-write runs under
+an exclusive flock. Without it, two calls landing at once both read "5,000
+tokens spent" and both write "5,800" instead of "6,600" — a lost update that
+quietly gives away free credits.
 
 Every entry is stamped with the day it belongs to, so a stale row is simply
 ignored (and swept on the next write) instead of needing a reset job.
+
+Rough conversion for the UI: the answer-filling call (vision_fill) averages
+about 1,560 tokens per page it fills, so 2 credits (2,000 tokens) covers
+roughly one page.
 """
 
 from __future__ import annotations
@@ -28,9 +36,10 @@ except ImportError:       # pragma: no cover - Windows dev boxes
 
 _PATH = Path(__file__).parent / "usage.json"
 
-# How many uploads a Free account gets per day. Env-tunable so the limit can be
-# loosened for a promo without a code change.
-FREE_DAILY_UPLOADS = int(os.environ.get("FREE_DAILY_UPLOADS", "3"))
+# Credits a Free account gets per day, and tokens per credit. Env-tunable so
+# the limit can be loosened for a promo without a code change.
+FREE_DAILY_CREDITS = int(os.environ.get("FREE_DAILY_CREDITS", "20"))
+CREDIT_TOKENS = int(os.environ.get("CREDIT_TOKENS", "1000"))
 
 
 def _today() -> str:
@@ -42,8 +51,8 @@ def _mutate(fn):
     and persist whatever it leaves behind.
 
     Fails OPEN: if the file can't be read or written we return fn's view of an
-    empty map, which means an unmetered upload. A broken quota file should cost
-    us a few free fills, not break the product for everyone.
+    empty map, which means an unmetered call. A broken quota file should cost
+    us a few free credits, not break the product for everyone.
     """
     try:
         with open(_PATH, "a+", encoding="utf-8") as fh:
@@ -75,8 +84,8 @@ def _mutate(fn):
         return fn({})
 
 
-def used_today(user_key: str) -> int:
-    """How many uploads this user has spent today."""
+def tokens_used_today(user_key: str) -> int:
+    """How many tokens this user has spent today, across all metered calls."""
     if not user_key:
         return 0
 
@@ -85,38 +94,41 @@ def used_today(user_key: str) -> int:
         if not isinstance(row, dict) or row.get("date") != _today():
             return 0
         try:
-            return int(row.get("count", 0))
+            return int(row.get("tokens", 0))
         except (TypeError, ValueError):
             return 0
 
     return _mutate(read)
 
 
-def remaining(user_key: str) -> int:
-    """Uploads left today for a Free account. Never negative."""
-    return max(0, FREE_DAILY_UPLOADS - used_today(user_key))
+def remaining_credits(user_key: str) -> float:
+    """Credits left today for a Free account. Never negative."""
+    used = tokens_used_today(user_key) / CREDIT_TOKENS
+    return max(0.0, round(FREE_DAILY_CREDITS - used, 2))
 
 
-def consume(user_key: str) -> int:
-    """Spend one upload and return how many are left afterwards.
+def consume_tokens(user_key: str, tokens: int) -> float:
+    """Spend `tokens` tokens' worth of credit and return what's left today.
 
-    Read and increment happen inside one locked pass, so concurrent uploads
-    can't both spend the same slot.
+    Read and increment happen inside one locked pass, so concurrent calls
+    can't both spend the same credits.
     """
     if not user_key:
-        return FREE_DAILY_UPLOADS
+        return float(FREE_DAILY_CREDITS)
+    if tokens <= 0:
+        return remaining_credits(user_key)
 
-    def bump(data: dict) -> int:
+    def bump(data: dict) -> float:
         today = _today()
         row = data.get(user_key)
-        count = 0
+        total = 0
         if isinstance(row, dict) and row.get("date") == today:
             try:
-                count = int(row.get("count", 0))
+                total = int(row.get("tokens", 0))
             except (TypeError, ValueError):
-                count = 0
-        count += 1
-        data[user_key] = {"date": today, "count": count}
-        return max(0, FREE_DAILY_UPLOADS - count)
+                total = 0
+        total += int(tokens)
+        data[user_key] = {"date": today, "tokens": total}
+        return max(0.0, round(FREE_DAILY_CREDITS - total / CREDIT_TOKENS, 2))
 
     return _mutate(bump)

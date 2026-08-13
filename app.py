@@ -30,6 +30,7 @@ import smtplib
 from email.message import EmailMessage
 
 from openai import OpenAI
+import requests
 from authlib.integrations.flask_client import OAuth
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -157,10 +158,11 @@ def _inject_auth_flags():
         "acct_picture": session.get("user_picture", ""),
         "stripe_payment_link": STRIPE_PAYMENT_LINK,
         "pro_price": PRO_PRICE,
-        # Free-tier meter. Pro is unmetered, so uploads_left is None there and
+        "cancel_at_period_end": bool(session.get("cancel_at_period_end")),
+        # Free-tier meter. Pro is unmetered, so credits_left is None there and
         # templates should check is_pro before showing a count.
-        "free_daily_uploads": usage.FREE_DAILY_UPLOADS,
-        "uploads_left": None if pro else usage.remaining(_user_key()),
+        "free_daily_credits": usage.FREE_DAILY_CREDITS,
+        "credits_left": None if pro else usage.remaining_credits(_user_key()),
     }
 
 PASSWORD_ADMIN = os.environ.get("ADMIN_PASSWORD", "alien")
@@ -202,9 +204,10 @@ def _is_pro() -> bool:
 
 
 def _user_key() -> str:
-    """Stable per-account key for the upload quota. Prefers the session subject
-    (Google sub, or "email:<addr>" for password accounts) and falls back to the
-    address, so the count follows the account rather than the browser."""
+    """Stable per-account key for the daily credit budget. Prefers the session
+    subject (Google sub, or "email:<addr>" for password accounts) and falls
+    back to the address, so the balance follows the account rather than the
+    browser."""
     return session.get("user_sub") or session.get("user_email") or ""
 
 
@@ -213,8 +216,10 @@ def _user_key() -> str:
 # they can never drift out of sync.
 def _pro_benefits() -> list[dict]:
     return [
-        {"title": "Unlimited daily uploads",
-         "detail": f"Free is capped at {usage.FREE_DAILY_UPLOADS} worksheets a day."},
+        {"title": "Unlimited daily fills",
+         "detail": f"Free gets {usage.FREE_DAILY_CREDITS} AI credits a day "
+                   f"(1 credit = {usage.CREDIT_TOKENS:,} tokens, about "
+                   "2 credits per page)."},
         {"title": "A smarter AI model",
          "detail": "Pro fills run on a stronger model, so answers are better."},
         {"title": "Fill in your own handwriting",
@@ -236,6 +241,10 @@ def _inject_pro_benefits():
 # rejects everything, so an unauthenticated POST can never grant Pro.
 STRIPE_PAYMENT_LINK = os.environ.get("STRIPE_PAYMENT_LINK", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+# Secret key (sk_...) for calling Stripe's API server-side — currently only
+# used to cancel a subscription from /billing/cancel. Optional: without it,
+# cancellation just tells the user to email support instead of erroring.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 # Display price for the pricing page. Kept here (not hardcoded in the template)
 # so it can be bumped without touching markup.
 PRO_PRICE = os.environ.get("PRO_PRICE", "$5/yr")
@@ -312,6 +321,12 @@ SNIP_REF_MAX = 12000
 VISION_FILL = os.environ.get("PAPERFILL_VISION_FILL", "1") != "0"
 # DPI for the page images sent to the vision fill.
 VISION_FILL_DPI = int(os.environ.get("VISION_FILL_DPI", "150"))
+
+# Hack Club's AI proxy (the "primary" provider) is free to us, but Hack Club
+# funds it with a fixed daily allowance per project that resets at UTC
+# midnight and does not roll over. The admin dashboard tracks estimated draw
+# against today's cap so it's visible before the proxy runs dry for the day.
+HACK_CLUB_BUDGET_USD = float(os.environ.get("HACK_CLUB_BUDGET_USD", "3.0"))
 
 # The user access code is changeable from the admin panel and persisted to
 # disk so it survives restarts and is shared across all gunicorn workers. It
@@ -680,7 +695,7 @@ def strip_bboxes_for_llm(structure: dict) -> dict:
 
 
 def call_openai_to_fill(structure_for_llm: dict, instructions: str = "",
-                        is_pro: bool = False) -> dict[str, str]:
+                        is_pro: bool = False, user_key: str = "") -> dict[str, str]:
     """
     Single API call that returns a JSON object mapping slot_id / unit_id
     to the answer string. Uses Structured Outputs / JSON mode so we don't
@@ -736,7 +751,7 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "",
     else:
         user = structure_json
 
-    with call_context("text_fill", is_pro=is_pro):
+    with call_context("text_fill", is_pro=is_pro, user_key=user_key):
         response = get_openai_client().chat.completions.create(
             model=_ai_model(is_pro),
             messages=[
@@ -794,7 +809,8 @@ _VISION_FILL_SYSTEM = (
 
 
 def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
-                          instructions: str = "", is_pro: bool = False) -> dict[str, str]:
+                          instructions: str = "", is_pro: bool = False,
+                          user_key: str = "") -> dict[str, str]:
     """One vision fill call for a single page's units + that page's image."""
     structure_json = json.dumps(structure_for_llm, ensure_ascii=False)
     instructions = (instructions or "").strip()
@@ -809,7 +825,7 @@ def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
     data_uri = "data:image/png;base64," + base64.b64encode(png).decode()
     content.append({"type": "image_url", "image_url": {"url": data_uri}})
 
-    with call_context("vision_fill", is_pro=is_pro):
+    with call_context("vision_fill", is_pro=is_pro, user_key=user_key):
         response = get_openai_client().chat.completions.create(
             model=_vision_model(is_pro),
             messages=[
@@ -827,7 +843,8 @@ def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
 
 
 def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
-                        instructions: str = "", is_pro: bool = False) -> dict[str, str]:
+                        instructions: str = "", is_pro: bool = False,
+                        user_key: str = "") -> dict[str, str]:
     """
     Answer-then-anchor fill, ONE call per page (run in parallel).
 
@@ -852,7 +869,8 @@ def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
         if pidx < 0 or pidx >= len(page_pngs):
             return {}
         sub = strip_bboxes_for_llm({"units": by_page[pidx]})
-        return _vision_fill_one_page(sub, page_pngs[pidx], instructions, is_pro)
+        return _vision_fill_one_page(sub, page_pngs[pidx], instructions, is_pro,
+                                     user_key)
 
     pages = sorted(by_page)
     answers: dict[str, str] = {}
@@ -897,7 +915,7 @@ def _flatten_answers(obj: dict) -> dict[str, str]:
 
 
 def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
-                           is_pro: bool = False) -> str:
+                           is_pro: bool = False, user_key: str = "") -> str:
     """
     Ask the vision model to answer a single worksheet item from a cropped
     screenshot — used when the AI left a question blank and the user snips it
@@ -931,7 +949,7 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
                      "(prefer it over your own knowledge):\n" + instructions[:SNIP_REF_MAX]),
         })
 
-    with call_context("ask_ai", is_pro=is_pro):
+    with call_context("ask_ai", is_pro=is_pro, user_key=user_key):
         response = get_openai_client().chat.completions.create(
             model=_vision_model(is_pro),
             messages=[
@@ -948,7 +966,8 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
 
 
 def call_openai_to_refine(text: str, mode: str, instruction: str = "",
-                          ref: str = "", is_pro: bool = False) -> str:
+                          ref: str = "", is_pro: bool = False,
+                          user_key: str = "") -> str:
     """
     Rewrite a single box's text per a quick edit request from the floating
     toolbar: 'shorten', 'lengthen', or 'else' (a free-text instruction the user
@@ -988,7 +1007,7 @@ def call_openai_to_refine(text: str, mode: str, instruction: str = "",
     parts.append("Current text:\n" + text)
     user = "\n\n".join(parts)
 
-    with call_context("refine", is_pro=is_pro):
+    with call_context("refine", is_pro=is_pro, user_key=user_key):
         response = get_openai_client().chat.completions.create(
             model=_ai_model(is_pro),
             messages=[
@@ -1012,6 +1031,7 @@ def _start_user_session(user: dict) -> None:
     email = user.get("email", "")
     session["role"] = _role_for(email)        # "admin" for the allowlist, else "user"
     session["is_pro"] = bool(user.get("is_pro"))  # the pro tier, independent of admin
+    session["cancel_at_period_end"] = bool(user.get("cancel_at_period_end"))
     session["user_sub"] = user.get("google_sub") or f"email:{email}"
     session["user_email"] = email
     session["user_name"] = user.get("name", "")
@@ -1194,6 +1214,7 @@ def admin():
         users=data["users"], ai_calls=data["ai_calls"],
         payments=data["payments"], devices_daily=data["devices_daily"],
         devices_hourly=data["devices_hourly"], device_total=data["device_total"],
+        rate_card=costs.load(), hack_club_cap_usd=HACK_CLUB_BUDGET_USD,
         days=days, tz_offset=tz_offset,
     )
 
@@ -1380,6 +1401,51 @@ def upgrade_success():
     return render_template("pricing.html", upgraded=True)
 
 
+@app.post("/billing/cancel")
+def billing_cancel():
+    """Cancel the signed-in user's Pro subscription. Sets cancel_at_period_end
+    on the Stripe subscription (they keep Pro until the period they already
+    paid for runs out; the subscription.deleted webhook downgrades is_pro when
+    it actually ends) rather than yanking access immediately.
+
+    Needs both STRIPE_SECRET_KEY and a stripe_subscription_id on the account
+    (stored from the checkout webhook) to actually call Stripe. Either being
+    missing — Pro granted manually from /admin, or paid before this was wired
+    up — falls back to telling the user to email support instead of silently
+    downgrading them or claiming a cancellation that didn't happen."""
+    if not session.get("role"):
+        return jsonify({"error": "authentication required"}), 403
+    if not _is_pro():
+        return jsonify({"error": "You're not on Pro."}), 400
+    email = session.get("user_email", "")
+    user = db.get_user_by_email(email) if email else None
+    subscription_id = (user or {}).get("stripe_subscription_id")
+    if not STRIPE_SECRET_KEY or not subscription_id:
+        support_email = sorted(ADMIN_EMAILS)[0] if ADMIN_EMAILS else "support"
+        return jsonify({
+            "error": f"We don't have a billing record on file to cancel automatically. "
+                     f"Email {support_email} and we'll cancel it for you.",
+        }), 400
+    try:
+        r = requests.post(
+            f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
+            auth=(STRIPE_SECRET_KEY, ""),
+            data={"cancel_at_period_end": "true"},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        print(f"[stripe] cancel request failed for {email}: {e}")
+        return jsonify({"error": "Couldn't reach Stripe. Please try again."}), 502
+    if r.status_code >= 400:
+        print(f"[stripe] cancel HTTP {r.status_code} for {email}: {r.text[:200]}")
+        return jsonify({"error": "Stripe couldn't cancel that subscription. Please try again."}), 502
+    db.set_cancel_at_period_end(email, True)
+    session["cancel_at_period_end"] = True
+    return jsonify({"ok": True,
+                     "message": "Your subscription won't renew. You'll keep Pro until the "
+                                "current period ends."})
+
+
 def _verify_stripe_sig(payload: bytes, sig_header: str) -> bool:
     """Verify a Stripe webhook signature without the Stripe SDK. Stripe signs
     `"{timestamp}.{body}"` with HMAC-SHA256 keyed by the endpoint secret and
@@ -1432,9 +1498,30 @@ def stripe_webhook():
         )
         if email and db.set_user_pro(email, True):
             print(f"[stripe] upgraded {email} to Pro")
+            # Stash the customer/subscription IDs so /billing/cancel has
+            # something to call later. Best-effort — a missing ID here just
+            # means cancellation falls back to "email support".
+            customer_id = obj.get("customer") or ""
+            subscription_id = obj.get("subscription") or ""
+            if customer_id or subscription_id:
+                db.set_stripe_ids(email, customer_id, subscription_id)
         else:
             print(f"[stripe] checkout completed but no matching user for "
                   f"'{email}' — grant Pro manually from /admin")
+    elif event.get("type") == "customer.subscription.deleted":
+        # Fires when a subscription actually ends (period ran out after a
+        # cancel-at-period-end, or Stripe cancelled it directly). This is the
+        # real end of billing, so downgrade the account here rather than at
+        # the moment the user clicked Cancel.
+        obj = event.get("data", {}).get("object", {}) or {}
+        customer_id = obj.get("customer") or ""
+        user = db.get_user_by_stripe_customer(customer_id) if customer_id else None
+        if user and user.get("email"):
+            db.set_user_pro(user["email"], False)
+            db.set_cancel_at_period_end(user["email"], False)
+            print(f"[stripe] {user['email']} subscription ended, downgraded to Free")
+        else:
+            print(f"[stripe] subscription.deleted for unknown customer '{customer_id}'")
     return jsonify({"received": True}), 200
 
 
@@ -1464,17 +1551,19 @@ def upload():
     if ext not in ALLOWED_EXT:
         return jsonify({"error": "only PDF files allowed"}), 400
 
-    # Free tier: check the daily quota BEFORE doing any work, but don't spend it
-    # until the PDF actually parses (below) — a worksheet we couldn't read
-    # shouldn't cost the user one of their three. This is the real enforcement;
-    # the upgrade card in the UI is only a hint.
+    # Free tier: check the daily credit budget BEFORE doing any work. Unlike
+    # the old per-upload quota, credits are spent as AI calls actually happen
+    # (see llm_client._Method._record) rather than here — the true cost of a
+    # fill isn't known until the tokens come back. This check just blocks
+    # starting a new job once today's balance is already gone; the upgrade
+    # card in the UI is only a hint.
     metered = not _is_pro()
-    if metered and usage.remaining(_user_key()) <= 0:
+    if metered and usage.remaining_credits(_user_key()) <= 0:
         return jsonify({
-            "error": f"You've used all {usage.FREE_DAILY_UPLOADS} free uploads for "
-                     "today. Upgrade to Pro for unlimited uploads.",
+            "error": f"You've used all {usage.FREE_DAILY_CREDITS} free AI credits "
+                     "for today. Upgrade to Pro for unlimited fills.",
             "limit_reached": True,
-            "uploads_left": 0,
+            "credits_left": 0,
             "upgrade_url": url_for("pricing"),
         }), 402
 
@@ -1516,9 +1605,6 @@ def upload():
         pdf_path.unlink(missing_ok=True)
         return jsonify({"error": f"could not parse PDF: {e}"}), 400
 
-    # The PDF parsed, so this upload counts. Pro stays unmetered.
-    uploads_left = usage.consume(_user_key()) if metered else None
-
     # Render preview images of each page so the frontend can show
     # what was uploaded.
     doc = fitz.open(str(pdf_path))
@@ -1551,8 +1637,10 @@ def upload():
         "page_count": page_count,
         "unit_count": structure["unit_count"],
         "slot_count": structure["slot_count"],
-        # None for Pro (unmetered); the UI only shows a count on Free.
-        "uploads_left": uploads_left,
+        # None for Pro (unmetered); the UI only shows a count on Free. Most of
+        # the actual spend happens during /api/fill, not here, so this is
+        # mainly accurate when the AI Vision detector ran above.
+        "credits_left": None if _is_pro() else usage.remaining_credits(_user_key()),
         "units": [
             {
                 "unit_id": u["unit_id"],
@@ -1627,12 +1715,14 @@ def fill():
     if VISION_FILL:
         try:
             page_pngs = _render_page_pngs(job["pdf_path"])
-            answers = call_vision_to_fill(job["structure"], page_pngs, instructions, _is_pro())
+            answers = call_vision_to_fill(job["structure"], page_pngs, instructions,
+                                          _is_pro(), _user_key())
         except Exception as e:
             print(f"[fill] vision fill failed ({e}); falling back to text-only")
     if not answers:
         try:
-            answers = call_openai_to_fill(structure_for_llm, instructions, _is_pro())
+            answers = call_openai_to_fill(structure_for_llm, instructions,
+                                          _is_pro(), _user_key())
         except Exception as e:
             return jsonify({"error": f"LLM call failed: {e}"}), 502
 
@@ -1659,6 +1749,9 @@ def fill():
         "overlays": overlays,
         "page_count": job["page_count"],
         "page_sizes": job["page_sizes"],
+        # None for Pro (unmetered); the UI only shows a meter on Free. Read
+        # fresh here since the fill above just spent some of it.
+        "credits_left": None if _is_pro() else usage.remaining_credits(_user_key()),
     })
 
 
@@ -1871,6 +1964,8 @@ def update():
     """
     Replace the job's overlays with the client-provided list and re-render.
     Body: {job_id, overlays: [{id, page, bbox:[x0,y0,x1,y1], text, mode?}, ...]}
+    A "kind": "ink" overlay is a freehand pen stroke instead: {id, page, kind,
+    points:[[x,y],...], color, width}.
     """
     data = request.get_json(silent=True) or {}
     job_id = data.get("job_id")
@@ -1884,6 +1979,29 @@ def update():
     cleaned = []
     max_page = job["page_count"] - 1
     for ov in overlays:
+        if ov.get("kind") == "ink":
+            try:
+                page = int(ov.get("page", 0))
+                if page < 0 or page > max_page:
+                    continue
+                points = [[float(x), float(y)] for x, y in ov["points"]][:2000]
+                if len(points) < 2:
+                    continue
+                color = str(ov.get("color", "")).lower()
+                if not re.fullmatch(r"#[0-9a-f]{6}", color):
+                    color = "#1a1a1a"
+                width = max(0.5, min(20.0, float(ov.get("width", 2.0))))
+                cleaned.append({
+                    "id": str(ov.get("id", "")),
+                    "page": page,
+                    "kind": "ink",
+                    "points": points,
+                    "color": color,
+                    "width": width,
+                })
+            except (KeyError, TypeError, ValueError, IndexError):
+                pass
+            continue
         try:
             bbox = [float(x) for x in ov["bbox"]]
             if len(bbox) != 4:
@@ -1980,7 +2098,8 @@ def snip():
         return jsonify({"error": f"could not crop page: {e}"}), 500
 
     try:
-        answer = call_vision_for_answer(png_bytes, job.get("fill_instructions", ""), _is_pro())
+        answer = call_vision_for_answer(png_bytes, job.get("fill_instructions", ""),
+                                        _is_pro(), _user_key())
     except Exception as e:
         return jsonify({"error": f"vision call failed: {e}"}), 502
 
@@ -2013,7 +2132,8 @@ def refine():
 
     try:
         new_text = call_openai_to_refine(
-            text, mode, instruction, job.get("fill_instructions", ""), _is_pro())
+            text, mode, instruction, job.get("fill_instructions", ""),
+            _is_pro(), _user_key())
     except Exception as e:
         return jsonify({"error": f"LLM call failed: {e}"}), 502
     if not new_text:

@@ -68,13 +68,24 @@ def test_uncosted_calls_are_counted_not_treated_as_free():
 
 
 def test_profit_and_margin():
-    payments = [{"ts": ts(6, 3), "amount_cents": 500},
-                {"ts": ts(6, 4), "amount_cents": 500}]
+    payments = [{"ts": ts(6, 3), "amount_cents": 500, "livemode": True},
+                {"ts": ts(6, 4), "amount_cents": 500, "livemode": True}]
     calls = [{"ts": ts(6, 3), "cost_usd": 2.50, "prompt_tokens": 0, "output_tokens": 0}]
     out = stats.money(calls, payments, days=7, tz_offset=0)
     assert out["revenue"] == pytest.approx(10.0)
     assert out["profit"] == pytest.approx(7.5)
     assert out["margin_pct"] == pytest.approx(75.0)
+
+
+def test_test_mode_payments_are_excluded_from_revenue():
+    """Stripe test-mode checkouts hit the same webhook and look identical
+    apart from `livemode` — they must not inflate the real P&L."""
+    payments = [{"ts": ts(6, 3), "amount_cents": 500, "livemode": True},
+                {"ts": ts(6, 4), "amount_cents": 99999, "livemode": False}]
+    out = stats.money([], payments, days=7, tz_offset=0)
+    assert out["revenue"] == pytest.approx(5.0)
+    assert out["payment_count"] == 1
+    assert out["arpu"] == pytest.approx(5.0)
 
 
 def test_money_series_is_dense_and_ends_today():
@@ -144,24 +155,26 @@ def test_bad_rate_input_is_dropped_not_stored(tmp_path, monkeypatch):
     assert set(saved["models"]) == {"ok/m"}
 
 
-# ---- Upload quota --------------------------------------------------------
+# ---- Credit budget --------------------------------------------------------
 
-def test_quota_consumes_and_floors_at_zero(tmp_path, monkeypatch):
+def test_credits_consume_and_floor_at_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "_PATH", tmp_path / "usage.json")
-    monkeypatch.setattr(usage, "FREE_DAILY_UPLOADS", 2)
-    assert usage.remaining("u1") == 2
-    assert usage.consume("u1") == 1
-    assert usage.consume("u1") == 0
-    assert usage.consume("u1") == 0          # never negative
-    assert usage.remaining("u2") == 2        # per-user, not global
+    monkeypatch.setattr(usage, "FREE_DAILY_CREDITS", 2)
+    monkeypatch.setattr(usage, "CREDIT_TOKENS", 1000)
+    assert usage.remaining_credits("u1") == 2
+    assert usage.consume_tokens("u1", 1000) == 1      # 1 credit spent
+    assert usage.consume_tokens("u1", 1500) == 0       # over-spend floors at 0
+    assert usage.consume_tokens("u1", 1000) == 0       # never negative
+    assert usage.remaining_credits("u2") == 2          # per-user, not global
 
 
-def test_quota_ignores_yesterdays_row(tmp_path, monkeypatch):
+def test_credits_ignore_yesterdays_row(tmp_path, monkeypatch):
     import json
     p = tmp_path / "usage.json"
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-    p.write_text(json.dumps({"u1": {"date": yesterday, "count": 99}}))
+    p.write_text(json.dumps({"u1": {"date": yesterday, "tokens": 99000}}))
     monkeypatch.setattr(usage, "_PATH", p)
-    monkeypatch.setattr(usage, "FREE_DAILY_UPLOADS", 3)
-    assert usage.used_today("u1") == 0
-    assert usage.remaining("u1") == 3
+    monkeypatch.setattr(usage, "FREE_DAILY_CREDITS", 20)
+    monkeypatch.setattr(usage, "CREDIT_TOKENS", 1000)
+    assert usage.tokens_used_today("u1") == 0
+    assert usage.remaining_credits("u1") == 20

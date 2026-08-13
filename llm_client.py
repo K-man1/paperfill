@@ -31,6 +31,7 @@ import time
 _purpose = contextvars.ContextVar("llm_purpose", default="unknown")
 _job_id = contextvars.ContextVar("llm_job_id", default="")
 _is_pro = contextvars.ContextVar("llm_is_pro", default=None)
+_user_key = contextvars.ContextVar("llm_user_key", default="")
 
 
 class call_context:
@@ -39,23 +40,30 @@ class call_context:
         with call_context("vision_fill", job_id=job_id, is_pro=True):
             client.chat.completions.create(...)
 
+    `user_key` additionally spends the call's tokens against that account's
+    Free-tier daily credit budget (see usage.py) — Pro accounts pass
+    is_pro=True and are never metered there.
+
     Restores the previous labels on exit, so nesting is safe.
     """
 
-    def __init__(self, purpose: str, job_id: str = "", is_pro=None):
-        self._new = (purpose, job_id, is_pro)
+    def __init__(self, purpose: str, job_id: str = "", is_pro=None,
+                user_key: str = ""):
+        self._new = (purpose, job_id, is_pro, user_key)
         self._tokens = None
 
     def __enter__(self):
-        p, j, pro = self._new
-        self._tokens = (_purpose.set(p), _job_id.set(j or ""), _is_pro.set(pro))
+        p, j, pro, uk = self._new
+        self._tokens = (_purpose.set(p), _job_id.set(j or ""),
+                        _is_pro.set(pro), _user_key.set(uk or ""))
         return self
 
     def __exit__(self, *exc):
-        tp, tj, tpro = self._tokens
+        tp, tj, tpro, tuk = self._tokens
         _purpose.reset(tp)
         _job_id.reset(tj)
         _is_pro.reset(tpro)
+        _user_key.reset(tuk)
         return False
 
 
@@ -191,6 +199,17 @@ class _Method:
         try:
             import costs
             p, o, total = _usage_from(resp) if resp is not None else (0, 0, 0)
+            uk = _user_key.get()
+            if uk and not _is_pro.get() and total > 0:
+                # Synchronous and local (a flock'd JSON file, not the DB queue
+                # below) so the spend is reflected before this request returns
+                # — a burst of parallel calls from one job must not all read
+                # the same stale "credits remaining" and overspend.
+                try:
+                    import usage
+                    usage.consume_tokens(uk, total)
+                except Exception as e:
+                    print(f"[llm] credit consumption failed: {e}")
             _meter({
                 "purpose": _purpose.get(),
                 "model": model or "",

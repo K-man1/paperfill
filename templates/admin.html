@@ -4,17 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Paperfill — Admin Dashboard</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
-  --paper: #f5f1e8;
-  --paper-deep: #ebe5d4;
-  --ink: #1a1814;
-  --ink-soft: #4a4438;
-  --rule: #c9c0a8;
-  --rule-soft: #ddd5bf;
+  --paper: #f7f4ee;
+  --paper-deep: #ece7dc;
+  --ink: #1f1d1a;
+  --ink-soft: #5c564c;
+  --rule: #d5cec1;
+  --rule-soft: #e6e1d6;
   --accent: #ff5a1f;
   --accent-deep: #c93f10;
   --green: #16a34a;
@@ -273,6 +274,11 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       <div class="stat-sub">{{ '{:,}'.format(s.money.tokens_total) }} tokens</div>
     </div>
     <div class="stat-card hero">
+      <div class="stat-label">Hack Club credit (today)</div>
+      <div class="stat-value {{ 'red' if s.hack_club.pct_used >= 80 else '' }}">${{ '%.4f'|format(s.hack_club.spent) }}<span style="font-size:0.55em;color:var(--ink-soft);"> / ${{ '%.2f'|format(s.hack_club.cap) }}</span></div>
+      <div class="stat-sub">{{ s.hack_club.pct_used }}% used{{ ' — exhausted' if s.hack_club.exhausted else '' }} · resets at UTC midnight</div>
+    </div>
+    <div class="stat-card hero">
       <div class="stat-label">Profit</div>
       <div class="stat-value {{ 'green' if s.money.profit >= 0 else 'red' }}">${{ '%.2f'|format(s.money.profit) }}</div>
       <div class="stat-sub">{{ (s.money.margin_pct ~ '% margin') if s.money.revenue else 'no revenue yet' }}</div>
@@ -307,6 +313,27 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       <b>{{ s.money.uncosted_calls }} AI call{{ '' if s.money.uncosted_calls == 1 else 's' }} could not be costed</b>
       — no rate is configured for their model, so they're excluded from spend and profit
       rather than counted as free. Set the rate under <b>AI rate card</b> below to include them.
+    </div>
+    {% endif %}
+
+    {% if s.hack_club.exhausted %}
+    <div class="banner banner-err">
+      <b>Today's ${{ '%.2f'|format(s.hack_club.cap) }} Hack Club AI credit is used up</b>
+      (est. ${{ '%.4f'|format(s.hack_club.spent) }} spent since UTC midnight) — calls may start
+      landing on the paid OpenRouter fallback, which shows up as real AI spend above. It resets
+      at UTC midnight; unused credit never carries over, so there's no way to top it up early.
+    </div>
+    {% elif s.hack_club.pct_used >= 80 %}
+    <div class="banner banner-info">
+      <b>{{ s.hack_club.pct_used }}% of today's ${{ '%.2f'|format(s.hack_club.cap) }} Hack Club AI credit used</b>
+      (est. ${{ '%.4f'|format(s.hack_club.spent) }}) — ${{ '%.4f'|format(s.hack_club.remaining) }} left before
+      calls fall back to paid until the daily reset at UTC midnight.
+    </div>
+    {% endif %}
+    {% if s.hack_club.uncosted_calls %}
+    <div class="banner banner-info">
+      <b>{{ s.hack_club.uncosted_calls }} primary-provider call{{ '' if s.hack_club.uncosted_calls == 1 else 's' }} not counted toward the Hack Club estimate</b>
+      — no rate configured for their model. Set it under <b>AI rate card</b> below.
     </div>
     {% endif %}
 
@@ -822,9 +849,9 @@ const S = {{ s | tojson }};
 // mode (and a tracking vector) for no real benefit. Every chart is a plain
 // <svg> with a viewBox, so it scales with its card and needs no resize logic.
 const C = {
-  ink: '#1a1814', soft: '#4a4438', rule: '#c9c0a8', ruleSoft: '#ddd5bf',
+  ink: '#1f1d1a', soft: '#5c564c', rule: '#d5cec1', ruleSoft: '#e6e1d6',
   accent: '#ff5a1f', green: '#16a34a', red: '#dc2626', blue: '#2563eb',
-  purple: '#7c3aed', paper: '#f5f1e8',
+  purple: '#7c3aed', paper: '#f7f4ee',
 };
 const PALETTE = [C.accent, C.blue, C.green, C.purple, '#d97706', '#0891b2', '#be185d', C.soft];
 const NS = 'http://www.w3.org/2000/svg';

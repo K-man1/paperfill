@@ -18,9 +18,9 @@ MIN_FONT_SIZE = 6
 
 # "Made with Goodnotes" badge stamped on the bottom-left of every rendered page.
 WATERMARK_PATH = os.path.join(os.path.dirname(__file__), "assets", "goodnotes_watermark.png")
-WATERMARK_WIDTH = 110   # px wide on the page (aspect ratio preserved)
-WATERMARK_MARGIN = 18   # px from the left and bottom edges
-
+WATERMARK_WIDTH = 117                                                                                            # px wide on the page (aspect ratio preserved)
+WATERMARK_MARGIN = 20   # px from the left and bottom edges
+# HEELLOOOOO THIS IS A TTEESTTTT
 # Handwriting is rendered by the font pipeline as fixed-height line bands
 # (LINE_BAND_PX tall) whose glyphs are drawn at RENDER_PX em. We scale every
 # band so the *em* lands at a target px on the page — sizing by the actual
@@ -116,6 +116,16 @@ def insert_text_in_region(page, region, text: str,
         page.insert_text((region[0], y), line, fontname=HANDWRITING_FONT,
                          fontsize=current_size, color=(0, 0, 0))
         y += line_height
+
+
+def _hex_to_rgb(hex_color: str) -> tuple:
+    h = (hex_color or "").lstrip("#")
+    if len(h) != 6:
+        return (0.1, 0.1, 0.1)
+    try:
+        return (int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255)
+    except ValueError:
+        return (0.1, 0.1, 0.1)
 
 
 def _html_escape(s: str) -> str:
@@ -266,6 +276,20 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
                 page.draw_oval(rect, color=_CIRCLE_COLOR, width=_CIRCLE_WIDTH)
             except Exception:
                 pass
+            continue
+
+        if ov.get("kind") == "ink":
+            points = ov.get("points") or []
+            if len(points) >= 2:
+                try:
+                    shape = page.new_shape()
+                    shape.draw_polyline([fitz.Point(x, y) for x, y in points])
+                    shape.finish(color=_hex_to_rgb(ov.get("color")),
+                                width=float(ov.get("width", 2.0)),
+                                closePath=False, lineCap=1, lineJoin=1)
+                    shape.commit()
+                except Exception:
+                    pass
             continue
 
         png = images.get(ov.get("id"))

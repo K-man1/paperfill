@@ -5,22 +5,25 @@
   <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Paperfill — AI worksheet filler</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --paper: #f5f1e8;
-  --paper-deep: #ebe5d4;
-  --ink: #1a1814;
-  --ink-soft: #4a4438;
-  --rule: #c9c0a8;
-  --rule-soft: #ddd5bf;
+  --paper: #f7f4ee;
+  --paper-deep: #ece7dc;
+  --ink: #1f1d1a;
+  --ink-soft: #5c564c;
+  --rule: #d5cec1;
+  --rule-soft: #e6e1d6;
+  /* One muted clay accent, used only for interactive state: focus rings,
+     selection, and the primary call to action. Anything decorative stays ink. */
   --accent: #ff5a1f;
   --accent-deep: #c93f10;
-  --highlight: #fce96a;
-  --shadow: 0 1px 0 rgba(0,0,0,0.04), 0 8px 24px -8px rgba(26,24,20,0.18);
-  --shadow-deep: 0 2px 0 rgba(0,0,0,0.04), 0 24px 48px -16px rgba(26,24,20,0.28);
+  --accent-tint: #fff4ef;
+  --shadow: 0 1px 2px rgba(31,29,26,0.05);
+  --shadow-deep: 0 8px 24px -12px rgba(31,29,26,0.22);
   --serif: "Fraunces", "Times New Roman", serif;
   --sans: "IBM Plex Sans", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -34,21 +37,6 @@ body {
   font-size: 15px;
   line-height: 1.5;
   min-height: 100vh;
-  background-image:
-    radial-gradient(ellipse 800px 400px at 20% -10%, rgba(255,90,31,0.08), transparent),
-    radial-gradient(ellipse 600px 300px at 90% 110%, rgba(252,233,106,0.18), transparent);
-}
-
-/* paper grain via subtle noise */
-body::before {
-  content: "";
-  position: fixed; inset: 0;
-  pointer-events: none;
-  background-image:
-    repeating-linear-gradient(0deg, rgba(26,24,20,0.012) 0 1px, transparent 1px 3px),
-    repeating-linear-gradient(90deg, rgba(26,24,20,0.012) 0 1px, transparent 1px 3px);
-  z-index: 1;
-  mix-blend-mode: multiply;
 }
 
 main {
@@ -61,8 +49,8 @@ main {
 
 /* ---- Masthead ---- */
 header.masthead {
-  border-bottom: 1px solid var(--ink);
-  padding-bottom: 16px;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 18px;
   margin-bottom: 40px;
   display: grid;
   grid-template-columns: 1fr auto;
@@ -71,23 +59,22 @@ header.masthead {
 }
 .masthead .top-rule {
   grid-column: 1 / -1;
-  border-top: 3px solid var(--ink);
-  border-bottom: 1px solid var(--ink);
-  padding: 6px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 0 0 12px;
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   display: flex;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 .brand {
   font-family: var(--serif);
-  font-weight: 800;
-  font-size: clamp(48px, 8vw, 96px);
-  line-height: 0.9;
-  letter-spacing: -0.04em;
+  font-weight: 600;
+  font-size: clamp(34px, 5vw, 46px);
+  line-height: 1;
+  letter-spacing: -0.02em;
   margin: 0;
 }
 .brand em {
@@ -110,8 +97,7 @@ header.masthead {
 .acct .acct-email { color: var(--ink-soft); text-transform: none; letter-spacing: 0; }
 .acct a { color: var(--ink); text-decoration: none; border-bottom: 1px solid transparent; }
 .acct a:hover { border-bottom-color: var(--ink); }
-.acct a.upgrade { color: var(--accent-deep); font-weight: 600; }
-.acct a.hw-link { color: var(--accent-deep); font-weight: 600; }
+.acct a.upgrade { color: var(--accent-deep); font-weight: 500; }
 .tier-badge {
   font-family: var(--mono);
   font-size: 10px;
@@ -125,6 +111,33 @@ header.masthead {
 .tier-badge.pro { background: var(--accent); border-color: var(--accent); color: #fff; }
 .acct .acct-meter { color: var(--ink-soft); text-transform: none; letter-spacing: 0; }
 
+/* ---- Settings dropdown ---- */
+.settings-menu { position: relative; }
+.settings-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  background: none; border: 1px solid var(--rule); border-radius: 6px; color: var(--ink);
+  cursor: pointer;
+}
+.settings-btn svg { width: 16px; height: 16px; }
+.settings-btn:hover, .settings-btn[aria-expanded="true"] { border-color: var(--ink-soft); color: var(--accent-deep); }
+.settings-dropdown {
+  display: none; flex-direction: column; gap: 2px;
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  background: #fff; border: 1px solid var(--rule); border-radius: 10px;
+  box-shadow: var(--shadow-deep); min-width: max-content; padding: 6px;
+}
+.settings-dropdown.open { display: flex; }
+.settings-dropdown a, .settings-item {
+  display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 6px;
+  font: inherit; font-size: 14px; text-transform: none; letter-spacing: 0; white-space: nowrap;
+  color: var(--ink); text-decoration: none; background: none; border: none; cursor: pointer;
+}
+.settings-dropdown a:hover, .settings-item:hover:not(:disabled) { background: var(--paper-deep); border-bottom: none; }
+.settings-item.danger { color: var(--accent-deep); }
+.settings-item:disabled { color: var(--ink-soft); cursor: default; }
+.settings-note { display: block; padding: 9px 12px; font-size: 13px; color: var(--ink-soft); white-space: nowrap; }
+
 /* ---- Free-tier upgrade card (top of the upload stage) ---- */
 .upgrade-card {
   display: flex;
@@ -132,48 +145,37 @@ header.masthead {
   gap: 22px;
   flex-wrap: wrap;
   background: #fff;
-  border: 1px solid var(--accent);
-  border-left-width: 4px;
-  border-radius: 4px;
-  padding: 16px 20px;
-  margin: 0 0 22px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 18px 20px;
+  margin: 0 0 24px;
 }
 .upgrade-copy { flex: 1; min-width: 260px; }
-.upgrade-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.upgrade-head { margin-bottom: 10px; }
 .upgrade-meter {
-  font-family: var(--mono);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
   color: var(--ink-soft);
 }
-.upgrade-card.spent { border-color: var(--accent-deep); background: #fff6f2; }
+.upgrade-card.spent { border-color: var(--accent); background: var(--accent-tint); }
 .upgrade-card.spent .upgrade-meter { color: var(--accent-deep); font-weight: 600; }
-.upgrade-benefits { list-style: none; margin: 0; padding: 0; }
+.upgrade-benefits { list-style: disc; margin: 0; padding-left: 18px; }
 .upgrade-benefits li {
-  position: relative;
-  padding-left: 20px;
   font-size: 14px;
   color: var(--ink-soft);
   line-height: 1.6;
 }
-.upgrade-benefits li::before {
-  content: "✦";
-  position: absolute;
-  left: 0;
-  color: var(--accent);
-}
+.upgrade-benefits li::marker { color: var(--rule); }
 .upgrade-benefits b { color: var(--ink); font-weight: 600; }
 .upgrade-btn {
-  font-family: var(--mono);
-  font-size: 12px;
+  font-family: var(--sans);
+  font-size: 13px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  padding: 13px 20px;
-  border-radius: 2px;
+  padding: 12px 18px;
+  border-radius: 4px;
   background: var(--accent);
-  color: var(--paper);
+  color: #fff;
   text-decoration: none;
   white-space: nowrap;
   transition: background 0.15s;
@@ -193,42 +195,28 @@ header.masthead {
 .drop {
   display: block;
   background: #fff;
-  border: 2px dashed var(--rule);
-  border-radius: 4px;
-  padding: 80px 32px;
+  border: 1px dashed var(--rule);
+  border-radius: 6px;
+  padding: 56px 32px;
   text-align: center;
   cursor: pointer;
-  transition: all 0.2s;
-  box-shadow: var(--shadow);
+  transition: border-color 0.15s, background 0.15s;
   position: relative;
 }
 .drop:hover, .drop.dragover {
   border-color: var(--accent);
-  background: #fffbf6;
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-deep);
+  background: var(--accent-tint);
 }
 .drop.dragover { border-style: solid; }
-.drop-icon {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 64px;
-  line-height: 1;
-  color: var(--accent);
-  margin-bottom: 16px;
-}
 .drop h2 {
-  font-family: var(--serif);
-  font-weight: 600;
-  font-size: 28px;
-  margin: 0 0 8px;
-  letter-spacing: -0.01em;
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 18px;
+  margin: 0 0 6px;
 }
 .drop p {
-  font-family: var(--mono);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-family: var(--sans);
+  font-size: 13px;
   color: var(--ink-soft);
   margin: 0;
 }
@@ -237,21 +225,6 @@ header.masthead {
 /* ---- Instructions box ---- */
 .instructions-box {
   margin-bottom: 24px;
-}
-.instructions-label {
-  display: block;
-  font-family: var(--mono);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--ink);
-  margin-bottom: 8px;
-}
-.instructions-label span {
-  color: var(--ink-soft);
-  text-transform: none;
-  letter-spacing: 0;
-  font-style: italic;
 }
 #instructions {
   width: 100%;
@@ -286,38 +259,38 @@ header.masthead {
 }
 .attach-btn {
   display: inline-block;
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 8px 12px;
-  border: 1px dashed var(--rule);
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 9px 14px;
+  border: 1px solid var(--rule);
   border-radius: 4px;
   background: #fff;
-  color: var(--ink);
+  color: var(--ink-soft);
   cursor: pointer;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, color 0.15s;
 }
-.attach-btn:hover { border-color: var(--accent); }
+.attach-btn:hover { border-color: var(--ink-soft); color: var(--ink); }
 .attach-btn input { display: none; }
-.hw-hint { color: var(--ink-soft); font-size: 0.85em; align-self: center; }
+.hw-hint { color: var(--ink-soft); font-size: 13px; font-weight: 400; align-self: center; }
 /* ---- Answer-format picker (multi-select) ---- */
 .fmt-block { margin-bottom: 16px; }
 .fmt-block > .fmt-formats-label {
-  display: block; font-family: var(--mono); font-size: 15px;
-  color: var(--ink); margin-bottom: 8px;
+  display: block; font-family: var(--sans); font-size: 14px; font-weight: 600;
+  color: var(--ink); margin-bottom: 10px;
 }
 .fmt-cards { display: flex; flex-wrap: wrap; gap: 10px; }
 .fmt-card {
-  display: flex; flex-direction: column; gap: 1px;
+  display: flex; flex-direction: column; gap: 2px;
   border: 1px solid var(--rule); border-radius: 6px; background: #fff;
-  padding: 8px 12px; cursor: pointer;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  padding: 10px 12px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
   width: 168px; position: relative;
 }
-.fmt-card:hover { border-color: var(--accent); }
-.fmt-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(255,90,31,0.18); }
-.fmt-card input { position: absolute; top: 8px; right: 8px; accent-color: var(--accent); }
-.fmt-card .fmt-card-name { font-family: var(--mono); font-size: 12px; color: var(--ink); padding-right: 18px; }
-.fmt-card .fmt-card-sub { font-size: 10px; color: var(--ink-soft); }
+.fmt-card:hover { border-color: var(--ink-soft); }
+.fmt-card.selected { border-color: var(--ink); }
+.fmt-card input { position: absolute; top: 10px; right: 10px; accent-color: var(--accent); }
+.fmt-card .fmt-card-name { font-family: var(--sans); font-size: 13px; font-weight: 500; color: var(--ink); padding-right: 18px; }
+.fmt-card .fmt-card-sub { font-size: 11px; color: var(--ink-soft); line-height: 1.35; }
 .yt-add { display: flex; gap: 6px; flex: 1; min-width: 220px; }
 #yt-url {
   flex: 1;
@@ -331,15 +304,15 @@ header.masthead {
 }
 #yt-url:focus { outline: none; border-color: var(--accent); }
 #yt-add-btn {
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 8px 12px;
+  font-size: 13px;
+  padding: 9px 14px;
   border: 1px solid var(--rule);
   border-radius: 4px;
   background: #fff;
+  color: var(--ink-soft);
   cursor: pointer;
 }
-#yt-add-btn:hover { border-color: var(--accent); }
+#yt-add-btn:hover { border-color: var(--ink-soft); color: var(--ink); }
 .attach-list {
   list-style: none;
   margin: 10px 0 0;
@@ -353,8 +326,7 @@ header.masthead {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   background: #fff;
   border: 1px solid var(--rule);
   border-radius: 4px;
@@ -362,7 +334,7 @@ header.masthead {
   color: var(--ink-soft);
 }
 .attach-list .att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attach-list .att-kind { color: var(--accent); margin-right: 6px; }
+.attach-list .att-kind { color: var(--ink-soft); font-weight: 600; margin-right: 6px; }
 .attach-list .att-rm {
   border: none;
   background: none;
@@ -372,190 +344,41 @@ header.masthead {
   line-height: 1;
   padding: 0 4px;
 }
-.attach-list .att-rm:hover { color: var(--accent); }
+.attach-list .att-rm:hover { color: var(--ink); }
 
-.tagline {
-  font-family: var(--serif);
-  font-size: 22px;
-  line-height: 1.4;
-  color: var(--ink-soft);
-  margin: 32px 0;
-  max-width: 640px;
-}
-.tagline strong { color: var(--ink); font-weight: 600; }
 
-/* ---- How it works strip ---- */
-.steps {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 32px;
-  margin-top: 64px;
-  padding-top: 32px;
-  border-top: 1px solid var(--rule);
-}
-.step .num {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 48px;
-  font-weight: 400;
-  color: var(--accent);
-  line-height: 1;
-}
-.step h3 {
-  font-family: var(--serif);
-  font-size: 20px;
-  font-weight: 600;
-  margin: 8px 0 4px;
-}
-.step p {
-  font-family: var(--sans);
-  font-size: 14px;
-  color: var(--ink-soft);
-  margin: 0;
-}
 
-/* ---- Stage 2: Detected ---- */
-.split {
-  display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 32px;
-}
-.preview-pane {
-  background: #fff;
-  border-radius: 4px;
-  padding: 16px;
-  box-shadow: var(--shadow);
-  max-height: 80vh;
-  overflow-y: auto;
-}
-.preview-pane img {
-  width: 100%;
-  display: block;
-  border: 1px solid var(--rule-soft);
-  margin-bottom: 16px;
-}
-.preview-pane img:last-child { margin-bottom: 0; }
-
-.info-pane {
-  position: sticky;
-  top: 24px;
-  align-self: start;
-}
-.info-card {
-  background: #fff;
-  border-radius: 4px;
-  padding: 24px;
-  box-shadow: var(--shadow);
-  margin-bottom: 16px;
-}
-.info-card h3 {
-  font-family: var(--serif);
-  font-weight: 600;
-  font-size: 18px;
-  margin: 0 0 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--rule-soft);
-}
-.stat-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-.stat .label {
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--ink-soft);
-  margin-bottom: 4px;
-}
-.stat .value {
-  font-family: var(--serif);
-  font-size: 32px;
-  font-weight: 600;
-  line-height: 1;
-}
-.stat .value em {
-  font-style: italic;
-  color: var(--accent);
-  font-weight: 400;
-}
-
-.detected-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  max-height: 200px;
-  overflow-y: auto;
-  border: 1px solid var(--rule-soft);
-  border-radius: 2px;
-}
-.detected-list li {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--rule-soft);
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-soft);
-  display: flex;
-  gap: 8px;
-}
-.detected-list li:last-child { border-bottom: none; }
-.detected-list .tag {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  background: var(--paper-deep);
-  padding: 2px 6px;
-  border-radius: 2px;
-  flex-shrink: 0;
-  align-self: flex-start;
-  margin-top: 1px;
-}
-.tag.inline { background: #d4e9d2; color: #2d5a26; }
-.tag.open { background: #d4dde9; color: #234578; }
-.tag.table { background: #f0d8c8; color: #7d3c0e; }
-.detected-list .txt {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ---- Buttons ---- */
+/* ---- Buttons ----
+   One shape for every button: sans, sentence case, 4px corners. Primary is
+   ink-on-paper; the accent is reserved for the upgrade CTA so it still reads
+   as the one thing on the page asking for money. */
 button {
-  font-family: var(--mono);
-  font-size: 12px;
+  font-family: var(--sans);
+  font-size: 13px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   border: none;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .btn-primary {
   width: 100%;
   background: var(--ink);
-  color: var(--paper);
-  padding: 16px;
-  border-radius: 2px;
-  box-shadow: 0 2px 0 var(--ink-soft);
-  position: relative;
+  color: #fff;
+  padding: 14px 16px;
+  border-radius: 4px;
 }
-.btn-primary:hover:not(:disabled) {
-  background: var(--accent);
-  transform: translateY(-1px);
-  box-shadow: 0 3px 0 var(--accent-deep);
-}
-.btn-primary:active { transform: translateY(1px); box-shadow: 0 0 0 var(--ink-soft); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary:hover:not(:disabled) { background: #35302a; }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-ghost {
-  background: transparent;
+  background: #fff;
   color: var(--ink-soft);
-  padding: 12px 16px;
+  padding: 11px 16px;
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  border-radius: 4px;
   width: 100%;
 }
-.btn-ghost:hover { color: var(--ink); border-color: var(--ink); }
+.btn-ghost:hover { color: var(--ink); border-color: var(--ink-soft); }
 
 /* ---- Loading ---- */
 .loading-bar {
@@ -580,10 +403,8 @@ button {
   100% { transform: translateX(350%); }
 }
 .loading-msg {
-  font-family: var(--mono);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-family: var(--sans);
+  font-size: 13px;
   color: var(--ink-soft);
   text-align: center;
   display: none;
@@ -598,15 +419,21 @@ button {
   align-items: center;
   flex-wrap: wrap;
   background: #fff;
-  padding: 16px;
-  border-radius: 4px;
+  padding: 14px;
+  border: 1px solid var(--rule-soft);
+  border-radius: 6px;
   box-shadow: var(--shadow);
   position: sticky;
   top: 0;
   z-index: 50;
 }
-.editor-toolbar button { flex: 0 0 auto; padding: 12px 18px; min-width: 0; }
-.editor-toolbar .spacer { flex: 1; }
+/* Toolbar buttons sit on one row; .btn-ghost's full-width default is for the
+   stacked info pane, not here. */
+.editor-toolbar button { flex: 0 0 auto; padding: 11px 16px; min-width: 0; }
+.editor-toolbar button:not(.fmt-btn) { width: auto; }
+/* Download is the primary action, so it always gets its own full-width row
+   instead of shrinking to fit whatever's left when the toolbar wraps. */
+.editor-toolbar #download-btn { flex: 1 1 100%; min-width: 0; padding: 14px 16px; }
 /* Two buttons sharing one full-width row of the stacked toolbar. */
 .btn-pair {
   display: flex;
@@ -618,18 +445,20 @@ button {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  padding: 12px 18px;
+  padding: 11px 16px;
+  font-size: 13px;
   text-decoration: none;
-  color: #c0392b;
-  border-color: #e6b0aa;
+  color: var(--ink-soft);
+  border-color: var(--rule);
 }
-.donate-btn:hover { background: #fdecea; }
+.donate-btn:hover { color: var(--ink); border-color: var(--ink-soft); }
 .editor-toolbar #add-box-btn.active,
 .editor-toolbar #snip-btn.active,
+.editor-toolbar #draw-btn.active,
 .editor-toolbar .fmt-btn.active {
   background: var(--accent);
-  color: var(--paper);
-  border-color: var(--accent-deep);
+  color: #fff;
+  border-color: var(--accent);
 }
 .fmt-group {
   display: flex;
@@ -641,56 +470,55 @@ button {
 }
 .fmt-group:first-child { border-left: none; }
 .fmt-group select {
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 8px 8px;
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 8px;
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  border-radius: 4px;
   background: #fff;
   color: var(--ink);
   cursor: pointer;
 }
 .fmt-group select:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ---- Handwriting: flagship control in the editor toolbar ---- */
+/* ---- Handwriting control in the editor toolbar ---- */
 .hw-group { gap: 8px; }
-/* Same shape/type as every other toolbar button — the accent border is what
-   marks it as the special one. Declared explicitly (rather than inherited from
-   the global `button` rule) because this CTA renders as an <a> when it links to
-   pricing or onboarding, and only as a <button> once a font exists. */
+/* Same shape and type as every other toolbar button. Declared explicitly
+   (rather than inherited from the global `button` rule) because this control
+   renders as an <a> when it links to pricing or onboarding, and only as a
+   <button> once a font exists. */
 .hw-cta {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-family: var(--mono);
-  font-size: 12px;
+  font-family: var(--sans);
+  font-size: 13px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
   /* <button> keeps the UA default here; the <a> variant would otherwise
      inherit the page's 18px and stand 3px taller than its neighbours. */
   line-height: normal;
-  padding: 12px 18px;
-  border-radius: 2px;
-  border: 1px solid var(--accent);
-  color: var(--accent-deep);
-  background: transparent;
+  padding: 11px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+  background: #fff;
   cursor: pointer;
   white-space: nowrap;
   text-decoration: none;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.hw-cta:hover { background: var(--accent); color: var(--paper); }
+.hw-cta:hover { color: var(--ink); border-color: var(--ink-soft); }
+/* On = the worksheet is currently rendered in the user's handwriting. */
 .hw-cta.active {
   background: var(--accent);
-  color: var(--paper);
-  border-color: var(--accent-deep);
+  color: #fff;
+  border-color: var(--accent);
 }
-.hw-cta.locked { border-style: dashed; }
+.hw-cta.locked { color: var(--accent-deep); border-color: var(--rule); }
 .hw-cta.busy { opacity: 0.6; pointer-events: none; }
 .hw-redo {
-  font-family: var(--mono);
-  font-size: 11px;
+  font-family: var(--sans);
+  font-size: 12px;
   color: var(--ink-soft);
   text-decoration: underline;
   cursor: pointer;
@@ -705,42 +533,97 @@ button {
   border: 1px solid var(--rule);
   background: #fff;
   color: var(--ink);
-  border-radius: 2px;
+  border-radius: 4px;
 }
 .fmt-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .fmt-btn.b { font-weight: 800; }
 .fmt-btn.i { font-style: italic; }
 .fmt-btn.u { text-decoration: underline; }
 .fmt-label {
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-family: var(--sans);
+  font-size: 12px;
   color: var(--ink-soft);
   margin-right: 4px;
 }
-.editor-help {
-  font-family: var(--mono);
-  font-size: 11px;
+/* ---- Freehand pen (draw group in the editor toolbar) ---- */
+.draw-picker-wrap { position: relative; }
+/* IDs here aren't just hooks — they out-specificity the generic
+   `.editor-toolbar button` padding/width rules above without !important. */
+#draw-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+#draw-picker-btn:hover { border-color: var(--ink-soft); }
+.draw-picker-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15);
+  display: inline-block;
+}
+.draw-picker-caret { font-size: 10px; color: var(--ink-soft); }
+#draw-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: #fff;
+  border: 1px solid var(--rule-soft);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 60;
+  min-width: 168px;
+}
+#draw-dropdown[hidden] { display: none; }
+.draw-dropdown-row { display: flex; gap: 8px; }
+#draw-dropdown .draw-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+#draw-dropdown .draw-swatch.active { border-color: var(--ink); }
+#draw-dropdown .draw-width-opt {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fff;
   color: var(--ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+#draw-dropdown .draw-width-opt.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+.overlay.ov-ink { cursor: move; }
+.editor-help {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-soft);
   margin-bottom: 16px;
   text-align: center;
 }
 /* ---- Report a problem ---- */
 .report-btn {
   white-space: nowrap;
-  border-color: #dc2626;
-  color: #dc2626;
 }
-.report-btn:hover { background: #dc2626; color: #fff; }
 .report-btn.filed {
-  border-color: #16a34a;
-  color: #16a34a;
+  border-color: #7d9b6f;
+  color: #4d6b41;
   pointer-events: none;
 }
-.report-btn.filed:hover { background: transparent; color: #16a34a; }
+.report-btn.filed:hover { background: #fff; color: #4d6b41; }
 .report-backdrop {
   display: none;
   position: fixed;
@@ -754,10 +637,10 @@ button {
 .report-modal {
   width: 100%;
   max-width: 520px;
-  background: var(--paper, #f7f2e4);
-  border: 1px solid var(--rule, #c9c0a8);
-  border-radius: 12px;
-  box-shadow: var(--shadow, 0 18px 50px rgba(0,0,0,0.3));
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: var(--shadow-deep);
   padding: 24px;
 }
 .report-modal h3 {
@@ -775,7 +658,7 @@ button {
   resize: vertical;
   min-height: 96px;
   padding: 10px 12px;
-  border: 1px solid var(--rule, #c9c0a8);
+  border: 1px solid var(--rule);
   border-radius: 8px;
   font-family: var(--sans);
   font-size: 0.9rem;
@@ -784,7 +667,7 @@ button {
 }
 .report-modal textarea:focus {
   outline: none;
-  border-color: var(--accent, #ff5a1f);
+  border-color: var(--accent);
 }
 /* The attachment notice is not decoration: it's how the user learns their
    document gets shared before they choose to send it. */
@@ -794,8 +677,8 @@ button {
   align-items: flex-start;
   margin: 12px 0 16px;
   padding: 10px 12px;
-  background: var(--paper-deep, #ebe5d4);
-  border: 1px solid var(--rule, #c9c0a8);
+  background: var(--paper-deep);
+  border: 1px solid var(--rule);
   border-radius: 8px;
   font-size: 0.8rem;
   color: var(--ink-soft);
@@ -838,16 +721,16 @@ button {
 }
 .overlay {
   position: absolute;
-  border: 1.5px dashed rgba(255,90,31,0.6);
-  background: rgba(255, 251, 240, 0.92);
+  border: 1px dashed rgba(255,90,31,0.45);
+  background: rgba(255, 253, 250, 0.92);
   font-family: "Fraunces", serif;
   color: #000000;
   box-sizing: border-box;
   display: flex;
   align-items: stretch;
 }
-.overlay:hover { background: rgba(255, 251, 240, 0.9); border-color: var(--accent); }
-.overlay.selected { border-style: solid; border-color: var(--accent); background: rgba(255, 251, 240, 0.95); }
+.overlay:hover { background: rgba(255, 253, 250, 0.95); border-color: var(--accent); }
+.overlay.selected { border-style: solid; border-color: var(--accent); background: rgba(255, 253, 250, 0.97); }
 .ov-text {
   flex: 1;
   padding: 1px 3px;
@@ -876,7 +759,7 @@ button {
 .overlay:hover .ov-delete,
 .overlay.selected .ov-delete { display: flex; }
 .ov-drag { left: -9px; top: -9px; background: var(--ink); cursor: move; }
-.ov-delete { right: -9px; top: -9px; background: var(--accent-deep); cursor: pointer; }
+.ov-delete { right: -9px; top: -9px; background: var(--accent); cursor: pointer; }
 .ov-resize {
   position: absolute;
   right: -8px; bottom: -8px;
@@ -899,15 +782,13 @@ button {
 .saving-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(245,241,232,0.7);
+  background: rgba(247,244,238,0.8);
   display: none;
   align-items: center;
   justify-content: center;
   z-index: 200;
-  font-family: var(--mono);
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-family: var(--sans);
+  font-size: 14px;
 }
 .saving-overlay.active { display: flex; }
 
@@ -961,10 +842,8 @@ button {
   padding: 14px 24px 18px;
 }
 .fill-progress-label {
-  font-family: var(--mono);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  font-family: var(--sans);
+  font-size: 13px;
   margin-bottom: 8px;
   display: flex;
   justify-content: space-between;
@@ -1063,13 +942,11 @@ button {
   bottom: 24px; left: 50%;
   transform: translateX(-50%) translateY(160%);
   background: var(--ink);
-  color: var(--paper);
-  padding: 12px 20px;
-  border-radius: 2px;
-  font-family: var(--mono);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: 6px;
+  font-family: var(--sans);
+  font-size: 13px;
   z-index: 100;
   transition: transform 0.3s ease;
   box-shadow: var(--shadow-deep);
@@ -1084,33 +961,35 @@ button {
 .toast-dismiss { opacity: 0.7; font-size: 16px; line-height: 1; }
 .error-banner {
   display: none;
-  background: #fff0ed;
-  border: 1.5px solid var(--accent-deep);
-  border-radius: 4px;
-  padding: 16px 20px;
+  background: var(--accent-tint);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 14px 18px;
   margin-bottom: 24px;
-  font-family: var(--mono);
-  font-size: 12px;
+  font-family: var(--sans);
+  font-size: 14px;
   color: var(--accent-deep);
-  letter-spacing: 0.04em;
 }
 .error-banner.visible { display: block; }
-.error-banner strong { display: block; margin-bottom: 4px; font-size: 13px; }
+.error-banner strong { display: block; margin-bottom: 4px; font-size: 14px; }
 
 @media (max-width: 760px) {
   main { padding: 24px 16px 64px; }
-  .split { grid-template-columns: 1fr; }
-  .compare { grid-template-columns: 1fr; }
-  .steps { grid-template-columns: 1fr; gap: 16px; }
-  .info-pane { position: static; }
   header.masthead { margin-bottom: 24px; }
+  /* The address is the widest thing in the strip; let it shrink and ellipsis
+     instead of running off the right edge. */
+  .acct.acct-right { min-width: 0; }
+  .acct .acct-email {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   /* Toolbar: let everything wrap and stretch the primary actions full-width. */
   .editor-toolbar { gap: 8px; padding: 12px; top: 0; }
   .editor-toolbar button { padding: 12px 14px; }
   .fmt-group { padding: 0 6px; }
-  #add-box-btn, #snip-btn { flex: 1 1 auto; }
-  .editor-toolbar #download-btn { flex: 1 1 100%; min-width: 0 !important; order: 99; }
-  .editor-toolbar .spacer { display: none; }
+  #add-box-btn, #snip-btn, #draw-btn { flex: 1 1 auto; }
   .fmt-cards .fmt-card { width: 100%; }
 }
 
@@ -1131,23 +1010,41 @@ button {
 </style>
 </head>
 <body>
+
 <main>
   <header class="masthead">
     <div class="top-rule">
       <span class="acct acct-left">
         {% if is_pro %}
           <span class="tier-badge pro">Pro</span>
-          <a class="hw-link" href="{{ url_for('handwriting_page') }}">✍️ Your handwriting</a>
         {% else %}
           <span class="tier-badge">Free</span>
-          <span class="acct-meter" id="uploads-left-chip">{{ uploads_left }}/{{ free_daily_uploads }} uploads left today</span>
-          <a class="upgrade" href="{{ url_for('pricing') }}">✦ Upgrade to Pro</a>
+          <span class="acct-meter" id="credits-left-chip">{{ '%g'|format(credits_left) }}/{{ free_daily_credits }} credits left today</span>
+          <a class="upgrade" href="{{ url_for('pricing') }}">Upgrade to Pro</a>
         {% endif %}
       </span>
       <span class="acct acct-right">
         {% if is_admin %}<a href="{{ url_for('admin') }}">Admin</a>{% endif %}
         {% if acct_email %}<span class="acct-email">{{ acct_email }}</span>{% endif %}
-        <a href="{{ url_for('logout') }}">Log out</a>
+        <div class="settings-menu">
+          <button type="button" class="settings-btn" id="settings-btn" aria-haspopup="true" aria-expanded="false" aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+          <div class="settings-dropdown" id="settings-dropdown">
+            {% if is_pro %}
+            <a href="{{ url_for('handwriting_page') }}">Your handwriting</a>
+            {% if cancel_at_period_end %}
+            <span class="settings-note">Pro cancels at renewal</span>
+            {% else %}
+            <button type="button" class="settings-item danger" id="cancel-sub-btn">Cancel subscription</button>
+            {% endif %}
+            {% endif %}
+            <a href="{{ url_for('logout') }}">Log out</a>
+          </div>
+        </div>
       </span>
     </div>
     <h1 class="brand">Paper<em>fill</em></h1>
@@ -1169,22 +1066,21 @@ button {
     <div class="upgrade-card" id="upgrade-card">
       <div class="upgrade-copy">
         <div class="upgrade-head">
-          <span class="tier-badge">Free</span>
-          <span class="upgrade-meter" id="uploads-left-text">{{ uploads_left }} of {{ free_daily_uploads }} uploads left today</span>
+          <span class="upgrade-meter" id="credits-left-text">{{ '%g'|format(credits_left) }} of {{ free_daily_credits }} credits left today</span>
         </div>
         <ul class="upgrade-benefits">
           {% for b in pro_benefits %}
-          <li><b>{{ b.title }}</b> — {{ b.detail }}</li>
+          <li><b>{{ b.title }}:</b> {{ b.detail }}</li>
           {% endfor %}
         </ul>
       </div>
-      <a class="upgrade-btn" href="{{ url_for('pricing') }}">✦ Upgrade to Pro · {{ pro_price }}</a>
+      <a class="upgrade-btn" href="{{ url_for('pricing') }}">Upgrade to Pro, {{ pro_price }}</a>
     </div>
     {% endif %}
 
     <div class="instructions-box">
       <div class="fmt-block" id="detector-block">
-        <span class="fmt-formats-label"><b>Detection Method</b></span>
+        <span class="fmt-formats-label"><b>Detection method</b></span>
         <div class="fmt-cards" id="detector-cards">
           <label class="fmt-card selected">
             <input type="radio" name="detector" value="deterministic" checked>
@@ -1200,7 +1096,7 @@ button {
       </div>
 
       <div class="fmt-block" id="fmt-block">
-        <span class="fmt-formats-label"><b>Answer format </b><span class="hw-hint">- tell us what type of blanks to fill in</span></span>
+        <span class="fmt-formats-label"><b>Answer format</b> <span class="hw-hint">what kind of blanks should we fill in?</span></span>
         <div class="fmt-cards" id="fmt-cards">
           <label class="fmt-card selected">
             <input type="checkbox" value="inline_blanks" checked>
@@ -1231,7 +1127,7 @@ button {
       </div>
 
       <label class="fmt-formats-label">
-        <b>Instructions </b><span><i>— optional</i></span>
+        <b>Instructions</b> <span>(optional)</span>
       </label>
       <textarea id="instructions" placeholder="Give any additional instructions on how to fill the PDF. Ex: 'Use bullet points.'"></textarea>
 
@@ -1250,14 +1146,13 @@ button {
     </div>
 
     <label class="drop" id="drop">
-      <div class="drop-icon">↓</div>
       <h2 id="drop-title">Drop a PDF here</h2>
-      <p id="drop-sub">or click to browse · max 10 MB</p>
+      <p id="drop-sub">or click to browse. Max 10 MB.</p>
       <input type="file" id="file-input" accept="application/pdf">
     </label>
 
     <div class="fill-row" id="fill-row" style="display:none; text-align:center; margin-top:16px;">
-      <button class="btn-primary" id="fill-btn" style="min-width:220px">Fill worksheet →</button>
+      <button class="btn-primary" id="fill-btn" style="min-width:220px">Fill worksheet</button>
     </div>
   </section>
 
@@ -1266,21 +1161,13 @@ button {
   <section class="stage" id="stage-result">
     <div class="editor-toolbar">
       <div class="fmt-group">
-        <span class="fmt-label">Document font</span>
-        <select id="doc-font" title="Font for the entire document">
-          <option value="sans">IBM Plex Sans</option>
-          <option value="serif">Georgia</option>
-          <option value="mono">Courier</option>
-        </select>
-      </div>
-      <div class="fmt-group">
         <span class="fmt-label">Font</span>
-        <select id="fmt-font" disabled>
+        <select id="fmt-font" title="Font — applies to the selected box, or the whole document if none is selected">
           <option value="sans">IBM Plex Sans</option>
           <option value="serif">Georgia</option>
           <option value="mono">Courier</option>
         </select>
-        <select id="fmt-size" disabled>
+        <select id="fmt-size" title="Size — applies to the selected box, or the whole document if none is selected">
           <option>8</option><option>9</option><option>10</option>
           <option>11</option><option>12</option><option>14</option>
           <option>16</option><option>18</option><option>20</option>
@@ -1292,23 +1179,45 @@ button {
         <button class="fmt-btn i" id="fmt-italic" disabled title="Italic (⌘I)">I</button>
         <button class="fmt-btn u" id="fmt-underline" disabled title="Underline (⌘U)">U</button>
       </div>
+      <div class="fmt-group draw-group">
+        <button class="btn-ghost" id="draw-btn" type="button" title="Draw freehand on the page">✎ Draw</button>
+        <div class="draw-picker-wrap">
+          <button class="draw-picker-btn" id="draw-picker-btn" type="button"
+                  title="Pen color &amp; thickness" aria-haspopup="true" aria-expanded="false">
+            <span class="draw-picker-dot" id="draw-picker-dot" style="background:#1a1a1a"></span>
+            <span class="draw-picker-caret">▾</span>
+          </button>
+          <div class="draw-dropdown" id="draw-dropdown" hidden>
+            <div class="draw-dropdown-row" id="draw-colors">
+              <button type="button" class="draw-swatch active" data-color="#1a1a1a" style="background:#1a1a1a" title="Black"></button>
+              <button type="button" class="draw-swatch" data-color="#d3232f" style="background:#d3232f" title="Red"></button>
+              <button type="button" class="draw-swatch" data-color="#1a56db" style="background:#1a56db" title="Blue"></button>
+              <button type="button" class="draw-swatch" data-color="#1a7f37" style="background:#1a7f37" title="Green"></button>
+            </div>
+            <div class="draw-dropdown-row" id="draw-widths">
+              <button type="button" class="draw-width-opt" data-width="1">Thin</button>
+              <button type="button" class="draw-width-opt active" data-width="2.5">Medium</button>
+              <button type="button" class="draw-width-opt" data-width="5">Thick</button>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="fmt-group hw-group">
         {% if not is_pro %}
-          <a class="hw-cta locked" href="{{ url_for('pricing') }}" title="Fill in your own handwriting — a Pro feature">✎ Handwriting · Pro</a>
+          <a class="hw-cta locked" href="{{ url_for('pricing') }}" title="Fill in your own handwriting, a Pro feature">Handwriting (Pro)</a>
         {% elif has_font %}
-          <button class="hw-cta" id="hw-toggle" type="button" aria-pressed="false" title="Fill the worksheet in your own handwriting">✎ My handwriting</button>
+          <button class="hw-cta" id="hw-toggle" type="button" aria-pressed="false" title="Fill the worksheet in your own handwriting">My handwriting</button>
           <a class="hw-redo" href="{{ url_for('handwriting_page') }}" title="Adjust or rebuild your handwriting">adjust</a>
         {% else %}
-          <a class="hw-cta" href="{{ url_for('handwriting_page') }}" title="Turn your real handwriting into a font">✎ Set up your handwriting</a>
+          <a class="hw-cta" href="{{ url_for('handwriting_page') }}" title="Turn your real handwriting into a font">Set up your handwriting</a>
         {% endif %}
       </div>
       <button class="btn-ghost" id="add-box-btn">+ Add box</button>
-      <button class="btn-ghost" id="snip-btn" title="Snip a question the AI missed and let it answer">✦ Ask AI for a question</button>
-      <div class="spacer"></div>
-      <button class="btn-primary" id="download-btn" style="min-width:180px">↓ Download PDF</button>
+      <button class="btn-ghost" id="snip-btn" title="Snip a question the AI missed and let it answer">Ask AI a question</button>
+      <button class="btn-primary" id="download-btn">Download PDF</button>
       <div class="btn-pair">
         <button class="btn-ghost report-btn" id="report-btn" type="button"
-                title="Something wrong with this fill? Tell us and we'll fix it">⚑ Report a problem</button>
+                title="Something wrong with this fill? Tell us and we'll fix it">Report a problem</button>
         <button class="btn-ghost" id="restart-btn">Start over</button>
       </div>
       {% if donate_url %}<a class="btn-ghost donate-btn" href="{{ donate_url }}" target="_blank" rel="noopener">♥ Donate</a>{% endif %}
@@ -1329,7 +1238,6 @@ button {
       <textarea id="report-text" rows="4" maxlength="2000"
         placeholder="e.g. Question 4's answer landed in the wrong box, or the dates came out in the wrong format…"></textarea>
       <div class="report-attach">
-        <span aria-hidden="true">📎</span>
         <span><strong>Your uploaded PDF is attached to this report</strong> so we can
         reproduce the problem. It's only visible to the PaperFill admin. Don't send
         a report if the document is confidential.</span>
@@ -1340,8 +1248,8 @@ button {
       </div>
     </div>
     <div class="report-done">
-      <h3>Report sent ✓</h3>
-      <p>Thanks — we've got your PDF and your notes. This is how PaperFill gets better.</p>
+      <h3>Report sent</h3>
+      <p>Thanks. We've got your PDF and your notes, and this is how PaperFill gets better.</p>
       <div class="report-actions" style="justify-content:center;">
         <button class="btn-ghost" id="report-close" type="button">Close</button>
       </div>
@@ -1362,20 +1270,17 @@ button {
     <div class="fill-progress-track">
       <div class="fill-progress-fill" id="fill-progress-fill"></div>
     </div>
-    <div class="fill-autoskip-note">✨ We'll automatically skip the ad the moment your worksheet is ready!</div>
+    <div class="fill-autoskip-note">We'll skip the ad the moment your worksheet is ready.</div>
   </div>
 </div>
 
 <!-- Floating bar shown whenever a box is selected: AI rewrites the box's text. -->
 <div class="refine-bar" id="refine-bar">
   <div class="refine-main">
-    <button type="button" id="refine-shorten" title="AI: make this shorter">
-      <span class="ico">↧</span> Shorten</button>
-    <button type="button" id="refine-lengthen" title="AI: make this longer">
-      <span class="ico">↥</span> Lengthen</button>
+    <button type="button" id="refine-shorten" title="AI: make this shorter">Shorten</button>
+    <button type="button" id="refine-lengthen" title="AI: make this longer">Lengthen</button>
     <span class="refine-sep"></span>
-    <button type="button" id="refine-else-toggle" title="Tell the AI how to change it">
-      <span class="ico">✎</span> Else</button>
+    <button type="button" id="refine-else-toggle" title="Tell the AI how to change it">Something else</button>
   </div>
   <div class="refine-else">
     <button type="button" id="refine-else-back" title="Back">←</button>
@@ -1423,19 +1328,66 @@ function clearError() {
   $("error-banner").classList.remove("visible");
   $("error-detail").textContent = "";
 }
+
+// ---- Settings dropdown (log out / handwriting / cancel Pro) ----
+(function initSettingsMenu() {
+  const btn = $("settings-btn");
+  const menu = $("settings-dropdown");
+  if (!btn || !menu) return;
+
+  function closeMenu() {
+    menu.classList.remove("open");
+    btn.setAttribute("aria-expanded", "false");
+  }
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = menu.classList.toggle("open");
+    btn.setAttribute("aria-expanded", String(open));
+  });
+  document.addEventListener("click", (e) => {
+    if (!menu.contains(e.target) && e.target !== btn) closeMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenu();
+  });
+
+  const cancelBtn = $("cancel-sub-btn");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", async () => {
+      closeMenu();
+      if (!confirm("Cancel your Pro subscription? You'll keep Pro until your " +
+                    "current billing period ends, then drop to Free.")) return;
+      cancelBtn.disabled = true;
+      try {
+        const r = await fetch("/billing/cancel", { method: "POST" });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || "Couldn't cancel your subscription.");
+        toast(data.message || "Your subscription won't renew.");
+        cancelBtn.outerHTML = '<span class="settings-note">Pro cancels at renewal</span>';
+      } catch (err) {
+        toast(err.message, true);
+        cancelBtn.disabled = false;
+      }
+    });
+  }
+})();
 function setStatus(msg) { const el = $("status-line"); if (el) el.textContent = msg; }
 
-// ---- Free-tier upload meter -------------------------------------------
-// The count is server-truth: rendered on load, then refreshed from whatever
-// /api/upload reports. Pro users have no card and no chip, so every lookup
-// here no-ops. This is display only — the limit itself is enforced server-side.
-const FREE_DAILY_UPLOADS = {{ free_daily_uploads }};
-function setUploadsLeft(n) {
+// ---- Free-tier credit meter --------------------------------------------
+// The balance is server-truth: rendered on load, then refreshed from
+// whatever /api/upload and /api/fill report (fill is where most of a job's
+// tokens actually get spent). Pro users have no card and no chip, so every
+// lookup here no-ops. This is display only — the limit itself is enforced
+// server-side.
+const FREE_DAILY_CREDITS = {{ free_daily_credits }};
+function fmtCredits(n) { return Math.round(n * 10) / 10; }
+function setCreditsLeft(n) {
   if (n == null) return;             // Pro: unmetered
-  const text = $("uploads-left-text"), chip = $("uploads-left-chip"),
+  const text = $("credits-left-text"), chip = $("credits-left-chip"),
         card = $("upgrade-card");
-  if (text) text.textContent = n + " of " + FREE_DAILY_UPLOADS + " uploads left today";
-  if (chip) chip.textContent = n + "/" + FREE_DAILY_UPLOADS + " uploads left today";
+  const shown = fmtCredits(n);
+  if (text) text.textContent = shown + " of " + FREE_DAILY_CREDITS + " credits left today";
+  if (chip) chip.textContent = shown + "/" + FREE_DAILY_CREDITS + " credits left today";
   if (card) card.classList.toggle("spent", n <= 0);
 }
 
@@ -1822,13 +1774,13 @@ async function handleUpload(file) {
       ]);
       const data = await r.json();
       if (!r.ok) {
-        // A 402 means the free daily quota is spent. Carry the flag on the
-        // error so the catch below can update the meter, not just the banner.
+        // A 402 means the free daily credit budget is spent. Carry the flag on
+        // the error so the catch below can update the meter, not just the banner.
         const e = new Error(data.error || "Upload failed");
-        e.uploadsLeft = data.uploads_left;
+        e.creditsLeft = data.credits_left;
         throw e;
       }
-      setUploadsLeft(data.uploads_left);
+      setCreditsLeft(data.credits_left);
       currentJob = data;
       setStatus("Filling with AI… (this can take up to 60 s)");
       const r2 = await fetch("/api/fill", {
@@ -1847,6 +1799,9 @@ async function handleUpload(file) {
         throw new Error("Server timed out or returned an unreadable response. Try again.");
       }
       if (!r2.ok) throw new Error(fillData.error || "Fill failed");
+      // The fill is where most of a job's tokens actually get spent, so this
+      // is the meter's most accurate update.
+      setCreditsLeft(fillData.credits_left);
       return fillData;
     })();
     // Show the overlay now (synchronously), gated on the whole pipeline.
@@ -1859,7 +1814,7 @@ async function handleUpload(file) {
     history.replaceState(null, "", "?job=" + encodeURIComponent(currentJob.job_id));
     setStatus("Ready to edit");
   } catch (err) {
-    if (err.uploadsLeft != null) setUploadsLeft(err.uploadsLeft);
+    if (err.creditsLeft != null) setCreditsLeft(err.creditsLeft);
     showError(err.message);
     setStatus("Ready");
   } finally {
@@ -1878,6 +1833,9 @@ let pageSizes = [];          // [{width, height}] in PDF points
 let pageScales = [];         // px-per-point for each page (after image load)
 let addMode = false;
 let snipMode = false;        // drag a box → AI answers the snipped question
+let inkMode = false;         // freehand pen; stays on across strokes until toggled off
+let drawColor = "#1a1a1a";
+let drawWidth = 2.5;
 let dirty = false;
 let nextOvId = 0;
 let activeOverlayId = null;  // currently focused overlay (drives the format toolbar)
@@ -1897,9 +1855,7 @@ function renderResult(data) {
   resetReport();
   exitDrawModes();
   hideRefineBar();
-  // Reflect the document's current font (all overlays share one unless individually overridden).
-  const ovFonts = new Set(overlays.map(o => o.font));
-  $("doc-font").value = ovFonts.size === 1 ? [...ovFonts][0] : "sans";
+  setActiveOverlay(null);  // also reflects the doc-wide font/size into the toolbar
 
   const root = $("editor-pages");
   root.innerHTML = "";
@@ -1951,6 +1907,7 @@ function positionOverlaysOnPage(pageIdx) {
 
 function createOverlayEl(ov, scale) {
   if (ov.kind === "circle") return createCircleOverlayEl(ov, scale);
+  if (ov.kind === "ink") return createInkOverlayEl(ov, scale);
   const el = document.createElement("div");
   el.className = "overlay";
   el.dataset.id = ov.id;
@@ -2054,6 +2011,103 @@ function createCircleOverlayEl(ov, scale) {
   return el;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function inkBBox(points) {
+  const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+// Reposition an ink overlay's wrapper box and redraw its polyline at the
+// current scale. Shared by initial placement, window resize, and dragging.
+function positionInkEl(el, ov, scale) {
+  const pad = 6;
+  const [bx0, by0, bx1, by1] = inkBBox(ov.points);
+  const x0 = bx0 - pad, y0 = by0 - pad, x1 = bx1 + pad, y1 = by1 + pad;
+  el.style.left = (x0 * scale) + "px";
+  el.style.top = (y0 * scale) + "px";
+  el.style.width = Math.max(4, (x1 - x0) * scale) + "px";
+  el.style.height = Math.max(4, (y1 - y0) * scale) + "px";
+  const poly = el.querySelector("polyline");
+  poly.setAttribute("points", ov.points.map(([x, y]) => `${(x - x0) * scale},${(y - y0) * scale}`).join(" "));
+  poly.setAttribute("stroke", ov.color || "#1a1a1a");
+  poly.setAttribute("stroke-width", Math.max(1, ov.width * scale));
+}
+
+// A freehand pen stroke. Not editable text — draggable (the whole stroke
+// translates together) and deletable like other overlays, drawn as an SVG
+// polyline scaled to the page's current zoom.
+function createInkOverlayEl(ov, scale) {
+  const el = document.createElement("div");
+  el.className = "overlay ov-ink";
+  el.dataset.id = ov.id;
+  el.style.border = "none";
+  el.style.background = "transparent";
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
+  svg.style.position = "absolute";
+  svg.style.inset = "0";
+  svg.style.overflow = "visible";
+  svg.style.pointerEvents = "none";
+  const poly = document.createElementNS(SVG_NS, "polyline");
+  poly.setAttribute("fill", "none");
+  poly.setAttribute("stroke-linecap", "round");
+  poly.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(poly);
+  el.appendChild(svg);
+  positionInkEl(el, ov, scale);
+
+  const drag = document.createElement("div");
+  drag.className = "ov-drag";
+  drag.textContent = "⤧";
+  drag.title = "Drag to move";
+  attachInkDragMove(drag, el, ov);
+
+  const del = document.createElement("div");
+  del.className = "ov-delete";
+  del.textContent = "×";
+  del.title = "Delete";
+  del.addEventListener("pointerdown", e => e.stopPropagation());
+  del.addEventListener("click", e => {
+    e.stopPropagation();
+    overlays = overlays.filter(o => o.id !== ov.id);
+    el.remove();
+    dirty = true;
+  });
+
+  el.appendChild(drag);
+  el.appendChild(del);
+  return el;
+}
+
+function attachInkDragMove(handle, overlayEl, ov) {
+  handle.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    handle.setPointerCapture?.(e.pointerId);
+    const scale = pageScales[ov.page] || 1;
+    const startX = e.clientX, startY = e.clientY;
+    const origPoints = ov.points.map(p => [...p]);
+    function onMove(ev) {
+      const dx = (ev.clientX - startX) / scale;
+      const dy = (ev.clientY - startY) / scale;
+      ov.points = origPoints.map(([x, y]) => [x + dx, y + dy]);
+      positionInkEl(overlayEl, ov, scale);
+    }
+    function onUp() {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      dirty = true;
+    }
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  });
+}
+
 function applyOverlayTextStyle(txt, ov, scale) {
   txt.style.fontFamily = {
     serif: '"Georgia","Times New Roman",serif',
@@ -2135,9 +2189,57 @@ function attachDragMove(handle, overlayEl, ov) {
   });
 }
 
+// Freehand pen stroke: draws a live SVG polyline in screen space while the
+// pointer is down, then converts to page points and appends an ink overlay.
+// Unlike add/snip this does not exit draw mode on pointerup — a pen tool
+// stays live across multiple strokes until the user toggles it off.
+function startFreehandStroke(wrap, pageIdx, scale, wrapRect, sx, sy, pointerId) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.style.position = "absolute";
+  svg.style.inset = "0";
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+  svg.style.overflow = "visible";
+  svg.style.pointerEvents = "none";
+  const poly = document.createElementNS(SVG_NS, "polyline");
+  poly.setAttribute("fill", "none");
+  poly.setAttribute("stroke", drawColor);
+  poly.setAttribute("stroke-width", Math.max(1, drawWidth * scale));
+  poly.setAttribute("stroke-linecap", "round");
+  poly.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(poly);
+  wrap.appendChild(svg);
+
+  const screenPts = [[sx, sy]];
+  poly.setAttribute("points", `${sx},${sy}`);
+
+  function onMove(ev) {
+    const cx = ev.clientX - wrapRect.left;
+    const cy = ev.clientY - wrapRect.top;
+    const last = screenPts[screenPts.length - 1];
+    if (Math.hypot(cx - last[0], cy - last[1]) < 1.5) return;  // thin out near-duplicate samples
+    screenPts.push([cx, cy]);
+    poly.setAttribute("points", screenPts.map(p => p.join(",")).join(" "));
+  }
+  function onUp() {
+    wrap.removeEventListener("pointermove", onMove);
+    wrap.removeEventListener("pointerup", onUp);
+    wrap.removeEventListener("pointercancel", onUp);
+    svg.remove();
+    if (screenPts.length < 2) return;  // a tap with no drag: nothing to keep
+    const points = screenPts.map(([x, y]) => [x / scale, y / scale]);
+    overlays.push({ id: newOvId(), page: pageIdx, kind: "ink", points, color: drawColor, width: drawWidth });
+    positionOverlaysOnPage(pageIdx);
+    dirty = true;
+  }
+  wrap.addEventListener("pointermove", onMove);
+  wrap.addEventListener("pointerup", onUp);
+  wrap.addEventListener("pointercancel", onUp);
+}
+
 function attachPageDrawHandlers(wrap, pageIdx) {
   wrap.addEventListener("pointerdown", e => {
-    if (!addMode && !snipMode) return;
+    if (!addMode && !snipMode && !inkMode) return;
     if (e.target.closest(".overlay")) return;
     e.preventDefault();
     wrap.setPointerCapture?.(e.pointerId);
@@ -2145,6 +2247,12 @@ function attachPageDrawHandlers(wrap, pageIdx) {
     const wrapRect = wrap.getBoundingClientRect();
     const sx = e.clientX - wrapRect.left;
     const sy = e.clientY - wrapRect.top;
+
+    if (inkMode) {
+      startFreehandStroke(wrap, pageIdx, scale, wrapRect, sx, sy, e.pointerId);
+      return;
+    }
+
     const rect = document.createElement("div");
     rect.className = "draw-rect";
     rect.style.left = sx + "px";
@@ -2197,7 +2305,7 @@ function attachPageDrawHandlers(wrap, pageIdx) {
 // editing. Used by both the manual "+ Add box" and the AI snip flow.
 function addOverlayAt(pageIdx, bbox, text, { focus = false } = {}) {
   const ov = { ...ovDefaults(), id: newOvId(), page: pageIdx, bbox, text: text || "" };
-  ov.font = $("doc-font").value || ov.font;   // adopt the document font
+  ov.font = docFont || ov.font;   // adopt the document's font
   overlays.push(ov);
   positionOverlaysOnPage(pageIdx);
   dirty = true;
@@ -2212,26 +2320,69 @@ function addOverlayAt(pageIdx, bbox, text, { focus = false } = {}) {
   return ov;
 }
 
-// Turn off both draw modes and clear the crosshair cursor / button states.
+// Turn off every draw mode and clear the crosshair cursor / button states.
 function exitDrawModes() {
   addMode = false;
   snipMode = false;
+  inkMode = false;
   $("add-box-btn").classList.remove("active");
   $("snip-btn").classList.remove("active");
+  $("draw-btn").classList.remove("active");
   document.querySelectorAll(".editor-page").forEach(p => p.classList.remove("adding"));
 }
 
-function setDrawMode(mode) {  // mode: "add" | "snip" | null
+function setDrawMode(mode) {  // mode: "add" | "snip" | "draw" | null
   addMode = (mode === "add");
   snipMode = (mode === "snip");
+  inkMode = (mode === "draw");
   $("add-box-btn").classList.toggle("active", addMode);
   $("snip-btn").classList.toggle("active", snipMode);
-  const on = addMode || snipMode;
+  $("draw-btn").classList.toggle("active", inkMode);
+  const on = addMode || snipMode || inkMode;
   document.querySelectorAll(".editor-page").forEach(p => p.classList.toggle("adding", on));
 }
 
 $("add-box-btn").addEventListener("click", () => setDrawMode(addMode ? null : "add"));
 $("snip-btn").addEventListener("click", () => setDrawMode(snipMode ? null : "snip"));
+$("draw-btn").addEventListener("click", () => setDrawMode(inkMode ? null : "draw"));
+
+// Pen color/thickness dropdown: pick anytime, independent of whether Draw
+// mode is currently on. Closes on an outside click.
+const drawDropdown = $("draw-dropdown");
+const drawPickerBtn = $("draw-picker-btn");
+const drawPickerDot = $("draw-picker-dot");
+
+function closeDrawDropdown() {
+  drawDropdown.setAttribute("hidden", "");
+  drawPickerBtn.setAttribute("aria-expanded", "false");
+}
+drawPickerBtn.addEventListener("click", e => {
+  e.stopPropagation();
+  const opening = drawDropdown.hasAttribute("hidden");
+  if (opening) {
+    drawDropdown.removeAttribute("hidden");
+    drawPickerBtn.setAttribute("aria-expanded", "true");
+  } else {
+    closeDrawDropdown();
+  }
+});
+document.addEventListener("click", e => {
+  if (!drawDropdown.hasAttribute("hidden") && !e.target.closest(".draw-picker-wrap")) closeDrawDropdown();
+});
+
+document.querySelectorAll(".draw-swatch").forEach(btn => {
+  btn.addEventListener("click", () => {
+    drawColor = btn.dataset.color;
+    drawPickerDot.style.background = drawColor;
+    document.querySelectorAll(".draw-swatch").forEach(b => b.classList.toggle("active", b === btn));
+  });
+});
+document.querySelectorAll(".draw-width-opt").forEach(btn => {
+  btn.addEventListener("click", () => {
+    drawWidth = parseFloat(btn.dataset.width) || 2.5;
+    document.querySelectorAll(".draw-width-opt").forEach(b => b.classList.toggle("active", b === btn));
+  });
+});
 
 // Ask the AI to answer a snipped (hand-selected) question, then drop the
 // answer into a new editable box just below the selection.
@@ -2256,7 +2407,7 @@ async function handleSnip(pageIdx, snipBbox) {
     // the question; the user drags it onto the blank and edits if needed.
     const [bx0, , bx1, by1] = snipBbox;
     addOverlayAt(pageIdx, [bx0, by1 + 2, bx1, by1 + 20], answer, { focus: true });
-    toast("Answer added — drag it onto the blank and edit if needed");
+    toast("Answer added. Drag it onto the blank and edit if needed.");
   } catch (err) {
     toast(err.message, true);
   } finally {
@@ -2267,13 +2418,30 @@ async function handleSnip(pageIdx, snipBbox) {
 }
 
 // ---- Format toolbar ----
+// Font + size are a single context-aware control: with a box selected they
+// edit that box, otherwise they edit (and reflect) the whole document's
+// default. Bold/italic/underline stay per-box only — there's no meaningful
+// document-wide equivalent — so those three still disable with nothing selected.
+let docFont = "sans";
+let docSize = 11;
+
+function reflectDocFontUI() {
+  const textOverlays = overlays.filter(o => !o.kind);
+  const fonts = new Set(textOverlays.map(o => o.font).filter(Boolean));
+  docFont = fonts.size === 1 ? [...fonts][0] : docFont;
+  const sizes = new Set(textOverlays.map(o => Math.round(o.size || 11)).filter(Boolean));
+  docSize = sizes.size === 1 ? [...sizes][0] : docSize;
+  $("fmt-font").value = docFont;
+  $("fmt-size").value = String(docSize);
+}
+
 function setActiveOverlay(id) {
   activeOverlayId = id;
   const ov = id ? findOv(id) : null;
-  const ctrls = ["fmt-font","fmt-size","fmt-bold","fmt-italic","fmt-underline"];
-  ctrls.forEach(c => $(c).disabled = !ov);
+  ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).disabled = !ov);
   if (!ov) {
     ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).classList.remove("active"));
+    reflectDocFontUI();
     return;
   }
   $("fmt-font").value = ov.font;
@@ -2305,21 +2473,20 @@ function toggleFmt(key) {
   applyActiveFmt({ [key]: !ov[key] });
 }
 
-// Document-wide font: apply to every overlay at once, then re-render.
-function applyDocumentFont(font) {
-  overlays.forEach(o => { o.font = font; });
+// Document-wide font/size: apply to every text box at once (ink/circle
+// overlays don't have a font). Used when the pickers are touched with
+// nothing selected.
+function applyDocFontPatch(patch) {
+  if (patch.font) docFont = patch.font;
+  if (patch.size) docSize = patch.size;
+  overlays.filter(o => !o.kind).forEach(o => Object.assign(o, patch));
   document.querySelectorAll(".overlay").forEach(el => {
     const ov = findOv(el.dataset.id);
     const txt = el.querySelector(".ov-text");
     if (ov && txt) applyOverlayTextStyle(txt, ov, pageScales[ov.page] || 1);
   });
-  if (activeOverlayId) $("fmt-font").value = font;  // keep per-box selector in sync
   dirty = true;
 }
-$("doc-font").addEventListener("change", async e => {
-  applyDocumentFont(e.target.value);
-  await saveOverlays();
-});
 
 // ---- Handwriting toggle (Pro) ------------------------------------------
 // The toggle only exists for Pro users who've built a font (server-gated in
@@ -2359,7 +2526,7 @@ async function applyHwStyle(styleVal) {
       img.src = `/api/preview/${currentJob.job_id}/filled/${img.dataset.page}?t=${Date.now()}`;
     });
     setStatus("Ready to edit");
-    toast(hwOn ? "Filled in your handwriting ✍️" : "Switched back to typed text");
+    toast(hwOn ? "Filled in your handwriting" : "Switched back to typed text");
   } catch (ex) {
     setStatus("Ready to edit");
     toast(ex.message || "Could not apply handwriting", true);
@@ -2377,9 +2544,15 @@ if (hwToggle) {
   loadMyFont();
 }
 
-$("fmt-font").addEventListener("change", e => applyActiveFmt({ font: e.target.value }));
+$("fmt-font").addEventListener("change", async e => {
+  if (activeOverlayId) { applyActiveFmt({ font: e.target.value }); return; }
+  applyDocFontPatch({ font: e.target.value });
+  await saveOverlays();
+});
 $("fmt-size").addEventListener("change", async e => {
-  applyActiveFmt({ size: parseFloat(e.target.value) || 11 });
+  const size = parseFloat(e.target.value) || 11;
+  if (activeOverlayId) applyActiveFmt({ size });
+  else applyDocFontPatch({ size });
   // Persist + re-render so the change shows immediately — important for
   // handwriting, whose size only appears in the re-rendered preview image.
   await saveOverlays();
@@ -2422,7 +2595,7 @@ async function refineActiveBox(mode, instruction = "") {
   const ov = activeOverlayId ? findOv(activeOverlayId) : null;
   if (!ov) return;
   const text = (ov.text || "").trim();
-  if (!text) { toast("This box is empty — nothing to rewrite", true); return; }
+  if (!text) { toast("This box is empty, nothing to rewrite", true); return; }
   refineBar.classList.add("busy");
   setStatus("Asking AI…");
   try {
@@ -2445,7 +2618,7 @@ async function refineActiveBox(mode, instruction = "") {
     // Collapse the "Else" input but leave the bar open so edits can be chained.
     refineBar.classList.remove("else-open");
     $("refine-else-input").value = "";
-    toast("Box rewritten — Save to re-render the PDF");
+    toast("Box rewritten. Save to re-render the PDF.");
   } catch (err) {
     toast(err.message, true);
   } finally {
@@ -2518,7 +2691,7 @@ $("download-btn").addEventListener("click", async () => {
 function resetReport() {
   $("report-modal").classList.remove("sent");
   $("report-btn").classList.remove("filed");
-  $("report-btn").textContent = "⚑ Report a problem";
+  $("report-btn").textContent = "Report a problem";
   $("report-text").value = "";
   closeReport();
 }
@@ -2565,12 +2738,12 @@ $("report-send").addEventListener("click", async () => {
       $("report-modal").classList.add("sent");
       const rb = $("report-btn");
       rb.classList.add("filed");
-      rb.textContent = "✓ Problem reported";
+      rb.textContent = "Problem reported";
     } else {
-      toast("Couldn't send the report — try again.", true);
+      toast("Couldn't send the report, try again.", true);
     }
   } catch (_) {
-    toast("Couldn't send the report — try again.", true);
+    toast("Couldn't send the report, try again.", true);
   } finally {
     btn.disabled = false;
   }
@@ -2584,7 +2757,7 @@ $("restart-btn").addEventListener("click", () => {
   // Reset the staged-file UI back to its empty state.
   stagedFile = null;
   $("drop-title").textContent = "Drop a PDF here";
-  $("drop-sub").textContent = "or click to browse · max 10 MB";
+  $("drop-sub").textContent = "or click to browse. Max 10 MB.";
   $("fill-row").style.display = "none";
   history.replaceState(null, "", location.pathname);  // drop ?job= so a refresh starts clean
   showStage("upload");
