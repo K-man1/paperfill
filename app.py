@@ -459,6 +459,38 @@ def _require_login_for_api():
     return None
 
 
+# ww2explained.com is a second hostname pointed at this same backend (see
+# Caddyfile) that should only be usable by Pro accounts, while
+# paperfill.hackclub.app stays open to everyone. Only the pages needed to
+# sign in and buy Pro stay reachable without it; everything else redirects
+# to the pricing page (or, for /api/*, returns JSON so fetch() callers don't
+# choke on an HTML redirect).
+_WW2_HOSTS = frozenset({"ww2explained.com", "www.ww2explained.com"})
+_WW2_OPEN_PATHS = frozenset({
+    "/pricing", "/login", "/signup", "/logout",
+    "/auth/google", "/auth/google/callback", "/upgrade/success",
+    "/stripe/webhook",
+    "/2d7883f358a775fc1a8f.txt", "/0efb70ed5ecb5409945db6f7bb100589.html",
+})
+
+
+@app.before_request
+def _require_pro_for_ww2explained():
+    if request.host.split(":")[0].lower() not in _WW2_HOSTS:
+        return None
+    path = request.path
+    if (path in _WW2_OPEN_PATHS or path.startswith("/static/")
+            or path.startswith("/verify/")):
+        return None
+    if path.startswith("/api/"):
+        if not _is_pro():
+            return jsonify({"error": "Pro required on this domain"}), 402
+        return None
+    if not _is_pro():
+        return redirect(url_for("pricing"))
+    return None
+
+
 @app.before_request
 def _track_device():
     g.new_device_id = None
