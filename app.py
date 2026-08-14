@@ -689,6 +689,77 @@ def _snapshot_reported_pdf(job_id: str) -> bool:
         return False
 
 
+# UI labels for the answer-format ids the picker sends. Kept next to the report
+# code because that's the only place the raw ids are shown to a human.
+_FORMAT_LABELS = {
+    "inline_blanks": "Fill-in-the-blank",
+    "open_response": "Open response",
+    "bullet_answer": "Bullet list",
+    "table": "Table / chart",
+    "multiple_choice": "Multiple choice",
+}
+
+
+def report_settings_path(job_id: str) -> Path | None:
+    """Path to the settings sidecar written beside a reported PDF, or None."""
+    if not _JOB_ID_RE.match(job_id or ""):
+        return None
+    path = REPORTS / f"{job_id}.json"
+    return path if path.is_file() else None
+
+
+def _snapshot_report_settings(job_id: str, text: str) -> bool:
+    """Write the settings that produced a reported fill to reports/<id>.json.
+
+    A sidecar rather than a new DB column: it keeps the whole evidence bundle
+    (PDF + settings) together and needs no schema migration. Best-effort, same
+    as the PDF snapshot — a report is still worth keeping without it."""
+    if not _JOB_ID_RE.match(job_id or ""):
+        return False
+    job = load_job(job_id) or {}
+    meta = {
+        "job_id": job_id,
+        "reported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "report": text,
+        "original_name": job.get("original_name"),
+        # What the user picked in the UI.
+        "detector": job.get("detector"),
+        # None means the picker sent nothing, i.e. detect every format.
+        "formats": job.get("formats"),
+        # What the server actually did (vision fill can fall back to text).
+        "fill_path": job.get("fill_path"),
+        "vision_fill_enabled": VISION_FILL,
+        # Only when the job is still on disk: _style_label(None) is "Typed text",
+        # which would read as a recorded choice rather than "we don't know".
+        "style": _style_label(job.get("style_id")) if job else None,
+        "page_count": job.get("page_count"),
+    }
+    try:
+        (REPORTS / f"{job_id}.json").write_text(json.dumps(meta, indent=2))
+        return True
+    except OSError as e:
+        print(f"[report] settings snapshot failed for {job_id}: {e}")
+        return False
+
+
+def read_report_settings(job_id: str) -> dict | None:
+    """Load a report's settings sidecar, with format ids mapped to their UI
+    labels for display. None when there's no sidecar (every report filed
+    before this was added)."""
+    path = report_settings_path(job_id)
+    if path is None:
+        return None
+    try:
+        meta = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    formats = meta.get("formats")
+    meta["format_labels"] = (
+        [_FORMAT_LABELS.get(f, f) for f in formats]
+        if isinstance(formats, list) else None)
+    return meta
+
+
 def strip_bboxes_for_llm(structure: dict) -> dict:
     """
     Return a copy of the structure with bboxes and other rendering-only
@@ -1262,6 +1333,8 @@ def admin():
         # PDF snapshot are written together by /api/report.
         e["reported"] = bool((e.get("feedback") or "").strip())
         e["has_pdf"] = reported_pdf_path(e.get("job_id") or "") is not None
+        e["settings"] = (read_report_settings(e.get("job_id") or "")
+                         if e["reported"] else None)
     user_count = sum(1 for e in signin_log if e.get("result") == "user")
     admin_count = sum(1 for e in signin_log if e.get("result") == "admin")
     fail_count = sum(1 for e in signin_log if e.get("result") == "failed")
@@ -1324,14 +1397,15 @@ def admin_reports_zip():
     deflated — re-compressing costs CPU for ~no size win."""
     if session.get("role") != "admin":
         return redirect(url_for("login"))
-    paths = sorted(p for p in REPORTS.glob("*.pdf")
-                   if p.is_file() and _JOB_ID_RE.match(p.stem))
+    paths = sorted(p for p in REPORTS.iterdir()
+                   if p.is_file() and p.suffix in (".pdf", ".json")
+                   and _JOB_ID_RE.match(p.stem))
     if not paths:
         abort(404)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
         for p in paths:
-            zf.write(p, arcname=f"report-{p.stem}.pdf")
+            zf.write(p, arcname=f"report-{p.stem}{p.suffix}")
     buf.seek(0)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     return send_file(buf, mimetype="application/zip", as_attachment=True,
@@ -1693,6 +1767,13 @@ def upload():
         "page_sizes": page_sizes,
         "overlays": None,
         "filled_path": None,
+        # Kept so a problem report can say which settings actually produced the
+        # fill. Recorded server-side rather than sent by the client with the
+        # report: by then the user may have re-toggled the picker, and we want
+        # what ran, not what the page currently shows. `formats` of None is
+        # meaningful — it's the "detect all" case, not a missing value.
+        "detector": "multimodal" if use_multimodal else "deterministic",
+        "formats": formats,
     }
     save_job(job_id)
 
@@ -1785,6 +1866,7 @@ def fill():
                                           _is_pro(), _user_key())
         except Exception as e:
             print(f"[fill] vision fill failed ({e}); falling back to text-only")
+    used_vision = bool(answers)
     if not answers:
         try:
             answers = call_openai_to_fill(structure_for_llm, instructions,
@@ -1793,6 +1875,10 @@ def fill():
             return jsonify({"error": f"LLM call failed: {e}"}), 502
 
     overlays = build_overlays_from_structure(job["structure"], answers)
+    # Which of the two fill paths above actually produced these answers. The
+    # vision path can silently fall back to text-only, so the detector the user
+    # picked doesn't tell you this on its own.
+    job["fill_path"] = "vision" if used_vision else "text"
     job["answers"] = answers
     job["overlays"] = overlays
     # Keep the answer key / reference text around so a hand-snipped question
@@ -1837,6 +1923,7 @@ def submit_report():
     if not db.set_report(job_id, text):
         return jsonify({"error": "unknown job_id"}), 404
     _snapshot_reported_pdf(job_id)
+    _snapshot_report_settings(job_id, text)
     return jsonify({"ok": True})
 
 

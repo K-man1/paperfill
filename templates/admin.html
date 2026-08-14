@@ -775,7 +775,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       <span class="rating-red"><span class="face">⚑</span> {{ report_count }} reported</span>
       <span class="rating-none">{{ activity_total - report_count }} with no report</span>
       {% if pdf_count %}
-        <a class="pdf-link" href="{{ url_for('admin_reports_zip') }}">↓ Download all {{ pdf_count }} PDFs</a>
+        <a class="pdf-link" href="{{ url_for('admin_reports_zip') }}">↓ Download all ({{ pdf_count }} PDFs + settings)</a>
       {% else %}
         <span class="rating-none">No PDF snapshots on this server</span>
       {% endif %}
@@ -797,6 +797,30 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
               {% if entry.reported %}
                 <span class="rating rating-red"><span class="face">⚑</span> Reported</span>
                 <div style="margin-top:4px;color:var(--ink-soft);">{{ entry.feedback }}</div>
+                {% if entry.settings %}
+                  {% set st = entry.settings %}
+                  <div style="margin-top:5px;font-size:0.76rem;color:var(--ink-soft);">
+                    <b>Detector:</b>
+                    {% if st.detector == 'multimodal' %}AI Vision
+                    {% elif st.detector == 'deterministic' %}Standard
+                    {% else %}not recorded (job expired){% endif %}
+                    {% if st.fill_path %}
+                      · <b>Fill:</b> {{ 'vision' if st.fill_path == 'vision' else 'text-only' }}
+                    {% endif %}
+                    {% if st.style %} · <b>Style:</b> {{ st.style }}{% endif %}
+                    <br>
+                    <b>Formats:</b>
+                    {% if st.detector == 'multimodal' %}
+                      n/a (AI Vision finds the layout itself)
+                    {% elif st.format_labels %}
+                      {{ st.format_labels|join(', ') }}
+                    {% elif st.detector == 'deterministic' %}
+                      all
+                    {% else %}
+                      not recorded
+                    {% endif %}
+                  </div>
+                {% endif %}
               {% else %}
                 <span class="rating-none">No report</span>
               {% endif %}
