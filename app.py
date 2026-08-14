@@ -20,6 +20,7 @@ import re
 import secrets
 import shutil
 import time
+import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -1265,6 +1266,9 @@ def admin():
     admin_count = sum(1 for e in signin_log if e.get("result") == "admin")
     fail_count = sum(1 for e in signin_log if e.get("result") == "failed")
     report_count = sum(1 for e in activity_log if e["reported"])
+    # Snapshots live on this machine's disk while the rows come from the shared
+    # DB, so a reported row can legitimately have no PDF here.
+    pdf_count = sum(1 for e in activity_log if e["has_pdf"])
     return render_template(
         "admin.html",
         logs=signin_log,
@@ -1275,6 +1279,7 @@ def admin():
         activity=activity_log,
         activity_total=len(activity_log),
         report_count=report_count,
+        pdf_count=pdf_count,
         device_count=data["device_total"],
         s=s,
         days=days,
@@ -1308,6 +1313,29 @@ def admin_report_pdf(job_id: str):
     return send_file(path, mimetype="application/pdf",
                      as_attachment=True,
                      download_name=f"report-{job_id}.pdf")
+
+
+@app.get("/admin/reports.zip")
+def admin_reports_zip():
+    """Download every snapshotted report PDF in one archive. Admin only.
+
+    Built in memory: these are a handful of small PDFs, so a temp file buys
+    nothing. Stored uncompressed because PDF content streams are already
+    deflated — re-compressing costs CPU for ~no size win."""
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    paths = sorted(p for p in REPORTS.glob("*.pdf")
+                   if p.is_file() and _JOB_ID_RE.match(p.stem))
+    if not paths:
+        abort(404)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for p in paths:
+            zf.write(p, arcname=f"report-{p.stem}.pdf")
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name=f"paperfill-reports-{stamp}.zip")
 
 
 @app.post("/admin/user-password")

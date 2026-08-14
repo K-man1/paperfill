@@ -774,6 +774,11 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
     <div class="rating-summary">
       <span class="rating-red"><span class="face">⚑</span> {{ report_count }} reported</span>
       <span class="rating-none">{{ activity_total - report_count }} with no report</span>
+      {% if pdf_count %}
+        <a class="pdf-link" href="{{ url_for('admin_reports_zip') }}">↓ Download all {{ pdf_count }} PDFs</a>
+      {% else %}
+        <span class="rating-none">No PDF snapshots on this server</span>
+      {% endif %}
     </div>
     <div class="table-wrap" style="margin-bottom:30px;">
       {% if activity %}
