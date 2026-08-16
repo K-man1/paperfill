@@ -50,48 +50,19 @@ python -m pytest                # tests
 ## Layout
 
 ```
-src/paperfill/        all app code
-├── app.py            Flask entrypoint
-├── paths.py          REPO_ROOT anchor (see note below)
-├── ai/               preprocess, multimodal, vision, llm_client, render
-├── data/             db, usage, stats, costs
-├── utils/            json_utils, context_sources
-└── handwriting/      handwriting-font pipeline
-    └── data/         printable template + calibrated geometry
-templates/  static/   Flask convention, stay at the repo root
-tests/                pytest suite
-tools/                dev harnesses (ab_compare.py)
-deploy/               Caddyfile, Dockerfile, Procfile, gunicorn.conf.py, run.sh
-docs/                 ab-comparison/ — evidence for the accuracy claim
-assets/               images the app itself renders (page watermark)
-verification/         domain-ownership tokens (see note below)
+src/paperfill/        
+├── app.py            
+├── paths.py          
+├── ai/               
+├── data/             
+├── utils/            
+└── handwriting/
+    └── data/   
+templates/  static/
+tests/
+tools/
+deploy/         
+docs/
+assets/
+verification/
 ```
-
-Three things worth knowing before you move files around:
-
-**`src/paperfill/paths.py`.** Modules must not locate *runtime* files with
-`Path(__file__).parent` — under `src/paperfill/` that points into the package,
-not the repo root, so `uploads/`, `ai_rates.json` and friends would silently be
-read from or created in the wrong place with no import error to warn you.
-Anchor those off `REPO_ROOT` instead. Same reason `app.py` passes an explicit
-`template_folder`/`static_folder` to `Flask()`.
-
-The opposite rule applies to files that **ship with the code**, like
-`handwriting/data/template.pdf`: those are package data and *should* be found
-relative to `__file__`, because they move when the package moves. The split to
-watch is shipped-with-the-code vs created-at-runtime, not old-path vs new-path.
-`handwriting/font_store.py` is the one place both appear side by side.
-
-**`verification/`.** These are domain-ownership tokens whose filenames are
-fixed by the verifying service, so they must be served from the exact URLs
-`/2d7883f358a775fc1a8f.txt` and `/0efb70ed5ecb5409945db6f7bb100589.html`. The
-files are kept in `verification/` rather than the repo root, and `app.py` has
-two small routes that serve them at those paths.
-
-**`handwriting/fonts/` at the repo root** (gitignored, created on first use)
-holds fonts users built from their own handwriting. It deliberately stayed put
-when the code moved into `src/`, so existing fonts on a deployed server aren't
-orphaned.
-
-Nothing needs `pip install -e .` — `deploy/gunicorn.conf.py` puts `src/` on
-`sys.path` and `pyproject.toml` does the same for pytest.
