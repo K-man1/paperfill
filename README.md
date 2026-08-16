@@ -10,7 +10,7 @@ Claude: <img width="628" height="78" alt="Screenshot 2026-07-08 at 6 43 28 PM"
 
 I personally use it for my HW (dont tell me teachers 😭) and for quickly completing the low effort clearly-created-with-ChatGPT worksheets that my spanish teacher assigns.
 
-Use it here: [karman.hackclub.app](karman.hackclub.app)
+Use it here: [paperfill.hackclub.app](paperfill.hackclub.app)
 
 See the demo: [https://www.youtube.com/watch?v=bDNsQvA0_DU&feature=youtu.be](demo) plz dont judge the cough
 
