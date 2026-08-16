@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paperfill"
+version = "0.1.0"
+description = "AI worksheet filler — upload a PDF, get it filled in your handwriting."
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+# Test-only deps. Not in requirements.txt because the server doesn't need them:
+#   pip install -e ".[dev]"
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# src layout: the importable packages live under src/, so a stray `import
+# paperfill` can only ever resolve to the installed package, never to a
+# directory that happens to be next to the file you ran.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The handwriting template + calibrated geometry ship with the code and are
+# read relative to the package, so they must travel with it into a wheel.
+[tool.setuptools.package-data]
+"paperfill.handwriting" = ["data/*.pdf", "data/*.json"]
+
+[tool.pytest.ini_options]
+# Without this, pytest's rootdir-insertion puts tests/ on sys.path but not
+# src/, so `from paperfill... import` fails unless the package is installed.
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.ttLib import TTFont
 
-from handwriting import font_store, template as T
+from paperfill.handwriting import font_store, template as T
 
 _HAS_POTRACE = shutil.which("potrace") is not None
 
@@ -99,7 +99,7 @@ def test_geometry_loads_and_has_glyphs():
 
 @requires_build
 def test_build_emits_required_glyphs(filled, tmp_path):
-    from handwriting.font_build import build_font
+    from paperfill.handwriting.font_build import build_font
     f = TTFont(build_font(filled, str(tmp_path / "f.otf")))
     cmap = f.getBestCmap()
     for ch in T.glyphs():
@@ -111,7 +111,7 @@ def test_build_emits_required_glyphs(filled, tmp_path):
 
 @requires_build
 def test_glyph_bounds_sane(filled, tmp_path):
-    from handwriting.font_build import build_font
+    from paperfill.handwriting.font_build import build_font
     f = TTFont(build_font(filled, str(tmp_path / "f.otf")))
     cmap, gs = f.getBestCmap(), f.getGlyphSet()
 
@@ -134,7 +134,7 @@ def test_glyph_bounds_sane(filled, tmp_path):
 def test_build_survives_perspective(tmp_path):
     """Marker detection + homography recover the grid from warped 'photos'."""
     import cv2
-    from handwriting.font_build import build_font
+    from paperfill.handwriting.font_build import build_font
     paths = []
     for i, page in enumerate(_filled_pages(_system_font())):
         p = tmp_path / f"w{i}.png"
@@ -150,8 +150,8 @@ def test_build_survives_perspective(tmp_path):
 @requires_build
 def test_render_text_png(filled, tmp_path):
     import io
-    from handwriting.font_build import build_font
-    from handwriting.font_render import render_text_png
+    from paperfill.handwriting.font_build import build_font
+    from paperfill.handwriting.font_render import render_text_png
     otf = build_font(filled, str(tmp_path / "f.otf"))
     png = render_text_png("Hola energía.", otf)
     im = Image.open(io.BytesIO(png))
@@ -159,6 +159,43 @@ def test_render_text_png(filled, tmp_path):
     assert np.asarray(im)[..., 3].max() > 0          # has opaque ink
     assert render_text_png("", otf) == b""
     assert render_text_png("   ", otf) == b""
+
+
+def test_pen_calibrated_answer_is_stamped_not_typeset(tmp_path):
+    """A pen-thickness recalibration must not blow up mid-stamp.
+
+    render_overlays_pdf catches any stamping failure and quietly falls back to
+    typeset text, so a bug here doesn't raise — the whole worksheet just comes
+    out typed with no error anywhere. Assert on the rendered page instead: the
+    answer has to land as an image, and the text must NOT be in the page's text
+    layer (which is what the fallback would produce)."""
+    import io
+    import fitz
+    from paperfill.ai.render import render_overlays_pdf
+
+    src = tmp_path / "src.pdf"
+    doc = fitz.open()
+    doc.new_page(width=300, height=200)
+    doc.save(str(src))
+    doc.close()
+
+    # Stand-in for a handwriting render: dark ink on alpha, same as font_render.
+    ink = np.zeros((150, 400, 4), dtype=np.uint8)
+    ink[60:90, 20:380, 3] = 255
+    buf = io.BytesIO()
+    Image.fromarray(ink, "RGBA").save(buf, format="PNG")
+
+    overlays = [{"id": "ov0", "page": 0, "bbox": [20, 40, 280, 90],
+                 "text": "UNIQUEANSWER"}]
+    out = tmp_path / "out.pdf"
+    render_overlays_pdf(str(src), overlays, str(out),
+                        images={"ov0": buf.getvalue()}, pen_thickness_mm=0.4)
+
+    doc = fitz.open(str(out))
+    page = doc[0]
+    assert page.get_images(full=True), "answer was not stamped as an image"
+    assert "UNIQUEANSWER" not in page.get_text(), "fell back to typeset text"
+    doc.close()
 
 
 # ---- font_store -----------------------------------------------------------

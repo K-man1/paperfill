@@ -731,6 +731,21 @@ button {
 }
 .overlay:hover { background: rgba(255, 253, 250, 0.95); border-color: var(--accent); }
 .overlay.selected { border-style: solid; border-color: var(--accent); background: rgba(255, 253, 250, 0.97); }
+/* Handwriting on: the answers are baked into the page image underneath, so the
+   editable boxes must stop painting opaque paper + typed text over them —
+   otherwise the editor looks unchanged no matter how the render went. Keep the
+   dashed outline so slots are still findable, and bring the typed text back
+   only while a box is hovered or being edited, where reading it is the point.
+   Circle/ink overlays set their own background inline, so they're unaffected. */
+#editor-pages.hw-on .overlay:not(.ov-circle):not(.ov-ink) { background: transparent; }
+#editor-pages.hw-on .overlay:not(.ov-circle):not(.ov-ink) .ov-text {
+  color: transparent;
+  caret-color: var(--ink);
+}
+#editor-pages.hw-on .overlay:hover,
+#editor-pages.hw-on .overlay.selected { background: rgba(255, 253, 250, 0.97); }
+#editor-pages.hw-on .overlay:hover .ov-text,
+#editor-pages.hw-on .overlay.selected .ov-text { color: #000000; }
 .ov-text {
   flex: 1;
   padding: 1px 3px;
@@ -1852,6 +1867,7 @@ function renderResult(data) {
   pageSizes = data.page_sizes || [];
   pageScales = new Array(data.page_count).fill(1);
   dirty = false;
+  cancelPendingSave();   // a queued save from the previous job must not fire
   resetReport();
   exitDrawModes();
   hideRefineBar();
@@ -1919,7 +1935,7 @@ function createOverlayEl(ov, scale) {
   txt.spellcheck = false;
   txt.textContent = ov.text || "";
   applyOverlayTextStyle(txt, ov, scale);
-  txt.addEventListener("input", () => { ov.text = txt.innerText; dirty = true; });
+  txt.addEventListener("input", () => { ov.text = txt.innerText; markDirty(AUTOSAVE_TYPING_MS); });
   txt.addEventListener("focus", () => {
     el.classList.add("selected");
     setActiveOverlay(ov.id);
@@ -1955,7 +1971,7 @@ function createOverlayEl(ov, scale) {
     overlays = overlays.filter(o => o.id !== ov.id);
     el.remove();
     if (activeOverlayId === ov.id) { setActiveOverlay(null); hideRefineBar(); }
-    dirty = true;
+    markDirty();
   });
 
   const resize = document.createElement("div");
@@ -2003,7 +2019,7 @@ function createCircleOverlayEl(ov, scale) {
     e.stopPropagation();
     overlays = overlays.filter(o => o.id !== ov.id);
     el.remove();
-    dirty = true;
+    markDirty();
   });
 
   el.appendChild(drag);
@@ -2074,7 +2090,7 @@ function createInkOverlayEl(ov, scale) {
     e.stopPropagation();
     overlays = overlays.filter(o => o.id !== ov.id);
     el.remove();
-    dirty = true;
+    markDirty();
   });
 
   el.appendChild(drag);
@@ -2100,7 +2116,7 @@ function attachInkDragMove(handle, overlayEl, ov) {
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onUp);
-      dirty = true;
+      markDirty();
     }
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
@@ -2143,7 +2159,7 @@ function attachResize(handle, overlayEl, ov) {
       // On touch (no hover) keep the box selected so its handles stay reachable.
       if (ev.pointerType === "mouse") overlayEl.classList.remove("selected");
       else setActiveOverlay(ov.id);
-      dirty = true;
+      markDirty();
     }
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
@@ -2181,7 +2197,7 @@ function attachDragMove(handle, overlayEl, ov) {
       // On touch (no hover) keep the box selected so its handles stay reachable.
       if (ev.pointerType === "mouse") overlayEl.classList.remove("selected");
       else setActiveOverlay(ov.id);
-      dirty = true;
+      markDirty();
     }
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
@@ -2230,7 +2246,7 @@ function startFreehandStroke(wrap, pageIdx, scale, wrapRect, sx, sy, pointerId) 
     const points = screenPts.map(([x, y]) => [x / scale, y / scale]);
     overlays.push({ id: newOvId(), page: pageIdx, kind: "ink", points, color: drawColor, width: drawWidth });
     positionOverlaysOnPage(pageIdx);
-    dirty = true;
+    markDirty();
   }
   wrap.addEventListener("pointermove", onMove);
   wrap.addEventListener("pointerup", onUp);
@@ -2308,7 +2324,7 @@ function addOverlayAt(pageIdx, bbox, text, { focus = false } = {}) {
   ov.font = docFont || ov.font;   // adopt the document's font
   overlays.push(ov);
   positionOverlaysOnPage(pageIdx);
-  dirty = true;
+  markDirty();
   if (focus) {
     setTimeout(() => {
       const el = findOvEl(ov.id);
@@ -2463,7 +2479,7 @@ function applyActiveFmt(patch) {
     if (txt) applyOverlayTextStyle(txt, ov, scale);
   }
   setActiveOverlay(ov.id);
-  dirty = true;
+  markDirty();
 }
 
 function toggleFmt(key) {
@@ -2485,7 +2501,7 @@ function applyDocFontPatch(patch) {
     const txt = el.querySelector(".ov-text");
     if (ov && txt) applyOverlayTextStyle(txt, ov, pageScales[ov.page] || 1);
   });
-  dirty = true;
+  markDirty();
 }
 
 // ---- Handwriting toggle (Pro) ------------------------------------------
@@ -2519,9 +2535,7 @@ async function applyHwStyle(styleVal) {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || "Could not apply handwriting");
-    hwOn = !!styleVal;
-    hwToggle.classList.toggle("active", hwOn);
-    hwToggle.setAttribute("aria-pressed", hwOn ? "true" : "false");
+    reflectHwState(styleVal);
     document.querySelectorAll(".editor-page img").forEach(img => {
       img.src = `/api/preview/${currentJob.job_id}/filled/${img.dataset.page}?t=${Date.now()}`;
     });
@@ -2544,18 +2558,16 @@ if (hwToggle) {
   loadMyFont();
 }
 
-$("fmt-font").addEventListener("change", async e => {
-  if (activeOverlayId) { applyActiveFmt({ font: e.target.value }); return; }
-  applyDocFontPatch({ font: e.target.value });
-  await saveOverlays();
+// Both pickers mark the document dirty through applyActiveFmt /
+// applyDocFontPatch, so autosave re-renders them like any other edit.
+$("fmt-font").addEventListener("change", e => {
+  if (activeOverlayId) applyActiveFmt({ font: e.target.value });
+  else applyDocFontPatch({ font: e.target.value });
 });
-$("fmt-size").addEventListener("change", async e => {
+$("fmt-size").addEventListener("change", e => {
   const size = parseFloat(e.target.value) || 11;
   if (activeOverlayId) applyActiveFmt({ size });
   else applyDocFontPatch({ size });
-  // Persist + re-render so the change shows immediately — important for
-  // handwriting, whose size only appears in the re-rendered preview image.
-  await saveOverlays();
 });
 $("fmt-bold").addEventListener("click", () => toggleFmt("bold"));
 $("fmt-italic").addEventListener("click", () => toggleFmt("italic"));
@@ -2614,11 +2626,11 @@ async function refineActiveBox(mode, instruction = "") {
       const t = el.querySelector(".ov-text");
       if (t) { t.textContent = newText; t.focus(); }   // refocus → keep box selected
     }
-    dirty = true;
+    markDirty();
     // Collapse the "Else" input but leave the bar open so edits can be chained.
     refineBar.classList.remove("else-open");
     $("refine-else-input").value = "";
-    toast("Box rewritten. Save to re-render the PDF.");
+    toast("Box rewritten");
   } catch (err) {
     toast(err.message, true);
   } finally {
@@ -2648,9 +2660,70 @@ $("refine-else-input").addEventListener("keydown", e => {
   else if (e.key === "Escape") { refineBar.classList.remove("else-open"); }
 });
 
-async function saveOverlays() {
+// ---- Autosave ----------------------------------------------------------
+// There is no Save button: every edit persists and re-renders the PDF on its
+// own. /api/update re-renders the whole document, so saves are
+//   * debounced — a burst of keystrokes collapses into one save, and
+//   * serialized — only one request is ever in flight, because two overlapping
+//     re-renders can land out of order and leave a stale preview on screen.
+const AUTOSAVE_MS = 700;        // discrete edits: move, resize, delete, format
+const AUTOSAVE_TYPING_MS = 1200; // typing, where a longer pause means "done"
+
+let saveTimer = null;
+let saveInFlight = null;   // Promise of the running save, or null
+let savePending = false;   // an edit arrived mid-save; save again once it lands
+let editSeq = 0;           // bumped per edit, so a save only clears `dirty`
+                           // when nothing changed while it was in flight
+
+function markDirty(delay = AUTOSAVE_MS) {
+  dirty = true;
+  editSeq++;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(runAutosave, delay);
+}
+
+function cancelPendingSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  savePending = false;
+}
+
+async function runAutosave() {
+  if (!currentJob || !dirty) return;
+  if (saveInFlight) { savePending = true; return; }
+  saveInFlight = saveOverlays({ silent: true });
+  try {
+    await saveInFlight;
+  } finally {
+    saveInFlight = null;
+    if (savePending) { savePending = false; runAutosave(); }
+  }
+}
+
+// Persist right now instead of waiting out the debounce — used before actions
+// that consume the rendered PDF (download) or throw the job away (start over).
+async function flushSave() {
+  cancelPendingSave();
+  if (saveInFlight) await saveInFlight;
+  if (!dirty) return true;
+  return saveOverlays();
+}
+
+// Last resort: if the tab closes inside the debounce window, hand the edit off
+// to the browser to deliver. sendBeacon survives unload; fetch does not.
+window.addEventListener("beforeunload", () => {
+  if (!dirty || !currentJob || !navigator.sendBeacon) return;
+  const body = new Blob(
+    [JSON.stringify({ job_id: currentJob.job_id, overlays })],
+    { type: "application/json" },
+  );
+  navigator.sendBeacon("/api/update", body);
+});
+
+async function saveOverlays({ silent = false } = {}) {
   if (!currentJob) return false;
-  $("saving").classList.add("active");
+  const seq = editSeq;
+  if (!silent) $("saving").classList.add("active");
   setStatus("Saving…");
   try {
     const r = await fetch("/api/update", {
@@ -2665,25 +2738,25 @@ async function saveOverlays() {
       const i = img.dataset.page;
       img.src = `/api/preview/${currentJob.job_id}/filled/${i}?t=${Date.now()}`;
     });
-    dirty = false;
+    // Edits made while this request was in flight are not on the server yet.
+    if (seq === editSeq) dirty = false;
     setStatus("Saved");
-    toast("Changes saved");
+    if (!silent) toast("Changes saved");
     return true;
   } catch (err) {
     toast(err.message, true);
     setStatus("Save failed");
     return false;
   } finally {
-    $("saving").classList.remove("active");
+    if (!silent) $("saving").classList.remove("active");
   }
 }
 
 $("download-btn").addEventListener("click", async () => {
   if (!currentJob) return;
-  if (dirty) {
-    const ok = await saveOverlays();
-    if (!ok) return;
-  }
+  // Don't hand over a PDF that's missing the last few keystrokes.
+  const ok = await flushSave();
+  if (!ok) return;
   window.location.href = `/api/download/${currentJob.job_id}`;
 });
 
@@ -2749,11 +2822,16 @@ $("report-send").addEventListener("click", async () => {
   }
 });
 
-$("restart-btn").addEventListener("click", () => {
-  if (dirty && !confirm("Discard unsaved edits?")) return;
+$("restart-btn").addEventListener("click", async () => {
+  // Nothing to discard any more — flush whatever the debounce is still holding
+  // so the job the user can reopen from its link matches what they last saw.
+  await flushSave();
   hideRefineBar();
   currentJob = null;
   overlays = [];
+  // A new job starts typed, so drop the handwriting state — otherwise the next
+  // worksheet's boxes stay uncovered (and invisible) from this one.
+  reflectHwState(null);
   // Reset the staged-file UI back to its empty state.
   stagedFile = null;
   $("drop-title").textContent = "Drop a PDF here";
@@ -2774,6 +2852,8 @@ function reflectHwState(styleId) {
     hwToggle.classList.toggle("active", hwOn);
     hwToggle.setAttribute("aria-pressed", hwOn ? "true" : "false");
   }
+  // Uncover the rendered handwriting in the page images (see .hw-on rules).
+  $("editor-pages").classList.toggle("hw-on", hwOn);
 }
 
 async function restoreJob(jobId) {

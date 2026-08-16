@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-import app as A
+from paperfill import app as A
 
 
 SECRET = "whsec_test_not_a_real_secret"

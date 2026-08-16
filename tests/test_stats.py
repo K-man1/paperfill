@@ -12,11 +12,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import costs
-import stats
-import usage
-
-
+from paperfill.data import costs
+from paperfill.data import stats
+from paperfill.data import usage
 def ts(day: int, hour: int, minute: int = 0) -> str:
     """A UTC timestamp string shaped like Postgres returns."""
     return datetime(2026, 7, day, hour, minute, tzinfo=timezone.utc).isoformat()

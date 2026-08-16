@@ -7,17 +7,14 @@ uploads/
 outputs/
 # PDFs users attached to problem reports — real documents, never commit
 reports/
-signin_log.json
-activity_log.json
-devices.json
 user_password.txt
-# Per-user daily upload counts (see usage.py) — runtime state, resets daily
+# Per-user daily AI credit counts (see usage.py) — runtime state, resets daily
 usage.json
 # AI price list (see costs.py) — per-deployment config, edited from /admin
 ai_rates.json
+# Ad config, edited from /admin (see get_ads_enabled / VAST_TAGS_PATH in app.py)
 ads_enabled.txt
-adsense_client.txt
-adsense_slot.txt
+vast_tags.txt
 
 # User-built handwriting fonts (created at runtime, per deployment)
 handwriting/fonts/
@@ -28,6 +25,12 @@ __pycache__/
 .DS_Store
 venv/
 .venv/
-ab_samples/dle*.pdf
-ab_samples/dle*.png
-ab_samples/dle_p01*
+
+# Local Claude Code config and agents — personal tooling, not project source
+.claude/
+# Scratch runs of tools/ab_compare.py over a real worksheet. The curated
+# sample set in docs/ab-comparison/ IS committed (it's the evidence for the
+# README's accuracy claim); these one-off dumps are not.
+docs/ab-comparison/dle*.pdf
+docs/ab-comparison/dle*.png
+docs/ab-comparison/dle_p01*
