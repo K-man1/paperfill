@@ -268,14 +268,14 @@ def get_or_create_user(google_sub: str, email: str, name: str, picture: str) -> 
                 return rows[0]
         # Create new user. Google already verified the email it hands us, so
         # these accounts are email_verified from birth (no need to re-check).
-        # New sign-ups start on Free; Pro comes from the Stripe webhook or an
-        # admin grant. is_pro is sent explicitly so the column default can't
-        # quietly hand out Pro.
+        # New sign-ups start on Pro: every account is granted the paid tier at
+        # creation rather than waiting on the Stripe webhook or an admin grant.
+        # is_pro is sent explicitly so this doesn't depend on the column default.
         r = requests.post(
             _rest("users"),
             headers=_headers({"Prefer": "return=representation"}),
             json={"google_sub": google_sub, "email": email, "name": name,
-                  "picture": picture, "email_verified": True, "is_pro": False},
+                  "picture": picture, "email_verified": True, "is_pro": True},
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:
@@ -299,7 +299,11 @@ def create_email_user(email: str, password_hash: str, name: str,
                       token: str, token_expires: str) -> dict | None:
     """Create an email/password account, unverified, carrying a verification
     token and its expiry. Returns the new row, or None on error (including the
-    unique-email collision Postgres raises if the address is already taken)."""
+    unique-email collision Postgres raises if the address is already taken).
+
+    Like the Google path, new accounts are created on Pro. The account still has
+    to verify its email before it can sign in, so this grants the tier, not
+    access."""
     if not enabled():
         return None
     try:
@@ -308,7 +312,7 @@ def create_email_user(email: str, password_hash: str, name: str,
             headers=_headers({"Prefer": "return=representation"}),
             json={"email": email, "password_hash": password_hash, "name": name,
                   "email_verified": False, "verification_token": token,
-                  "token_expires": token_expires, "is_pro": False},
+                  "token_expires": token_expires, "is_pro": True},
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:
