@@ -12,7 +12,7 @@ I personally use it for my HW (dont tell me teachers 😭) and for quickly compl
 
 Use it here: [paperfill.hackclub.app](paperfill.hackclub.app)
 
-See the demo: https://www.youtube.com/watch?v=bDNsQvA0_DU plz dont judge the cough
+See the demo: https://youtu.be/y1mMx4kbyIw
 
 ## Features
 
