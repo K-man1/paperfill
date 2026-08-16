@@ -30,10 +30,6 @@ Python 3.10+
 
 potrace system binary (only needed for the handwriting-font feature)
 
-macOS: brew install potrace
-
-Debian/Ubuntu: apt-get install potrace
-
 ## Setup
 ``` 
 git clone https://github.com/K-man1/paperfill
