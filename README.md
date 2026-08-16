@@ -26,9 +26,7 @@ See the demo: https://www.youtube.com/watch?v=bDNsQvA0_DU plz dont judge the cou
 
 ## Prerequisites
 
-Python 3.10+
-
-potrace system binary (only needed for the handwriting-font feature)
+Python 3.10+ & potrace system binary (only needed for the handwriting-font feature)
 
 ## Setup
 ``` 
@@ -43,8 +41,8 @@ pip install -r requirements.txt
 Run it:
 
 ```
-./deploy/run.sh                 # production (gunicorn)
-python -m pytest                # tests
+./deploy/run.sh
+python -m pytest
 ```
 
 ## Layout
