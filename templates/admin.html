@@ -774,11 +774,20 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
     <div class="rating-summary">
       <span class="rating-red"><span class="face">⚑</span> {{ report_count }} reported</span>
       <span class="rating-none">{{ activity_total - report_count }} with no report</span>
-      {% if pdf_count %}
-        <a class="pdf-link" href="{{ url_for('admin_reports_zip') }}">↓ Download all ({{ pdf_count }} PDFs + settings)</a>
+      {% if stored_report_count %}
+        {% if new_report_count %}
+          <a class="pdf-link" href="{{ url_for('admin_reports_zip') }}">↓ Download all ({{ new_report_count }} new)</a>
+        {% else %}
+          <span class="rating-none">No new reports since the last download</span>
+        {% endif %}
+        <a class="pdf-link" href="{{ url_for('admin_reports_zip', all=1) }}">↓ Re-download all {{ stored_report_count }}</a>
       {% else %}
         <span class="rating-none">No PDF snapshots on this server</span>
       {% endif %}
+    </div>
+    <div class="rating-summary" style="font-size:0.78rem;color:var(--ink-soft);">
+      {% if reports_status == 'none' %}<b>Nothing new to download.</b> {% endif %}
+      Last download: {{ last_reports_download or 'never' }}. Snapshots are deleted {{ report_retention_days }} days after the report is filed.
     </div>
     <div class="table-wrap" style="margin-bottom:30px;">
       {% if activity %}
@@ -827,7 +836,10 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
             </td>
             <td>
               {% if entry.has_pdf %}
-                <a class="pdf-link" href="{{ url_for('admin_report_pdf', job_id=entry.job_id) }}">↓ Download</a>
+                <a class="pdf-link" href="{{ url_for('admin_report_pdf', job_id=entry.job_id, kind='original') }}">↓ Original</a>
+                {% if entry.has_filled %}
+                  <a class="pdf-link" href="{{ url_for('admin_report_pdf', job_id=entry.job_id, kind='filled') }}">↓ Filled</a>
+                {% endif %}
               {% else %}
                 <span class="rating-none">—</span>
               {% endif %}

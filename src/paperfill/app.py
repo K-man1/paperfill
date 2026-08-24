@@ -53,6 +53,7 @@ from paperfill.data import db
 from paperfill.data import stats
 from paperfill.data import usage
 from paperfill.utils.json_utils import extract_json_object
+from paperfill.utils.plain_math import plain_math
 from paperfill.ai.preprocess import preprocess_pdf
 from paperfill.ai.multimodal_preprocess import multimodal_preprocess_pdf
 from paperfill.ai.render import render_overlays_pdf, build_overlays_from_structure
@@ -68,13 +69,22 @@ from paperfill.utils.context_sources import (extract_file_text, fetch_youtube_tr
 BASE_DIR = REPO_ROOT
 UPLOADS = BASE_DIR / "uploads"
 OUTPUTS = BASE_DIR / "outputs"
-# Snapshots of PDFs attached to user problem reports. Deliberately outside
-# uploads/ so sweep_old_jobs() can't delete the evidence for a report that
-# hasn't been looked at yet.
+# Snapshots of PDFs attached to user problem reports, one reports/<job_id>/
+# directory per report. Deliberately outside uploads/ so sweep_old_jobs() can't
+# delete the evidence for a report that hasn't been looked at yet.
 REPORTS = BASE_DIR / "reports"
 UPLOADS.mkdir(exist_ok=True)
 OUTPUTS.mkdir(exist_ok=True)
 REPORTS.mkdir(exist_ok=True)
+
+# Reports hold other people's documents, so they expire on their own clock
+# rather than living until someone remembers to clear reports/.
+REPORT_RETENTION_DAYS = 30
+
+# Everything filed at or before the instant recorded here has already been
+# handed to an admin by /admin/reports.zip. A dotfile so it can never collide
+# with a job id.
+REPORTS_MARKER = REPORTS / ".last_download"
 
 MAX_UPLOAD_MB = 10
 ALLOWED_EXT = {".pdf"}
@@ -656,8 +666,9 @@ def sweep_old_jobs() -> None:
         except OSError:
             continue
         shutil.rmtree(d, ignore_errors=True)
-        # reports/<id>.pdf is intentionally left alone: a reported PDF outlives
-        # its job so the report is still reproducible when it's read.
+        # reports/<id>/ is intentionally left alone: a report outlives its job
+        # so it's still reproducible when it's read, and expires on its own
+        # REPORT_RETENTION_DAYS clock in sweep_old_reports().
         (UPLOADS / f"{d.name}.pdf").unlink(missing_ok=True)
         JOBS.pop(d.name, None)
 
@@ -673,29 +684,120 @@ def new_job_id() -> str:
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def reported_pdf_path(job_id: str) -> Path | None:
-    """Path to the PDF snapshotted for a report, or None if the id is
-    malformed or no snapshot exists."""
-    if not _JOB_ID_RE.match(job_id or ""):
+REPORT_PDF_KINDS = ("original", "filled")
+
+
+def reported_pdf_path(job_id: str, kind: str = "original") -> Path | None:
+    """Path to a report's snapshotted PDF — the "original" the user uploaded or
+    the "filled" one we produced from it. None if the id is malformed or that
+    snapshot doesn't exist (a fill that never rendered has no filled PDF)."""
+    if not _JOB_ID_RE.match(job_id or "") or kind not in REPORT_PDF_KINDS:
         return None
-    path = REPORTS / f"{job_id}.pdf"
+    path = REPORTS / job_id / f"{kind}.pdf"
     return path if path.is_file() else None
 
 
 def _snapshot_reported_pdf(job_id: str) -> bool:
-    """Copy a reported job's uploaded PDF into reports/. Best-effort: returns
-    False (without raising) if the id is bad or the upload is already gone."""
+    """Copy a reported job's uploaded PDF and the filled PDF rendered from it
+    into reports/<job_id>/. Best-effort: returns False (without raising) if the
+    id is bad or the upload is already gone. A missing filled PDF is not a
+    failure — the report is still worth keeping without it."""
     if not _JOB_ID_RE.match(job_id or ""):
         return False
-    src = UPLOADS / f"{job_id}.pdf"
-    if not src.is_file():
+    original = UPLOADS / f"{job_id}.pdf"
+    if not original.is_file():
         return False
+    dest = REPORTS / job_id
     try:
-        shutil.copy2(src, REPORTS / f"{job_id}.pdf")
-        return True
+        dest.mkdir(exist_ok=True)
+        shutil.copy2(original, dest / "original.pdf")
     except OSError as e:
         print(f"[report] snapshot failed for {job_id}: {e}")
         return False
+    filled = (load_job(job_id) or {}).get("filled_path")
+    if filled and Path(filled).is_file():
+        try:
+            shutil.copy2(filled, dest / "filled.pdf")
+        except OSError as e:
+            print(f"[report] filled snapshot failed for {job_id}: {e}")
+    return True
+
+
+def _report_job_ids() -> list[str]:
+    """Job ids that currently have a snapshot bundle on this server's disk."""
+    try:
+        return [d.name for d in REPORTS.iterdir()
+                if d.is_dir() and _JOB_ID_RE.match(d.name)]
+    except OSError:
+        return []
+
+
+def reported_at(job_id: str) -> float:
+    """When a report was filed, as a unix timestamp. Read from the sidecar
+    rather than a file mtime: the snapshots are copy2'd, so their mtimes are
+    the *upload's*, not the report's. Falls back to the directory's mtime for
+    reports filed before the sidecar existed, and 0 when nothing is readable —
+    which reads as "ancient", so such a bundle sweeps rather than sticking
+    around forever."""
+    d = REPORTS / job_id
+    try:
+        filed = json.loads((d / "report.json").read_text())["reported_at"]
+        return datetime.fromisoformat(filed).timestamp()
+    except (OSError, TypeError, ValueError, KeyError):
+        pass
+    try:
+        return d.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def sweep_old_reports() -> None:
+    """Best-effort: delete report bundles older than REPORT_RETENTION_DAYS so
+    reports/ doesn't hold other people's documents indefinitely. Never raises."""
+    cutoff = time.time() - REPORT_RETENTION_DAYS * 86400
+    for job_id in _report_job_ids():
+        if reported_at(job_id) >= cutoff:
+            continue
+        shutil.rmtree(REPORTS / job_id, ignore_errors=True)
+
+
+def last_reports_download() -> float:
+    """Unix timestamp of the newest report handed out by /admin/reports.zip.
+    0 when the button has never been pressed, so the first press takes all."""
+    try:
+        return float(REPORTS_MARKER.read_text().strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def new_report_ids() -> list[str]:
+    """Reports filed since the last /admin/reports.zip download, oldest first."""
+    since = last_reports_download()
+    return sorted((j for j in _report_job_ids() if reported_at(j) > since),
+                  key=reported_at)
+
+
+def _migrate_flat_reports() -> None:
+    """Fold the pre-bundle reports/<id>.pdf and reports/<id>.json layout into
+    reports/<id>/. Idempotent and cheap, so it just runs at import rather than
+    living on as a second code path in every reader."""
+    try:
+        stale = [p for p in REPORTS.iterdir()
+                 if p.is_file() and p.suffix in (".pdf", ".json")
+                 and _JOB_ID_RE.match(p.stem)]
+    except OSError:
+        return
+    for p in stale:
+        dest = REPORTS / p.stem
+        try:
+            dest.mkdir(exist_ok=True)
+            p.replace(dest / ("original.pdf" if p.suffix == ".pdf"
+                              else "report.json"))
+        except OSError as e:
+            print(f"[report] could not migrate {p.name}: {e}")
+
+
+_migrate_flat_reports()
 
 
 # UI labels for the answer-format ids the picker sends. Kept next to the report
@@ -713,12 +815,12 @@ def report_settings_path(job_id: str) -> Path | None:
     """Path to the settings sidecar written beside a reported PDF, or None."""
     if not _JOB_ID_RE.match(job_id or ""):
         return None
-    path = REPORTS / f"{job_id}.json"
+    path = REPORTS / job_id / "report.json"
     return path if path.is_file() else None
 
 
 def _snapshot_report_settings(job_id: str, text: str) -> bool:
-    """Write the settings that produced a reported fill to reports/<id>.json.
+    """Write the settings that produced a reported fill to the report bundle.
 
     A sidecar rather than a new DB column: it keeps the whole evidence bundle
     (PDF + settings) together and needs no schema migration. Best-effort, same
@@ -744,7 +846,9 @@ def _snapshot_report_settings(job_id: str, text: str) -> bool:
         "page_count": job.get("page_count"),
     }
     try:
-        (REPORTS / f"{job_id}.json").write_text(json.dumps(meta, indent=2))
+        dest = REPORTS / job_id
+        dest.mkdir(exist_ok=True)
+        (dest / "report.json").write_text(json.dumps(meta, indent=2))
         return True
     except OSError as e:
         print(f"[report] settings snapshot failed for {job_id}: {e}")
@@ -846,6 +950,11 @@ def call_openai_to_fill(structure_for_llm: dict, instructions: str = "",
         "the same sentence across them.\n"
         "If the user provides instructions or an answer key, treat those as "
         "authoritative and prefer them over your own knowledge.\n"
+        "Write math the way it would be handwritten on the page: √, ∛, π, "
+        "°, x², and a slash for fractions (5√6/√22). NEVER use LaTeX — no "
+        "\\frac, no \\sqrt, no backslash commands, no $…$ and no \\(…\\) "
+        "delimiters: the answer is drawn onto the paper exactly as you "
+        "write it.\n"
         "Return ONLY a JSON object: {\"<slot_or_unit_id>\": \"<answer>\", ...}. "
         "No prose, no markdown, no <think> tags, no explanations — JSON only. "
         "/no_think"
@@ -916,6 +1025,11 @@ _VISION_FILL_SYSTEM = (
     "of n), write a DIFFERENT specific point in each, never repeating.\n"
     "If the user provides instructions or an answer key, treat those as "
     "authoritative and prefer them over your own knowledge.\n"
+    "Write math the way it would be handwritten on the page: √, ∛, π, "
+    "°, x², and a slash for fractions (5√6/√22). NEVER use LaTeX — no "
+    "\\frac, no \\sqrt, no backslash commands, no $…$ and no \\(…\\) "
+    "delimiters: the answer is drawn onto the paper exactly as you "
+    "write it.\n"
     "Return ONLY a JSON object: {\"<slot_or_unit_id>\": \"<answer>\", ...}. "
     "No prose, no markdown, no <think> tags. /no_think"
 )
@@ -923,8 +1037,13 @@ _VISION_FILL_SYSTEM = (
 
 def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
                           instructions: str = "", is_pro: bool = False,
-                          user_key: str = "") -> dict[str, str]:
-    """One vision fill call for a single page's units + that page's image."""
+                          user_key: str = "",
+                          missing_ids: list[str] | None = None) -> dict[str, str]:
+    """One vision fill call for a single page's units + that page's image.
+
+    `missing_ids` marks this as a second pass over the ids a first pass left
+    blank; naming them is what stops the model from skipping the same hard
+    items again."""
     structure_json = json.dumps(structure_for_llm, ensure_ascii=False)
     instructions = (instructions or "").strip()
 
@@ -935,6 +1054,11 @@ def _vision_fill_one_page(structure_for_llm: dict, png: bytes,
             "over your own knowledge):\n" + instructions)})
     content.append({"type": "text",
                     "text": "Units detected on this page:\n" + structure_json})
+    if missing_ids:
+        content.append({"type": "text", "text": (
+            "A previous pass left these ids unanswered. They are all "
+            "answerable from the page — work each one out and return an "
+            "answer for every id: " + ", ".join(missing_ids))})
     data_uri = "data:image/png;base64," + base64.b64encode(png).decode()
     content.append({"type": "image_url", "image_url": {"url": data_uri}})
 
@@ -971,6 +1095,11 @@ def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
     tables and layout the transcribed structure can't convey. Detection still
     owns WHERE each answer is anchored; this owns only the answer text, keyed by
     the same slot/unit ids.
+
+    A page whose response came back short gets one more call listing exactly
+    the ids that are still blank. Models drop the hard items off the end of a
+    long JSON object, and re-asking for just those recovers most of them; the
+    extra call only happens on pages that need it.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -981,9 +1110,21 @@ def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
     def fill_page(pidx: int) -> dict[str, str]:
         if pidx < 0 or pidx >= len(page_pngs):
             return {}
-        sub = strip_bboxes_for_llm({"units": by_page[pidx]})
-        return _vision_fill_one_page(sub, page_pngs[pidx], instructions, is_pro,
-                                     user_key)
+        units = by_page[pidx]
+        answered = _vision_fill_one_page(
+            strip_bboxes_for_llm({"units": units}), page_pngs[pidx],
+            instructions, is_pro, user_key)
+        unanswered = [u for u in units
+                      if any(not answered.get(i) for i in _answer_ids(u))]
+        if unanswered:
+            missing = [i for u in unanswered for i in _answer_ids(u)
+                       if not answered.get(i)]
+            retry = _vision_fill_one_page(
+                strip_bboxes_for_llm({"units": unanswered}), page_pngs[pidx],
+                instructions, is_pro, user_key, missing)
+            answered.update({k: v for k, v in retry.items()
+                             if v and not answered.get(k)})
+        return answered
 
     pages = sorted(by_page)
     answers: dict[str, str] = {}
@@ -991,6 +1132,16 @@ def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
         for part in ex.map(fill_page, pages):
             answers.update(part)
     return answers
+
+
+def _answer_ids(unit: dict) -> list[str]:
+    """Every id the model owes an answer for in this unit."""
+    if unit["type"] == "inline_blanks":
+        return [s["slot_id"] for s in unit["slots"]]
+    if unit["type"] == "table":
+        return [s["slot_id"] for row in unit["table_cells"] for cell in row
+                if cell for s in cell["slots"]]
+    return [unit["unit_id"]]
 
 
 _KEY_SUFFIX_RE = re.compile(r"(s\d+|u\d+)$")
@@ -1017,14 +1168,30 @@ def _flatten_answers(obj: dict) -> dict[str, str]:
     """
     out: dict[str, str] = {}
     for k, v in (obj or {}).items():
-        if isinstance(v, str):
-            out[_normalize_key(k)] = v
-        elif isinstance(v, dict):
+        if isinstance(v, dict):
             for sk, sv in v.items():
-                if isinstance(sv, str):
-                    out[_normalize_key(sk)] = sv
-        # ignore lists/numbers — model went off-spec
+                if text := _answer_text(sv):
+                    out[_normalize_key(sk)] = text
+        elif text := _answer_text(v):
+            out[_normalize_key(k)] = text
     return out
+
+
+def _answer_text(value) -> str:
+    """One answer value as the text to write on the page.
+
+    JSON mode returns a bare number for a numeric answer and occasionally a
+    list for a multi-part one; both used to be dropped as off-spec, which left
+    the blank empty on exactly the sheets — math — where it happens most."""
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return ", ".join(t for t in (_answer_text(v) for v in value) if t)
+    if isinstance(value, str):
+        return plain_math(value.strip())
+    return ""
 
 
 def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
@@ -1046,7 +1213,13 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
         "question, add a label, or explain. For a fill-in-the-blank give just "
         "the word or phrase; for a short-answer question give a concise answer "
         "(a few sentences at most). If the user supplied an answer key or notes, "
-        "prefer them over your own knowledge. Return ONLY a JSON object: "
+        "prefer them over your own knowledge.\n"
+        "Write math the way it would be handwritten on the page: √, ∛, π, "
+        "°, x², and a slash for fractions (5√6/√22). NEVER use LaTeX — no "
+        "\\frac, no \\sqrt, no backslash commands, no $…$ and no \\(…\\) "
+        "delimiters: the answer is drawn onto the paper exactly as you "
+        "write it.\n"
+        "Return ONLY a JSON object: "
         "{\"answer\": \"<text>\"}. No prose, no markdown, no <think> tags. /no_think"
     )
     data_uri = "data:image/png;base64," + base64.b64encode(png_bytes).decode()
@@ -1072,10 +1245,7 @@ def call_vision_for_answer(png_bytes: bytes, instructions: str = "",
             response_format={"type": "json_object"},
         )
     content = response.choices[0].message.content or "{}"
-    ans = extract_json_object(content).get("answer", "")
-    if isinstance(ans, (int, float)):
-        ans = str(ans)
-    return ans.strip() if isinstance(ans, str) else ""
+    return _answer_text(extract_json_object(content).get("answer", ""))
 
 
 def call_openai_to_refine(text: str, mode: str, instruction: str = "",
@@ -1292,6 +1462,7 @@ def _fmt_ts(iso: str | None) -> str:
 def admin():
     if session.get("role") != "admin":
         return redirect(url_for("login"))
+    sweep_old_reports()  # so the "new reports" count below matches what's left
 
     # Window and display timezone are query params so the dashboard can be
     # re-sliced without a code change. Clamped: `days` feeds range() sizes.
@@ -1342,6 +1513,8 @@ def admin():
         # PDF snapshot are written together by /api/report.
         e["reported"] = bool((e.get("feedback") or "").strip())
         e["has_pdf"] = reported_pdf_path(e.get("job_id") or "") is not None
+        e["has_filled"] = reported_pdf_path(e.get("job_id") or "",
+                                            "filled") is not None
         e["settings"] = (read_report_settings(e.get("job_id") or "")
                          if e["reported"] else None)
     user_count = sum(1 for e in signin_log if e.get("result") == "user")
@@ -1351,6 +1524,7 @@ def admin():
     # Snapshots live on this machine's disk while the rows come from the shared
     # DB, so a reported row can legitimately have no PDF here.
     pdf_count = sum(1 for e in activity_log if e["has_pdf"])
+    last_download = last_reports_download()
     return render_template(
         "admin.html",
         logs=signin_log,
@@ -1362,6 +1536,13 @@ def admin():
         activity_total=len(activity_log),
         report_count=report_count,
         pdf_count=pdf_count,
+        new_report_count=len(new_report_ids()),
+        stored_report_count=len(_report_job_ids()),
+        report_retention_days=REPORT_RETENTION_DAYS,
+        last_reports_download=(
+            datetime.fromtimestamp(last_download, timezone.utc)
+            .strftime("%Y-%m-%d %H:%M UTC") if last_download else None),
+        reports_status=request.args.get("reports_status"),
         device_count=data["device_total"],
         s=s,
         days=days,
@@ -1383,42 +1564,63 @@ def admin():
     )
 
 
-@app.get("/admin/report/<job_id>/pdf")
-def admin_report_pdf(job_id: str):
-    """Download the PDF a user attached to their problem report. Admin only —
-    these are other people's documents."""
+@app.get("/admin/report/<job_id>/<kind>.pdf")
+def admin_report_pdf(job_id: str, kind: str):
+    """Download one PDF from a problem report — the user's original upload or
+    the filled version we gave them back. Admin only, these are other people's
+    documents."""
     if session.get("role") != "admin":
         return redirect(url_for("login"))
-    path = reported_pdf_path(job_id)
+    path = reported_pdf_path(job_id, kind)
     if path is None:
         abort(404)
     return send_file(path, mimetype="application/pdf",
                      as_attachment=True,
-                     download_name=f"report-{job_id}.pdf")
+                     download_name=f"report-{job_id}-{kind}.pdf")
 
 
 @app.get("/admin/reports.zip")
 def admin_reports_zip():
-    """Download every snapshotted report PDF in one archive. Admin only.
+    """Download report snapshots as one archive. Admin only.
+
+    Only the reports filed since the last time this was pressed, so repeat
+    presses don't re-download a growing pile of the same evidence; ?all=1
+    takes everything still on disk, for when an archive gets lost.
 
     Built in memory: these are a handful of small PDFs, so a temp file buys
     nothing. Stored uncompressed because PDF content streams are already
     deflated — re-compressing costs CPU for ~no size win."""
     if session.get("role") != "admin":
         return redirect(url_for("login"))
-    paths = sorted(p for p in REPORTS.iterdir()
-                   if p.is_file() and p.suffix in (".pdf", ".json")
-                   and _JOB_ID_RE.match(p.stem))
-    if not paths:
-        abort(404)
+    sweep_old_reports()
+    everything = request.args.get("all") == "1"
+    job_ids = sorted(_report_job_ids(), key=reported_at) if everything \
+        else new_report_ids()
+    if not job_ids:
+        return redirect(url_for("admin", reports_status="none") + "#logs")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
-        for p in paths:
-            zf.write(p, arcname=f"report-{p.stem}{p.suffix}")
+        for job_id in job_ids:
+            for p in sorted((REPORTS / job_id).iterdir()):
+                if p.is_file():
+                    zf.write(p, arcname=f"report-{job_id}/{p.name}")
     buf.seek(0)
+    # Mark the newest report we actually packed, not "now": a report filed
+    # while this archive was being built would otherwise be skipped forever.
+    _mark_reports_downloaded(reported_at(job_ids[-1]))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     return send_file(buf, mimetype="application/zip", as_attachment=True,
                      download_name=f"paperfill-reports-{stamp}.zip")
+
+
+def _mark_reports_downloaded(ts: float) -> None:
+    """Advance the "already handed over" marker; only ever moves forward."""
+    if ts <= last_reports_download():
+        return
+    try:
+        REPORTS_MARKER.write_text(f"{ts:.6f}")
+    except OSError as e:
+        print(f"[report] could not record download marker: {e}")
 
 
 @app.post("/admin/user-password")
@@ -1720,6 +1922,7 @@ def upload():
         }), 402
 
     sweep_old_jobs()  # opportunistic cleanup of stale jobs
+    sweep_old_reports()
 
     job_id = new_job_id()
     pdf_path = UPLOADS / f"{job_id}.pdf"
