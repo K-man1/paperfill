@@ -390,6 +390,22 @@ def get_ads_enabled() -> bool:
 def set_ads_enabled(enabled: bool) -> None:
     ADS_ENABLED_PATH.write_text("1" if enabled else "0")
 
+
+# Whether a brand-new account is created on Pro. Defaults to on (the behaviour
+# every existing deployment has) until an admin turns it off from the console.
+AUTO_PRO_PATH = BASE_DIR / "auto_pro.txt"
+
+
+def get_auto_pro() -> bool:
+    try:
+        return AUTO_PRO_PATH.read_text().strip() == "1"
+    except OSError:
+        return True
+
+
+def set_auto_pro(enabled: bool) -> None:
+    AUTO_PRO_PATH.write_text("1" if enabled else "0")
+
 def get_vast_tags() -> list[str]:
     """VAST tag URLs (one per line). Falls back to the built-in defaults."""
     try:
@@ -1368,6 +1384,7 @@ def signup():
         name=name,
         token=token,
         token_expires=expires,
+        is_pro=get_auto_pro(),
     )
     if user is None:
         return render_template("login.html",
@@ -1433,6 +1450,7 @@ def auth_google_callback():
         email=userinfo.get("email", ""),
         name=userinfo.get("name", ""),
         picture=userinfo.get("picture", ""),
+        is_pro=get_auto_pro(),
     )
     if user is None:
         return render_template("login.html", error="Could not create account. Please try again.")
@@ -1559,6 +1577,7 @@ def admin():
         ads_enabled=get_ads_enabled(),
         vast_tags="\n".join(get_vast_tags()),
         ads_status=request.args.get("ads_status"),
+        auto_pro=get_auto_pro(),
         pro_status=request.args.get("pro_status"),
         pro_email=request.args.get("pro_email", ""),
     )
@@ -1653,6 +1672,15 @@ def grant_pro():
     ok = db.set_user_pro(email, grant)
     status = ("granted" if grant else "revoked") if ok else "nouser"
     return redirect(url_for("admin", pro_status=status, pro_email=email))
+
+
+@app.post("/admin/auto-pro")
+def change_auto_pro():
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    # Unchecked checkboxes don't submit, so absence means "off".
+    set_auto_pro(request.form.get("auto_pro") == "on")
+    return redirect(url_for("admin", pro_status="auto"))
 
 
 @app.post("/admin/ai-rates")

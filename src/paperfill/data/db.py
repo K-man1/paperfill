@@ -250,11 +250,13 @@ def device_count() -> int:
 
 # ---- User accounts -------------------------------------------------------
 
-def get_or_create_user(google_sub: str, email: str, name: str, picture: str) -> dict | None:
+def get_or_create_user(google_sub: str, email: str, name: str, picture: str,
+                       is_pro: bool = False) -> dict | None:
     """Look up a user by their Google subject ID; create if missing.
     Returns the user row dict, or None on error."""
     if not enabled():
-        return {"google_sub": google_sub, "email": email, "name": name, "picture": picture, "is_pro": False}
+        return {"google_sub": google_sub, "email": email, "name": name,
+                "picture": picture, "is_pro": is_pro}
     try:
         # Try to find existing user
         r = requests.get(
@@ -268,14 +270,14 @@ def get_or_create_user(google_sub: str, email: str, name: str, picture: str) -> 
                 return rows[0]
         # Create new user. Google already verified the email it hands us, so
         # these accounts are email_verified from birth (no need to re-check).
-        # New sign-ups start on Pro: every account is granted the paid tier at
-        # creation rather than waiting on the Stripe webhook or an admin grant.
-        # is_pro is sent explicitly so this doesn't depend on the column default.
+        # is_pro comes from the admin console's "auto-Pro on signup" toggle. It
+        # is sent explicitly either way so the tier never depends on whatever
+        # the column default happens to be.
         r = requests.post(
             _rest("users"),
             headers=_headers({"Prefer": "return=representation"}),
             json={"google_sub": google_sub, "email": email, "name": name,
-                  "picture": picture, "email_verified": True, "is_pro": True},
+                  "picture": picture, "email_verified": True, "is_pro": bool(is_pro)},
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:
@@ -296,14 +298,15 @@ def get_user_by_email(email: str) -> dict | None:
 
 
 def create_email_user(email: str, password_hash: str, name: str,
-                      token: str, token_expires: str) -> dict | None:
+                      token: str, token_expires: str,
+                      is_pro: bool = False) -> dict | None:
     """Create an email/password account, unverified, carrying a verification
     token and its expiry. Returns the new row, or None on error (including the
     unique-email collision Postgres raises if the address is already taken).
 
-    Like the Google path, new accounts are created on Pro. The account still has
-    to verify its email before it can sign in, so this grants the tier, not
-    access."""
+    Like the Google path, is_pro follows the admin console's auto-Pro toggle.
+    The account still has to verify its email before it can sign in, so this
+    grants the tier, not access."""
     if not enabled():
         return None
     try:
@@ -312,7 +315,7 @@ def create_email_user(email: str, password_hash: str, name: str,
             headers=_headers({"Prefer": "return=representation"}),
             json={"email": email, "password_hash": password_hash, "name": name,
                   "email_verified": False, "verification_token": token,
-                  "token_expires": token_expires, "is_pro": True},
+                  "token_expires": token_expires, "is_pro": bool(is_pro)},
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:

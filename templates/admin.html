@@ -726,7 +726,20 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
         <div class="banner banner-err">No account found for <span class="current">{{ pro_email }}</span>. They need to sign in once before Pro can be set.</div>
       {% elif pro_status == 'empty' %}
         <div class="banner banner-err">Enter an email address.</div>
+      {% elif pro_status == 'auto' %}
+        <div class="banner banner-ok">New signups are now created on {{ 'Pro' if auto_pro else 'Free' }}.</div>
       {% endif %}
+      <form method="post" action="/admin/auto-pro" autocomplete="off">
+        <div class="field checkbox">
+          <input type="checkbox" id="auto_pro" name="auto_pro" {% if auto_pro %}checked{% endif %} />
+          <label for="auto_pro">Give every new signup Pro automatically</label>
+        </div>
+        <p class="hint">
+          Applies at account creation only — turning this off leaves accounts that already
+          have Pro untouched.
+        </p>
+        <button type="submit" class="save-btn">Save signup setting</button>
+      </form>
       <p class="hint">
         Paid upgrades flip to Pro automatically via the Stripe webhook. Use this to grant a
         comp, fix a mismatched checkout email, or revoke access. Comps granted here are
