@@ -34,3 +34,6 @@ venv/
 docs/ab-comparison/dle*.pdf
 docs/ab-comparison/dle*.png
 docs/ab-comparison/dle_p01*
+
+# Signup Pro toggle, edited from /admin (see get_auto_pro in app.py)
+auto_pro.txt
