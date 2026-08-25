@@ -1543,6 +1543,7 @@ def admin():
     # DB, so a reported row can legitimately have no PDF here.
     pdf_count = sum(1 for e in activity_log if e["has_pdf"])
     last_download = last_reports_download()
+    rate_card = costs.load()
     return render_template(
         "admin.html",
         logs=signin_log,
@@ -1565,8 +1566,9 @@ def admin():
         s=s,
         days=days,
         tz_offset=tz_offset,
-        rate_card=costs.load(),
+        rate_card=rate_card,
         rate_models=sorted(set(costs.known_models())
+                           | set(rate_card["models"])
                            | {r["name"] for r in s["money"]["by_model"]
                               if r["name"] != "—"}),
         rates_status=request.args.get("rates_status"),
@@ -1687,10 +1689,9 @@ def change_auto_pro():
 def change_ai_rates():
     """Save the AI price list used to cost every future call.
 
-    Rates are entered here rather than hardcoded because they're provider
-    policy, not facts we can know — and a guessed price would silently make the
-    profit chart wrong. Editing rates does NOT rewrite past calls: each row
-    stores the cost computed when it happened.
+    Anything saved here overrides the built-in rates in costs.BUILTIN_RATES,
+    which only cover the models we actually route to. Editing rates does NOT
+    rewrite past calls: each row stores the cost computed when it happened.
     """
     if session.get("role") != "admin":
         return redirect(url_for("login"))

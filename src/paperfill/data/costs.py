@@ -8,10 +8,11 @@ memory. Rates live in ai_rates.json, edited from the admin dashboard, and any
 model without a rate is reported as "uncosted" rather than silently counted as
 free.
 
-The one rate we ship a real default for is the primary provider: PaperFill runs
-on the Hack Club AI proxy, which is free, so calls that land on it genuinely
-cost $0. The OpenRouter fallback is real money and starts unset — fill it in
-from your provider's pricing page.
+Two things ship with real defaults. The primary provider: PaperFill runs on the
+Hack Club AI proxy, which is free, so calls that land on it genuinely cost $0.
+And the Gemini models we actually route to on the paid OpenRouter fallback,
+whose published rates are in BUILTIN_RATES below. Any other model starts unset —
+fill it in from your provider's pricing page.
 
 Prices are USD per 1,000,000 tokens, quoted separately for input and output
 because every provider charges more for output.
@@ -43,12 +44,21 @@ def known_models() -> list[str]:
     return sorted(n for n in names if n)
 
 
+# OpenRouter list prices, USD per 1M tokens. These are the fallback models the
+# app actually routes to, so shipping them means a fresh deploy costs its calls
+# correctly with an empty ai_rates.json. A saved rate for the same model wins.
+BUILTIN_RATES = {
+    "google/gemini-3-flash-preview": {"in": 0.50, "out": 3.00},
+    "google/gemini-3.5-flash": {"in": 1.50, "out": 9.00},
+}
+
+
 def _defaults() -> dict:
     return {
         # The free Hack Club proxy. Genuinely $0 — this is the one rate we can
         # assert without looking it up.
         "_provider_primary_is_free": True,
-        "models": {},
+        "models": dict(BUILTIN_RATES),
     }
 
 
@@ -61,9 +71,10 @@ def load() -> dict:
     except (OSError, json.JSONDecodeError):
         return _defaults()
     base = _defaults()
+    saved_models = data.pop("models", None)
     base.update(data)
-    if not isinstance(base.get("models"), dict):
-        base["models"] = {}
+    if isinstance(saved_models, dict):
+        base["models"].update(saved_models)
     return base
 
 

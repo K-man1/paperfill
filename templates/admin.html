@@ -390,7 +390,8 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       {% endif %}
       <p class="hint">
         Prices in <b>USD per 1,000,000 tokens</b>, taken from your provider's pricing page.
-        These are deliberately not guessed for you: a wrong rate here would make the profit
+        The Gemini fallback models ship with their published rates already filled in; anything
+        else starts blank rather than guessed, since a wrong rate here would make the profit
         number above confidently wrong. A model left at 0 with the free-proxy box unticked
         is reported as <i>uncosted</i>, not as free.
       </p>
