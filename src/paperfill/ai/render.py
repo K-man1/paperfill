@@ -14,6 +14,9 @@ from paperfill.paths import REPO_ROOT
 
 
 # Tunables
+# Stamped into the Info dict of everything we render, so /api/upload can tell
+# the user when they've handed us a worksheet we already filled.
+FILLED_MARKER = "paperfill-filled"
 HANDWRITING_FONT = "helv"  # built-in PDF font
 MIN_FONT_SIZE = 6
 
@@ -154,6 +157,29 @@ def _overlay_to_html(ov: dict) -> str | None:
         f"margin: 0; padding: 0;"
     )
     return f'<p style="{css}">{_html_escape(text)}</p>'
+
+
+def _squash(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+
+def _already_printed(page, bbox, text: str) -> bool:
+    """True when this exact answer is already sitting in the slot.
+
+    A worksheet that has been through PaperFill once and gets uploaded again
+    (the filled PDF downloaded and re-fed, "packet (1).pdf") still has its
+    underscores, so the detector finds the same blanks and the model supplies
+    the same answers. Stamping those lands a second copy a point or two off the
+    first, which doesn't read as a duplicate — it reads as smeared, broken
+    glyphs. Slots are small and the match is exact, so the only thing this
+    skips is a copy that would have been invisible anyway."""
+    probe = fitz.Rect(*bbox)
+    probe.y0 -= 3          # the existing copy can sit a hair above the slot
+    probe.y1 += 3
+    try:
+        return _squash(text) in _squash(page.get_text("text", clip=probe))
+    except Exception:
+        return False
 
 
 def _insert_handwriting_image(page, bbox, png_bytes: bytes,
@@ -328,6 +354,8 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
         html = _overlay_to_html(ov)
         if not html:
             continue
+        if _already_printed(page, ov["bbox"], ov.get("text") or ""):
+            continue
         rect = fitz.Rect(*ov["bbox"])
         try:
             page.insert_htmlbox(rect, html)
@@ -335,6 +363,14 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
             # htmlbox failed (bad rect, unsupported font) — fall back to plain text
             insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
     _stamp_watermark(doc)
+    # Tag our own output so a re-upload of it is recognisable. Merged into the
+    # existing Info dict rather than replacing it, because set_metadata writes
+    # the whole dict and would otherwise drop the source document's author.
+    meta = dict(doc.metadata or {})
+    keywords = meta.get("keywords") or ""
+    if FILLED_MARKER not in keywords:
+        meta["keywords"] = f"{keywords} {FILLED_MARKER}".strip()
+        doc.set_metadata(meta)
     # garbage=4 + deflate strip orphaned objects and compress streams; without
     # them PyMuPDF leaves the source PDF's bloat in place (a study guide ballooned
     # to ~178MB). With them the same file lands around 10MB.

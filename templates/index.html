@@ -1442,6 +1442,9 @@ function setCreditsLeft(n) {
 }
 
 let currentJob = null;
+// Set when the uploaded PDF is one we filled before. Surfaced once the editor
+// is up rather than mid-pipeline, where the fill overlay is covering the page.
+let reuploadWarning = false;
 
 // ---- Answer-format picker ----
 // Keep each card's .selected outline in sync with its checkbox.
@@ -1837,6 +1840,7 @@ async function handleUpload(file) {
       }
       setCreditsLeft(data.credits_left);
       currentJob = data;
+      reuploadWarning = !!data.already_filled;
       setStatus("Filling with AI… (this can take up to 60 s)");
       const r2 = await fetch("/api/fill", {
         method: "POST",
@@ -1864,6 +1868,10 @@ async function handleUpload(file) {
     showStage("result");
     // renderResult AFTER stage is visible, so img.clientWidth is non-zero
     renderResult(fillData);
+    if (reuploadWarning) {
+      toast("This PDF was already filled by PaperFill, so its answers were " +
+            "left as they were. Upload the blank worksheet to fill it fresh.", true);
+    }
     // Put the job id in the URL so a refresh can restore this editor session
     // (job state is otherwise in-memory only).
     history.replaceState(null, "", "?job=" + encodeURIComponent(currentJob.job_id));

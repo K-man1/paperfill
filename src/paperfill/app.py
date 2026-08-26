@@ -57,7 +57,8 @@ from paperfill.utils.plain_math import plain_math
 from paperfill.ai.preprocess import preprocess_pdf
 from paperfill.ai.multimodal_preprocess import multimodal_preprocess_pdf
 from paperfill.ai.candidates import region_preprocess_pdf
-from paperfill.ai.render import render_overlays_pdf, build_overlays_from_structure
+from paperfill.ai.render import (render_overlays_pdf, build_overlays_from_structure,
+                                 FILLED_MARKER)
 from paperfill.ai.vision_preprocess import VISION_MODEL, VISION_DPI
 from paperfill.ai.llm_client import call_context
 from paperfill.handwriting import font_store
@@ -2008,6 +2009,11 @@ def upload():
     # Render preview images of each page so the frontend can show
     # what was uploaded.
     doc = fitz.open(str(pdf_path))
+    # A worksheet we filled once, downloaded and handed back. Its blanks are
+    # still blank-looking, so it fills again — the answers just land on top of
+    # the ones already there. The renderer refuses to restamp text that's
+    # already in the slot; this is what lets the UI say why.
+    already_filled = FILLED_MARKER in ((doc.metadata or {}).get("keywords") or "")
     preview_dir = OUTPUTS / job_id
     preview_dir.mkdir(exist_ok=True)
     page_sizes = []
@@ -2044,6 +2050,7 @@ def upload():
         "page_count": page_count,
         "unit_count": structure["unit_count"],
         "slot_count": structure["slot_count"],
+        "already_filled": already_filled,
         # None for Pro (unmetered); the UI only shows a count on Free. Most of
         # the actual spend happens during /api/fill, not here, so this is
         # mainly accurate when the AI Vision detector ran above.
