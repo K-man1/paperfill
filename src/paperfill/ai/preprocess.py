@@ -111,6 +111,10 @@ class Unit:
     # {"label": "A", "text": "...", "bbox": (x0,y0,x1,y1)} where bbox bounds the
     # option's label glyphs — the spot the renderer circles.
     options: list[dict] | None = None
+    # Graph only: how to turn an (x, y) pair into a spot on the page. Carries
+    # the plotted grid's bounds and origin in PDF points plus the axis ranges
+    # read off the tick labels, so the renderer never has to look at the image.
+    graph: dict | None = None
 
 
 def chars_of_span(span) -> list[dict]:

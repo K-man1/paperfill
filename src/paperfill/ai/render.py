@@ -281,6 +281,28 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
                 pass
             continue
 
+        if ov.get("kind") == "points":
+            plot = ov.get("plot", "points")
+            pts = [(float(x), float(y)) for x, y in (ov.get("points") or [])]
+            if plot == "none" or not pts:
+                continue
+            try:
+                shape = page.new_shape()
+                if plot == "curve":
+                    shape.draw_polyline([fitz.Point(x, y)
+                                         for x, y in curve_through(pts)])
+                    shape.finish(color=_POINT_COLOR, width=_CURVE_WIDTH,
+                                 closePath=False, lineCap=1, lineJoin=1)
+                else:
+                    for x, y in pts:
+                        shape.draw_circle(fitz.Point(x, y), _POINT_RADIUS)
+                    shape.finish(color=_POINT_COLOR, fill=_POINT_COLOR,
+                                 width=0.4)
+                shape.commit()
+            except Exception:
+                pass
+            continue
+
         if ov.get("kind") == "ink":
             points = ov.get("points") or []
             if len(points) >= 2:
@@ -321,6 +343,96 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
     doc.close()
 
 
+_POINT_RADIUS = 2.0
+_CURVE_WIDTH = 1.4
+_POINT_COLOR = (0.11, 0.36, 0.86)
+
+# Minus arrives as ASCII, as the real minus sign, or as an en dash depending on
+# whether the model was writing "maths" or "text".
+_NUMBER = r"[-−–]?\d+(?:\.\d+)?"
+_PAIR_RE = re.compile(rf"[(\[]\s*({_NUMBER})\s*[,;]\s*({_NUMBER})\s*[)\]]")
+_NUMBER_RE = re.compile(_NUMBER)
+
+
+def _number(text: str) -> float:
+    return float(text.replace("−", "-").replace("–", "-"))
+
+
+def curve_through(points: list[tuple[float, float]],
+                  samples: int = 16) -> list[tuple[float, float]]:
+    """Densify a handful of plotted points into a smooth curve.
+
+    A model gives 7 to 15 points, and joining those straight looks like a
+    polygon rather than a graph. Catmull-Rom is the right fit here because it
+    passes exactly THROUGH every control point — the points are the answer, so
+    a curve that merely approximates them would be plotting something the model
+    didn't say. The end segments duplicate the outer points so the curve starts
+    and stops at the data instead of overshooting.
+    """
+    if len(points) < 3:
+        return list(points)
+    ordered = sorted(points)
+    padded = [ordered[0]] + ordered + [ordered[-1]]
+    out: list[tuple[float, float]] = [ordered[0]]
+    for i in range(len(padded) - 3):
+        (x0, y0), (x1, y1), (x2, y2), (x3, y3) = padded[i:i + 4]
+        for step in range(1, samples + 1):
+            t = step / samples
+            t2, t3 = t * t, t * t * t
+            out.append((
+                0.5 * ((2 * x1) + (-x0 + x2) * t
+                       + (2 * x0 - 5 * x1 + 4 * x2 - x3) * t2
+                       + (-x0 + 3 * x1 - 3 * x2 + x3) * t3),
+                0.5 * ((2 * y1) + (-y0 + y2) * t
+                       + (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2
+                       + (-y0 + 3 * y1 - 3 * y2 + y3) * t3),
+            ))
+    return out
+
+
+def parse_points(answer: str) -> list[tuple[float, float]]:
+    """Pull (x, y) pairs out of a model's graph answer.
+
+    The answer normally arrives as prose around a list of coordinates
+    ("(-2, 5), (0, 1), (2, 5)"), so the pairs are matched rather than the string
+    parsed. Square brackets count too.
+
+    JSON mode is the awkward case: a model that answers with a nested list gets
+    flattened to a bare "x, y, x, y" run with every bracket stripped before this
+    ever sees it, so an even run of loose numbers is paired up rather than
+    thrown away. A graph answer has no other sensible reading.
+    """
+    pairs = _PAIR_RE.findall(answer or "")
+    if pairs:
+        return [(_number(x), _number(y)) for x, y in pairs]
+
+    loose = _NUMBER_RE.findall(answer or "")
+    if len(loose) >= 4 and len(loose) % 2 == 0:
+        values = [_number(n) for n in loose]
+        return list(zip(values[::2], values[1::2]))
+    return []
+
+
+def plot_point(graph: dict, x: float, y: float) -> tuple[float, float] | None:
+    """Map a graph coordinate onto the page, or None if it falls off the plot.
+
+    The origin comes from the detected axis lines rather than from interpolating
+    the range, because a hand-made grid is rarely centred to the pixel and the
+    axes are the one thing we located exactly.
+    """
+    span_x = graph["x_max"] - graph["x_min"]
+    span_y = graph["y_max"] - graph["y_min"]
+    if span_x <= 0 or span_y <= 0:
+        return None
+    px = graph["origin_x"] + x * (graph["right"] - graph["left"]) / span_x
+    py = graph["origin_y"] - y * (graph["bottom"] - graph["top"]) / span_y
+    if not (graph["left"] - 1 <= px <= graph["right"] + 1):
+        return None
+    if not (graph["top"] - 1 <= py <= graph["bottom"] + 1):
+        return None
+    return px, py
+
+
 def _match_option(answer: str, options: list[dict]) -> dict | None:
     """Find the option the model chose. It usually returns just the label ("C",
     "III"), but tolerate "C.", "c)", "C) 2(3m-5n)" or "III only" — compare the
@@ -340,12 +452,18 @@ def _match_option(answer: str, options: list[dict]) -> dict | None:
     return None
 
 
-def build_overlays_from_structure(structure: dict, answers: dict) -> list[dict]:
+def build_overlays_from_structure(structure: dict, answers: dict,
+                                  default_plot: str = "points") -> list[dict]:
     """
     Turn the preprocessor's structured units + LLM answers into a flat list
     of editable overlays. Inline blanks get a small region just above the
     underscore; open-response answers use their detected answer_region;
     multiple-choice answers become a "circle" overlay on the chosen option.
+
+    `default_plot` is the user's saved default for a freshly-built graph
+    overlay ("points", "curve", or "none" — see GRAPH_MODES in index.html);
+    it's still just the starting value; the editor can flip an individual
+    graph to a different mode afterward via its own `ov.plot`.
     """
     overlays: list[dict] = []
     nid = 0
@@ -369,6 +487,29 @@ def build_overlays_from_structure(structure: dict, answers: dict) -> list[dict]:
                 "text": answers.get(u["unit_id"], ""),
             })
             nid += 1
+        elif u["type"] == "graph":
+            graph = u.get("graph") or {}
+            answer = answers.get(u["unit_id"], "")
+            points = parse_points(answer)
+            plotted = [p for p in (plot_point(graph, x, y) for x, y in points)
+                       if p is not None]
+            # An unplottable graph answer draws nothing at all, which looks
+            # identical to no answer, so say which of the two it was.
+            if answer and not plotted:
+                print(f"[render] graph {u['unit_id']}: {len(points)} point(s) "
+                      f"parsed, none on the grid, from {answer[:120]!r}")
+            if plotted:
+                overlays.append({
+                    **_OV_DEFAULTS,
+                    "id": f"ov{nid}", "page": page,
+                    "kind": "points",
+                    "bbox": list(u["bbox"]),
+                    "points": plotted,
+                    # How the reader wants it drawn; switched in the editor.
+                    "plot": default_plot,
+                    "text": "",
+                })
+                nid += 1
         elif u["type"] == "multiple_choice":
             match = _match_option(answers.get(u["unit_id"], ""),
                                   u.get("options") or [])

@@ -607,6 +607,41 @@ button {
 }
 #draw-dropdown .draw-width-opt.active { background: var(--ink); color: #fff; border-color: var(--ink); }
 .overlay.ov-ink { cursor: move; }
+/* A plotted graph draws straight onto the printed grid: no border, no paper,
+   and no hover fill, so the axes underneath stay readable and the pen can
+   reach them. */
+.overlay.ov-points,
+.overlay.ov-points:hover,
+.overlay.ov-points.selected {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.graph-menu {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.15);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  overflow: hidden;
+}
+.graph-menu button {
+  border: 0;
+  background: none;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.graph-menu button:hover { background: rgba(0,0,0,0.06); }
+.graph-menu button.active { font-weight: 600; color: var(--accent); }
 .editor-help {
   font-family: var(--sans);
   font-size: 13px;
@@ -1929,6 +1964,7 @@ function positionOverlaysOnPage(pageIdx) {
 function createOverlayEl(ov, scale) {
   if (ov.kind === "circle") return createCircleOverlayEl(ov, scale);
   if (ov.kind === "ink") return createInkOverlayEl(ov, scale);
+  if (ov.kind === "points") return createPointsOverlayEl(ov, scale);
   const el = document.createElement("div");
   el.className = "overlay";
   el.dataset.id = ov.id;
@@ -2053,6 +2089,131 @@ function positionInkEl(el, ov, scale) {
   poly.setAttribute("points", ov.points.map(([x, y]) => `${(x - x0) * scale},${(y - y0) * scale}`).join(" "));
   poly.setAttribute("stroke", ov.color || "#1a1a1a");
   poly.setAttribute("stroke-width", Math.max(1, ov.width * scale));
+}
+
+// ---- Plotted graphs -------------------------------------------------------
+
+// Catmull-Rom, matching curve_through() in render.py so the preview and the
+// rendered PDF agree. Passes through every point rather than near it.
+function curveThrough(points, samples = 16) {
+  if (points.length < 3) return points.slice();
+  const p = points.slice().sort((a, b) => a[0] - b[0]);
+  const pad = [p[0], ...p, p[p.length - 1]];
+  const out = [p[0]];
+  for (let i = 0; i + 3 < pad.length; i++) {
+    const [x0, y0] = pad[i], [x1, y1] = pad[i + 1],
+          [x2, y2] = pad[i + 2], [x3, y3] = pad[i + 3];
+    for (let s = 1; s <= samples; s++) {
+      const t = s / samples, t2 = t * t, t3 = t2 * t;
+      out.push([
+        0.5 * ((2 * x1) + (-x0 + x2) * t + (2 * x0 - 5 * x1 + 4 * x2 - x3) * t2
+               + (-x0 + 3 * x1 - 3 * x2 + x3) * t3),
+        0.5 * ((2 * y1) + (-y0 + y2) * t + (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2
+               + (-y0 + 3 * y1 - 3 * y2 + y3) * t3),
+      ]);
+    }
+  }
+  return out;
+}
+
+function drawPointsOverlay(el, ov, scale) {
+  const [bx0, by0] = ov.bbox;
+  const svg = el.querySelector("svg");
+  svg.replaceChildren();
+  if (ov.plot === "none") return;
+  const at = ([x, y]) => [(x - bx0) * scale, (y - by0) * scale];
+
+  if (ov.plot === "curve") {
+    const poly = document.createElementNS(SVG_NS, "polyline");
+    poly.setAttribute("fill", "none");
+    poly.setAttribute("stroke", GRAPH_COLOR);
+    poly.setAttribute("stroke-width", Math.max(1, 1.4 * scale));
+    poly.setAttribute("stroke-linecap", "round");
+    poly.setAttribute("stroke-linejoin", "round");
+    poly.setAttribute("points", curveThrough(ov.points).map(at).join(" "));
+    svg.appendChild(poly);
+    return;
+  }
+  ov.points.forEach(pt => {
+    const [cx, cy] = at(pt);
+    const dot = document.createElementNS(SVG_NS, "circle");
+    dot.setAttribute("cx", cx);
+    dot.setAttribute("cy", cy);
+    dot.setAttribute("r", Math.max(1.5, 2 * scale));
+    dot.setAttribute("fill", GRAPH_COLOR);
+    svg.appendChild(dot);
+  });
+}
+
+// A plotted graph sits ON TOP of the printed grid, so it deliberately has no
+// box and no paper background: an outlined, opaque overlay would hide the axes
+// and swallow every pen stroke aimed at the graph. It also goes click-through
+// while the pen is active, so Draw works over it.
+function createPointsOverlayEl(ov, scale) {
+  const el = document.createElement("div");
+  el.className = "overlay ov-points";
+  el.dataset.id = ov.id;
+  el.style.border = "none";
+  el.style.background = "transparent";
+  const [x0, y0, x1, y1] = ov.bbox;
+  el.style.left = (x0 * scale) + "px";
+  el.style.top = (y0 * scale) + "px";
+  el.style.width = ((x1 - x0) * scale) + "px";
+  el.style.height = ((y1 - y0) * scale) + "px";
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
+  svg.style.position = "absolute";
+  svg.style.inset = "0";
+  svg.style.overflow = "visible";
+  svg.style.pointerEvents = "none";
+  el.appendChild(svg);
+  drawPointsOverlay(el, ov, scale);
+
+  // No tool check here: while one is armed the CSS above makes this element
+  // click-through, so the event never arrives and the page handles it instead.
+  el.addEventListener("click", e => {
+    e.stopPropagation();
+    selectOverlay(el, ov);
+    openGraphMenu(el, ov, scale);
+  });
+  return el;
+}
+
+const GRAPH_COLOR = "#1c5cdb";
+const GRAPH_MODES = [
+  ["points", "Points only"],
+  ["curve", "Graph it"],
+  ["none", "Remove the dots"],
+];
+
+function openGraphMenu(el, ov, scale) {
+  document.querySelectorAll(".graph-menu").forEach(m => m.remove());
+  const menu = document.createElement("div");
+  menu.className = "graph-menu";
+  GRAPH_MODES.forEach(([value, label]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if ((ov.plot || "points") === value) b.classList.add("active");
+    b.addEventListener("click", ev => {
+      ev.stopPropagation();
+      pushHistory();
+      ov.plot = value;
+      drawPointsOverlay(el, ov, scale);
+      menu.remove();
+      markDirty();
+    });
+    menu.appendChild(b);
+  });
+  el.appendChild(menu);
+  const close = ev => {
+    if (menu.contains(ev.target)) return;
+    menu.remove();
+    document.removeEventListener("click", close, true);
+  };
+  setTimeout(() => document.addEventListener("click", close, true), 0);
 }
 
 // A freehand pen stroke. Not editable text — draggable (the whole stroke

@@ -1036,6 +1036,12 @@ _VISION_FILL_SYSTEM = (
     "lettered or numbered options (e.g. 'A. to wake up', '1. nucleus'), the "
     "answer is the matching option's LABEL — the letter or number — NOT the "
     "option's text.\n"
+    "'graph' units are a coordinate grid to plot on: answer with ONE STRING "
+    "holding the points on the curve as \"(x, y)\" pairs, e.g. \"(-1, 7), "
+    "(0, 1), (1, -1), (2, 1), (3, 7)\" — a string, never a JSON array or a "
+    "nested list. Give 7 to 15 points spread across the visible x-range, "
+    "including any intercepts and the vertex, and nothing else — the points are "
+    "plotted literally where you put them.\n"
     "Give the ACTUAL answer in the language and format the item calls for (a "
     "word, phrase, conjugated verb, letter, number, date, …). Be accurate. "
     "Never reply with meta or filler text. For a multi-part answer (point k "
@@ -2405,6 +2411,30 @@ def update():
                     "points": points,
                     "color": color,
                     "width": width,
+                })
+            except (KeyError, TypeError, ValueError, IndexError):
+                pass
+            continue
+        if ov.get("kind") == "points":
+            # A plotted graph. Without this branch it would fall through to the
+            # text-box case below, lose its points and come back as an empty
+            # box the next time the job re-renders.
+            try:
+                page = int(ov.get("page", 0))
+                if page < 0 or page > max_page:
+                    continue
+                points = [[float(x), float(y)]
+                          for x, y in ov.get("points") or []][:2000]
+                plot = ov.get("plot", "points")
+                if plot not in ("points", "curve", "none"):
+                    plot = "points"
+                cleaned.append({
+                    "id": str(ov.get("id", "")),
+                    "page": page,
+                    "kind": "points",
+                    "bbox": [float(x) for x in ov["bbox"]],
+                    "points": points,
+                    "plot": plot,
                 })
             except (KeyError, TypeError, ValueError, IndexError):
                 pass
