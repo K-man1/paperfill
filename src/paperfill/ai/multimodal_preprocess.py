@@ -384,6 +384,32 @@ def _find_occurrences(haystack: str, needle: str) -> list[tuple[int, int]]:
     return out
 
 
+def _token_bounded(hay: str, s: int, e: int) -> bool:
+    """True unless hay[s:e] was cut out of the middle of a longer word/number.
+
+    Without this a one-letter anchor ('a', 'b', 'y' — the side labels on a
+    geometry diagram) matches the first letter of an ordinary word: 'a' landed
+    inside "Special" in a section heading and the answer was stamped across it.
+    """
+    left_ok = s == 0 or not (hay[s - 1].isalnum() and hay[s].isalnum())
+    right_ok = e >= len(hay) or not (hay[e - 1].isalnum() and hay[e].isalnum())
+    return left_ok and right_ok
+
+
+# A one-character anchor cannot identify a location no matter where it lands,
+# so it is refused outright rather than resolved to the first such glyph.
+MIN_ANCHOR_LEN = 2
+
+# Scattered-token fallback (see _PageIndex.resolve). A cluster is only believed
+# when it accounts for most of the anchor and stays inside one item's worth of
+# page. The height allowance is generous because an item's own answer space sits
+# inside it: on a graphing question the "domain:" label the anchor names is a
+# third of a page below the item number it was spliced onto.
+MIN_TOKEN_COVERAGE = 0.5
+MAX_CLUSTER_WIDTH_FRAC = 0.55
+MAX_CLUSTER_HEIGHT_FRAC = 0.45
+
+
 class _PageIndex:
     """Char map + normalized search index for one page, plus the bookkeeping
     used to disambiguate repeated anchors by reading order."""
@@ -397,46 +423,151 @@ class _PageIndex:
         self.used_src: set[int] = set()      # chosen source start indices
         self.cursor_src = -1                 # reading-order cursor (source idx)
 
-    def _spans(self, needle: str, hay: str, idx_map: list[int]):
+    def _spans(self, needle: str, hay: str, idx_map: list[int], *,
+               bounded: bool = False):
         """All source-index spans (start, end_inclusive) where `needle` occurs
-        in `hay`."""
+        in `hay`. With `bounded`, matches falling inside a longer word are
+        discarded — only meaningful on the normalized index, since the
+        alphanumeric one has no separators left to bound against."""
         return [(idx_map[s], idx_map[e - 1])
-                for (s, e) in _find_occurrences(hay, needle)]
+                for (s, e) in _find_occurrences(hay, needle)
+                if not bounded or _token_bounded(hay, s, e)]
 
-    def resolve(self, anchor: str) -> tuple[int, int] | None:
-        """Return the source-char index span (start, end_inclusive) for the
-        chosen occurrence of `anchor`, or None if it can't be located.
+    def _available(self, spans, *, use_cursor: bool = True):
+        """`spans` still eligible to be picked, preferring those at or after the
+        reading-order cursor so a repeated anchor advances down the page.
+
+        `use_cursor=False` for the members of a scattered cluster: reading order
+        is precisely what has broken for those anchors, so a token's correct
+        occurrence often sits "behind" the cursor (a fraction's numerator line
+        sorts ahead of the item number it belongs to) and preferring what is
+        ahead would reach into the next item instead.
+        """
+        fresh = [sp for sp in spans if sp[0] not in self.used_src]
+        if not use_cursor:
+            return fresh
+        ahead = [sp for sp in fresh if sp[0] >= self.cursor_src]
+        return ahead or fresh
+
+    def _take(self, spans):
+        """Commit a match. Only the last span is consumed: a cluster's earlier
+        spans are shared context (the item number "12." anchors both that item's
+        "domain:" and its "range:" blank) and must stay available, while the
+        span nearest the blank is what has to advance on the next anchor."""
+        spans = sorted(spans)
+        self.used_src.add(spans[-1][0])
+        self.cursor_src = max(self.cursor_src, spans[-1][1])
+        return spans
+
+    def _cluster(self, anchor: str):
+        """Locate an anchor whose text is real but scattered.
+
+        An anchor transcribed from get_text() often cannot appear as one
+        contiguous run in reading order. A stacked fraction extracts as separate
+        numerator and denominator lines that sort away from their item number
+        ("3. 2√8 √200" is laid out as "… 2√8  4. (3 + √6)(3 −√6)  3. √200 …"),
+        and the prompt's uniqueness rule makes the model splice a label onto a
+        distant item number ("12. domain:"). The words are all on the page, just
+        not in that order, so match them individually and keep the spatially
+        tightest cluster.
+        """
+        tokens = [t for t in _normalize(anchor).split(" ") if t]
+        if len(tokens) < 2:
+            return None
+
+        found = []
+        for token in tokens:
+            spans = self._available(
+                self._spans(token, self.norm, self.norm_map, bounded=True),
+                use_cursor=False)
+            if spans:
+                found.append((token, spans))
+        if len(found) < 2:
+            return None
+
+        # Seed on the most distinctive token — for these anchors that is the
+        # item number, the one piece of text that pins down which item this is.
+        # Only the seed honours the reading-order cursor; it is what decides
+        # which item the cluster belongs to.
+        seed_i = min(range(len(found)),
+                     key=lambda i: (len(found[i][1]), -len(found[i][0])))
+        seed = self._available(found[seed_i][1])[0]
+        seed_box = _anchor_bbox(self.flat, [seed])
+        if seed_box is None:
+            return None
+        cx, cy = (seed_box[0] + seed_box[2]) / 2, (seed_box[1] + seed_box[3]) / 2
+        max_dx = MAX_CLUSTER_WIDTH_FRAC * self.page.rect.width
+        max_dy = MAX_CLUSTER_HEIGHT_FRAC * self.page.rect.height
+
+        def offset(sp):
+            b = _anchor_bbox(self.flat, [sp])
+            if b is None:
+                return None
+            return (abs((b[0] + b[2]) / 2 - cx), abs((b[1] + b[3]) / 2 - cy))
+
+        chosen, kept = [seed], [found[seed_i][0]]
+        for i, (token, spans) in enumerate(found):
+            if i == seed_i:
+                continue
+            near = [(o[0] + o[1], sp) for sp in spans
+                    for o in [offset(sp)]
+                    if o and o[0] <= max_dx and o[1] <= max_dy]
+            # A token whose every occurrence is elsewhere on the page belongs to
+            # some other item; leave it out rather than let it drag the bbox.
+            if not near:
+                continue
+            chosen.append(min(near)[1])
+            kept.append(token)
+
+        # Glyph-mangled tokens (Cambria Math subsets extract as "%√'") are never
+        # found; the anchor is only trusted if most of its text was.
+        if len(kept) < 2:
+            return None
+        if sum(len(t) for t in kept) < MIN_TOKEN_COVERAGE * sum(len(t) for t in tokens):
+            return None
+        # The leading token is the item number the anchor opens with. A cluster
+        # that matched everything except that has found some other item's digits,
+        # not this item — it is the difference between a real match and a pile of
+        # loose numerals that happen to sit near each other.
+        if tokens[0] not in kept:
+            return None
+        return self._take(chosen)
+
+    def resolve(self, anchor: str) -> list[tuple[int, int]] | None:
+        """Return the source-char index spans for the chosen occurrence of
+        `anchor`, or None if it can't be located. Usually one span; the
+        scattered-token fallback returns several.
 
         Tries an exact (canonicalized) text match first, then a punctuation-
-        insensitive alphanumeric fallback. Disambiguation: prefer the earliest
-        not-yet-used occurrence at or after the reading-order cursor; otherwise
-        the earliest unused one; mark it used so a repeated anchor advances.
+        insensitive alphanumeric fallback, then `_cluster`. Disambiguation:
+        prefer the earliest not-yet-used occurrence at or after the reading-order
+        cursor; otherwise the earliest unused one; mark it used so a repeated
+        anchor advances.
         """
-        spans = self._spans(_normalize(anchor), self.norm, self.norm_map)
+        needle = _normalize(anchor)
+        spans = []
+        if len(needle) >= MIN_ANCHOR_LEN:
+            spans = self._spans(needle, self.norm, self.norm_map, bounded=True)
+            if not spans:
+                a = _alnum(anchor)
+                if len(a) >= 3:  # too-short fuzzy matches are noise
+                    spans = self._spans(a, self.alnum, self.alnum_map)
         if not spans:
-            a = _alnum(anchor)
-            if len(a) >= 3:  # too-short fuzzy matches are noise
-                spans = self._spans(a, self.alnum, self.alnum_map)
-        if not spans:
+            return self._cluster(anchor)
+
+        chosen = self._available(sorted(spans))
+        if not chosen:
             return None
-        spans.sort()
-
-        chosen = next((sp for sp in spans
-                       if sp[0] not in self.used_src and sp[0] >= self.cursor_src),
-                      None)
-        if chosen is None:
-            chosen = next((sp for sp in spans if sp[0] not in self.used_src), None)
-        if chosen is None:
-            return None
-
-        self.used_src.add(chosen[0])
-        self.cursor_src = max(self.cursor_src, chosen[1])
-        return chosen
+        return self._take([chosen[0]])
 
 
-def _anchor_bbox(flat, src_start, src_end):
-    """Union bbox over the real (bbox-bearing) chars in a source span."""
-    boxes = [flat[i]["bbox"] for i in range(src_start, src_end + 1)
+def _anchor_bbox(flat, spans):
+    """Union bbox over the real (bbox-bearing) chars in the given source spans.
+
+    Only the spans' own chars count, never the gap between them — a scattered
+    anchor's spans can straddle unrelated text that must not widen the box.
+    """
+    boxes = [flat[i]["bbox"] for (s, e) in spans for i in range(s, e + 1)
              if flat[i]["bbox"]]
     if not boxes:
         return None
@@ -444,15 +575,19 @@ def _anchor_bbox(flat, src_start, src_end):
             max(b[2] for b in boxes), max(b[3] for b in boxes))
 
 
-def _last_real_char(flat, src_start, src_end):
-    for i in range(src_end, src_start - 1, -1):
+def _last_real_char(flat, spans):
+    """Last real char of the last span — the edge an 'after' blank follows."""
+    s, e = spans[-1]
+    for i in range(e, s - 1, -1):
         if flat[i]["bbox"]:
             return flat[i]
     return None
 
 
-def _first_real_char(flat, src_start, src_end):
-    for i in range(src_start, src_end + 1):
+def _first_real_char(flat, spans):
+    """First real char of the first span — the edge a 'before' blank precedes."""
+    s, e = spans[0]
+    for i in range(s, e + 1):
         if flat[i]["bbox"]:
             return flat[i]
     return None
@@ -655,16 +790,16 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
         if pidx is None:
             drop(item, "bad_page")
             continue
-        span = pidx.resolve(anchor)
-        if span is None:
+        spans = pidx.resolve(anchor)
+        if spans is None:
             drop(item, "anchor_not_found")
             continue
-        abbox = _anchor_bbox(pidx.flat, *span)
+        abbox = _anchor_bbox(pidx.flat, spans)
         if abbox is None:
             drop(item, "no_anchor_bbox")
             continue
         resolved.append({"item": item, "kind": kind, "anchor": anchor, "pn": pn,
-                         "pidx": pidx, "span": span, "abbox": abbox})
+                         "pidx": pidx, "spans": spans, "abbox": abbox})
 
     # Per-page sorted anchor tops — used to scope a question's empty answer
     # bullets to the vertical band before the NEXT detected question.
@@ -684,7 +819,7 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
     for r in resolved:
         item, kind, anchor, pn, pidx, abbox = (
             r["item"], r["kind"], r["anchor"], r["pn"], r["pidx"], r["abbox"])
-        src_start, src_end = r["span"]
+        spans = r["spans"]
 
         if kind == "open":
             # First try empty answer bullets beneath the question (study-guide
@@ -726,9 +861,9 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
         position = item.get("blank_position", "after")
         if position not in ("after", "before"):
             position = "after"
-        end_char = (_last_real_char(pidx.flat, src_start, src_end)
+        end_char = (_last_real_char(pidx.flat, spans)
                     if position == "after"
-                    else _first_real_char(pidx.flat, src_start, src_end))
+                    else _first_real_char(pidx.flat, spans))
         if end_char is None:
             drop(item, "no_anchor_bbox")
             continue
