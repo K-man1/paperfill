@@ -6,7 +6,7 @@ pass lists of dicts in, get plain numbers and series out. No network, no Flask,
 no globals — which is what makes it testable and what keeps app.py's admin
 route down to "fetch, aggregate, render".
 
-Two conventions worth knowing before reading further:
+Three conventions worth knowing before reading further:
 
 * **Timestamps are stored in UTC** and shifted by `tz_offset` hours only for
   display. Every "by hour of day" number depends on that shift, so the page
@@ -15,12 +15,17 @@ Two conventions worth knowing before reading further:
   cost, and those calls are counted and surfaced separately rather than being
   quietly averaged in as free. A profit figure that hides uncosted calls is a
   lie, so `money()` reports how many it had to ignore.
+* **The window filters events, not inventory.** `build()` slices the event
+  streams — fills, sign-ins, AI calls, payments — to the chosen window, but
+  account and device totals stay all-time: "how many accounts exist" is a
+  stock, and windowing it would answer a question nobody asked.
 """
 
 from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -49,6 +54,77 @@ def shift(dt: datetime | None, tz_offset: float) -> datetime | None:
     if dt is None:
         return None
     return dt + timedelta(hours=tz_offset or 0)
+
+
+@dataclass(frozen=True)
+class Window:
+    """The slice of time the dashboard is showing.
+
+    Half-open [start, end) in UTC so an event can never land in two buckets.
+    `tz_offset` is display-only — it decides which local day or hour a UTC
+    timestamp is drawn in, never which rows are included.
+
+    Buckets are hourly for short spans: "last 6 hours" plotted as one daily
+    point is a chart of nothing.
+    """
+    start: datetime
+    end: datetime
+    tz_offset: float = 0.0
+    label: str = ""
+
+    @property
+    def hourly(self) -> bool:
+        return self.end - self.start <= timedelta(days=3)
+
+    def filter(self, rows: list[dict], field: str = "ts") -> list[dict]:
+        """The rows whose timestamp falls in the window. Rows with an
+        unparseable timestamp are dropped — a row we can't place in time can't
+        honestly be claimed to be in the window."""
+        out = []
+        for r in rows or []:
+            dt = parse_ts(r.get(field))
+            if dt is not None and self.start <= dt < self.end:
+                out.append(r)
+        return out
+
+    def key(self, dt: datetime):
+        """The bucket a display-zone datetime belongs to."""
+        if self.hourly:
+            return dt.replace(minute=0, second=0, microsecond=0)
+        return dt.date()
+
+    def bucket(self, dt: datetime | None):
+        """The bucket key for a UTC timestamp, or None if it won't parse."""
+        local = shift(dt, self.tz_offset)
+        return self.key(local) if local else None
+
+    def series(self, counts: dict, scale: float = 1.0) -> list[dict]:
+        """Dense {label, value} points, one per bucket, oldest first.
+
+        Missing buckets must appear as zeros — a line chart that just skips
+        them implies activity that never happened.
+        """
+        step = timedelta(hours=1) if self.hourly else timedelta(days=1)
+        cur = shift(self.start, self.tz_offset).replace(minute=0, second=0,
+                                                        microsecond=0)
+        if not self.hourly:
+            cur = cur.replace(hour=0)
+        end = shift(self.end, self.tz_offset)
+        out = []
+        while cur < end:
+            out.append({"label": self._point_label(cur),
+                        "value": round(counts.get(self.key(cur), 0) * scale, 6)})
+            cur += step
+        return out
+
+    def _point_label(self, dt: datetime) -> str:
+        if not self.hourly:
+            return dt.strftime("%m-%d")
+        # Inside a single day the date is noise; across two or three it's the
+        # only thing telling 09:00 Tuesday from 09:00 Wednesday.
+        if self.end - self.start <= timedelta(days=1):
+            return dt.strftime("%H:%M")
+        return dt.strftime("%m-%d %H:%M")
 
 
 def _stamps(rows: list[dict], field: str, tz_offset: float) -> list[datetime]:
@@ -80,17 +156,6 @@ def percentile(values: list[float], p: float) -> float:
     s = sorted(values)
     k = max(1, math.ceil((p / 100.0) * len(s)))
     return s[min(k, len(s)) - 1]
-
-
-def _fill_days(counts: dict, days: int, today: datetime) -> list[dict]:
-    """Turn {date: n} into a dense, gap-free series ending today. Missing days
-    must appear as zeros — a line chart that just skips them implies activity
-    that never happened."""
-    out = []
-    for i in range(days - 1, -1, -1):
-        d = (today - timedelta(days=i)).date()
-        out.append({"label": d.isoformat(), "value": counts.get(d, 0)})
-    return out
 
 
 # ---- Sections ------------------------------------------------------------
@@ -128,33 +193,34 @@ def time_of_day(assignments, signins, tz_offset: float) -> dict:
     }
 
 
-def activity(assignments, signins, users, devices_daily,
-             days: int, tz_offset: float) -> dict:
-    """Daily time series for the main volume charts."""
-    today = shift(datetime.now(timezone.utc), tz_offset)
+def activity(assignments, signins, users, devices_daily, window: Window) -> dict:
+    """Volume time series for the main charts, bucketed to fit the window."""
+    tz = window.tz_offset
+    fills = Counter(window.key(dt) for dt in _stamps(assignments, "ts", tz))
+    logins = Counter(window.key(dt) for dt in _stamps(signins, "ts", tz))
+    signups = Counter(window.key(dt) for dt in _stamps(users, "created_at", tz))
 
-    fills = Counter(dt.date() for dt in _stamps(assignments, "ts", tz_offset))
-    logins = Counter(dt.date() for dt in _stamps(signins, "ts", tz_offset)
-                     if True)
-    signups = Counter(dt.date() for dt in _stamps(users, "created_at", tz_offset))
-
+    # devices_daily is pre-aggregated per calendar day in Postgres, so it can't
+    # be split into hours. An hourly window gets an empty series rather than a
+    # day total smeared across 24 buckets.
     dev = {}
-    for row in devices_daily or []:
-        try:
-            dev[datetime.fromisoformat(str(row.get("day"))).date()] = int(row.get("devices") or 0)
-        except (ValueError, TypeError):
-            continue
+    if not window.hourly:
+        for row in devices_daily or []:
+            try:
+                dev[datetime.fromisoformat(str(row.get("day"))).date()] = int(row.get("devices") or 0)
+            except (ValueError, TypeError):
+                continue
 
     return {
-        "fills": _fill_days(fills, days, today),
-        "signins": _fill_days(logins, days, today),
-        "signups": _fill_days(signups, days, today),
-        "devices": _fill_days(dev, days, today),
-        "days": days,
+        "fills": window.series(fills),
+        "signins": window.series(logins),
+        "signups": window.series(signups),
+        "devices": window.series(dev),
+        "devices_daily_only": window.hourly,
     }
 
 
-def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
+def money(ai_calls, payments, window: Window) -> dict:
     """Revenue, AI cost and profit.
 
     Cost has two honest flavours and the dashboard shows both:
@@ -164,24 +230,22 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
     * **uncosted** — calls whose model has no configured rate. Reported as a
       count, never folded into the totals as zero.
     """
-    today = shift(datetime.now(timezone.utc), tz_offset)
-
     # Stripe test-mode events use the same webhook and shape as real ones —
     # only `livemode` tells them apart. Counting test checkouts as revenue
     # would make the P&L confidently wrong, so they're dropped here rather
     # than at the fetch layer (the raw rows may still be useful elsewhere).
     live_payments = [p for p in (payments or []) if p.get("livemode")]
 
-    rev_by_day: dict = Counter()
+    rev_by_bucket: dict = Counter()
     revenue_cents = 0
     for p in live_payments:
-        dt = shift(parse_ts(p.get("ts")), tz_offset)
+        k = window.bucket(parse_ts(p.get("ts")))
         cents = int(p.get("amount_cents") or 0)
         revenue_cents += cents
-        if dt:
-            rev_by_day[dt.date()] += cents
+        if k is not None:
+            rev_by_bucket[k] += cents
 
-    cost_by_day: dict = defaultdict(float)
+    cost_by_bucket: dict = defaultdict(float)
     cost_total = 0.0
     uncosted = 0
     by_purpose: dict = defaultdict(lambda: {"calls": 0, "tokens": 0, "cost": 0.0})
@@ -189,7 +253,7 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
     tokens_in = tokens_out = 0
 
     for c in ai_calls or []:
-        dt = shift(parse_ts(c.get("ts")), tz_offset)
+        k = window.bucket(parse_ts(c.get("ts")))
         raw_cost = c.get("cost_usd")
         if raw_cost is None:
             uncosted += 1
@@ -204,8 +268,8 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
         tokens_in += p_tok
         tokens_out += o_tok
         cost_total += cost
-        if dt:
-            cost_by_day[dt.date()] += cost
+        if k is not None:
+            cost_by_bucket[k] += cost
 
         k = c.get("purpose") or "unknown"
         by_purpose[k]["calls"] += 1
@@ -219,14 +283,6 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
     revenue = revenue_cents / 100.0
     profit = revenue - cost_total
 
-    def _series(counts, scale=1.0):
-        out = []
-        for i in range(days - 1, -1, -1):
-            d = (today - timedelta(days=i)).date()
-            out.append({"label": d.isoformat(),
-                        "value": round(counts.get(d, 0) * scale, 6)})
-        return out
-
     return {
         "revenue": revenue,
         "revenue_cents": revenue_cents,
@@ -239,8 +295,8 @@ def money(ai_calls, payments, days: int, tz_offset: float) -> dict:
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "tokens_total": tokens_in + tokens_out,
-        "revenue_series": _series(rev_by_day, 0.01),
-        "cost_series": _series(cost_by_day),
+        "revenue_series": window.series(rev_by_bucket, 0.01),
+        "cost_series": window.series(cost_by_bucket),
         "by_purpose": sorted(
             ({"name": k, **v} for k, v in by_purpose.items()),
             key=lambda r: -r["tokens"]),
@@ -370,8 +426,6 @@ def product(assignments) -> dict:
     handwriting = sum(1 for a in assignments or []
                       if (a.get("style") or "").strip().lower() not in TYPED_STYLES)
 
-    styles = Counter((a.get("style") or "").strip() or "Typed text"
-                     for a in assignments or [])
     ips = Counter((a.get("ip") or "?") for a in assignments or [])
 
     return {
@@ -379,10 +433,7 @@ def product(assignments) -> dict:
         "reported": reported,
         "report_pct": pct(reported, total),
         "handwriting": handwriting,
-        "handwriting_pct": pct(handwriting, total),
-        "styles": styles.most_common(8),
         "unique_ips": len(ips),
-        "top_ips": ips.most_common(8),
         "repeat_pct": pct(sum(n for _, n in ips.items() if n > 1), total),
     }
 
@@ -451,21 +502,34 @@ def devices_heatmap(rows) -> dict:
 
 def build(*, signins, assignments, users, ai_calls, payments,
           devices_daily, devices_hourly, device_total,
-          rate_card: dict | None = None, hack_club_cap_usd: float = 3.0,
-          days: int = 30, tz_offset: float = 0.0) -> dict:
-    """Everything the dashboard needs, in one dict."""
+          window: Window,
+          rate_card: dict | None = None, hack_club_cap_usd: float = 3.0) -> dict:
+    """Everything the dashboard needs, in one dict.
+
+    The window is applied here, once, so every section is slicing the same
+    rows. Two deliberate exceptions: `accounts` stays all-time (see the module
+    docstring), and `hack_club_budget` gets the unfiltered calls because it
+    answers a fixed question — today's credit — that has nothing to do with
+    whatever window the page is showing.
+    """
+    win_assignments = window.filter(assignments)
+    win_signins = window.filter(signins)
+    win_calls = window.filter(ai_calls)
+    win_payments = window.filter(payments)
+
     return {
-        "time_of_day": time_of_day(assignments, signins, tz_offset),
-        "activity": activity(assignments, signins, users, devices_daily,
-                             days, tz_offset),
-        "money": money(ai_calls, payments, days, tz_offset),
+        "time_of_day": time_of_day(win_assignments, win_signins, window.tz_offset),
+        "activity": activity(win_assignments, win_signins, users,
+                             devices_daily, window),
+        "money": money(win_calls, win_payments, window),
         "hack_club": hack_club_budget(ai_calls, rate_card or {}, hack_club_cap_usd),
-        "reliability": reliability(ai_calls),
+        "reliability": reliability(win_calls),
         "accounts": accounts(users, assignments, payments),
-        "product": product(assignments),
-        "clients": clients(signins),
+        "product": product(win_assignments),
+        "clients": clients(win_signins),
         "device_heat": devices_heatmap(devices_hourly),
         "device_total": device_total,
-        "tz_offset": tz_offset,
-        "days": days,
+        "tz_offset": window.tz_offset,
+        "window_label": window.label,
+        "hourly": window.hourly,
     }

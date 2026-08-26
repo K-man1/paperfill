@@ -21,7 +21,8 @@ import secrets
 import shutil
 import time
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from functools import wraps
 from pathlib import Path
 import fitz
@@ -1465,22 +1466,100 @@ def _fmt_ts(iso: str | None) -> str:
         return str(iso)
 
 
+# The dashboard is read by one person in one place, so it speaks Eastern time
+# rather than offering a picker: a UTC "today" that ends at 8pm local was a
+# steady source of misreading the day's numbers. Resolved per request so it
+# follows DST instead of being pinned to -5.
+DASH_TZ = ZoneInfo("America/New_York")
+
+# Ready-made windows, shortest first. The value is what goes in the query
+# string; anything not on this list arrives as an explicit from/to date pair.
+WINDOW_PRESETS = [
+    ("6h", 6, "Last 6 hours"),
+    ("12h", 12, "Last 12 hours"),
+    ("24h", 24, "Last 24 hours"),
+    ("3d", 72, "Last 3 days"),
+    ("7d", 24 * 7, "Last 7 days"),
+    ("14d", 24 * 14, "Last 14 days"),
+    ("30d", 24 * 30, "Last 30 days"),
+    ("90d", 24 * 90, "Last 90 days"),
+    ("180d", 24 * 180, "Last 180 days"),
+    ("365d", 24 * 365, "Last 365 days"),
+]
+_WINDOW_HOURS = {key: hours for key, hours, _ in WINDOW_PRESETS}
+
+
+def _admin_window() -> tuple[stats.Window, str]:
+    """The slice of time the dashboard is showing, read off the query string,
+    plus the key the picker should show as selected.
+
+    Two shapes: a relative preset (`window=6h`) or an inclusive date range
+    (`from=2026-10-04&to=2026-10-07`), the latter interpreted as whole Eastern
+    calendar days because that's what someone picking dates means.
+    """
+    now = datetime.now(timezone.utc)
+    tz_offset = DASH_TZ.utcoffset(now).total_seconds() / 3600.0
+
+    first = _parse_date(request.args.get("from"))
+    last = _parse_date(request.args.get("to"))
+    if first and last:
+        if last < first:
+            first, last = last, first
+        start = datetime(first.year, first.month, first.day, tzinfo=DASH_TZ)
+        # `to` is inclusive — 10/4 to 10/7 means through the end of the 7th,
+        # not up to its midnight, which would silently drop a whole day.
+        through = last + timedelta(days=1)
+        end = datetime(through.year, through.month, through.day, tzinfo=DASH_TZ)
+        label = (f"{first:%b %-d} – {last:%b %-d}" if first != last
+                 else f"{first:%b %-d}")
+        return (stats.Window(start.astimezone(timezone.utc),
+                             end.astimezone(timezone.utc), tz_offset, label),
+                "custom")
+
+    key = (request.args.get("window") or "").strip().lower()
+    if key not in _WINDOW_HOURS:
+        # Older links (and bookmarks) use ?days=N.
+        try:
+            key = f"{max(1, min(365, int(request.args.get('days', 30))))}d"
+        except (TypeError, ValueError):
+            key = "30d"
+    hours = _WINDOW_HOURS.get(key)
+    if hours is None:
+        # A legacy ?days=N that isn't one of the presets — honour it anyway
+        # rather than silently snapping the admin to a different window.
+        hours = int(key[:-1]) * 24
+    label = next((lbl for k, _, lbl in WINDOW_PRESETS if k == key),
+                 f"Last {key[:-1]} days")
+
+    # Start on a bucket boundary. "Last 7 days" starting at 3pm would leave the
+    # oldest bucket holding nine hours of a day and reading as a dip, and would
+    # draw eight points for a seven-day window.
+    local_now = now + timedelta(hours=tz_offset)
+    if hours <= 72:  # hourly buckets, matching stats.Window.hourly
+        local_start = (local_now.replace(minute=0, second=0, microsecond=0)
+                       - timedelta(hours=hours - 1))
+    else:
+        local_start = (local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+                       - timedelta(days=hours // 24 - 1))
+    return (stats.Window(local_start - timedelta(hours=tz_offset), now,
+                         tz_offset, label),
+            key)
+
+
+def _parse_date(raw: str | None) -> date | None:
+    try:
+        return date.fromisoformat((raw or "").strip())
+    except ValueError:
+        return None
+
+
 @app.route("/admin")
 def admin():
     if session.get("role") != "admin":
         return redirect(url_for("login"))
     sweep_old_reports()  # so the "new reports" count below matches what's left
 
-    # Window and display timezone are query params so the dashboard can be
-    # re-sliced without a code change. Clamped: `days` feeds range() sizes.
-    try:
-        days = max(7, min(365, int(request.args.get("days", 30))))
-    except (TypeError, ValueError):
-        days = 30
-    try:
-        tz_offset = max(-14.0, min(14.0, float(request.args.get("tz", "0"))))
-    except (TypeError, ValueError):
-        tz_offset = 0.0
+    window, window_key = _admin_window()
 
     # Eight independent HTTP round-trips to Supabase. Serially that's several
     # seconds of pure latency, so fan them out — they don't depend on each
@@ -1506,11 +1585,12 @@ def admin():
         payments=data["payments"], devices_daily=data["devices_daily"],
         devices_hourly=data["devices_hourly"], device_total=data["device_total"],
         rate_card=costs.load(), hack_club_cap_usd=HACK_CLUB_BUDGET_USD,
-        days=days, tz_offset=tz_offset,
+        window=window,
     )
 
     # Read from the shared database so every worker shows the same numbers.
-    activity_log = data["assignments"]
+    # Same window as the charts, so the table can't disagree with them.
+    activity_log = window.filter(data["assignments"])
     for e in activity_log:
         e["timestamp"] = _fmt_ts(e.get("ts"))
         # A non-empty `feedback` column *is* a report — the report text and the
@@ -1542,8 +1622,12 @@ def admin():
         reports_status=request.args.get("reports_status"),
         device_count=data["device_total"],
         s=s,
-        days=days,
-        tz_offset=tz_offset,
+        window_presets=WINDOW_PRESETS,
+        window_key=window_key,
+        window_label=window.label,
+        window_from=(request.args.get("from") or ""),
+        window_to=(request.args.get("to") or ""),
+        tz_label=f"ET (UTC{window.tz_offset:+g})",
         rate_card=rate_card,
         rate_models=sorted(set(costs.known_models())
                            | set(rate_card["models"])

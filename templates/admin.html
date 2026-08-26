@@ -100,6 +100,14 @@ section { scroll-margin-top: 110px; }
   font-family: var(--sans); font-size: 0.85rem; background: var(--paper); color: var(--ink);
 }
 .controls .spacer { flex: 1; }
+.controls .range { display: flex; gap: 8px; align-items: center; }
+.controls .range[hidden] { display: none; }
+.controls .range input {
+  padding: 5px 9px; border: 1px solid var(--rule); border-radius: 6px;
+  font-family: var(--sans); font-size: 0.85rem; background: var(--paper); color: var(--ink);
+}
+.controls .range-sep { font-size: 0.8rem; color: var(--ink-soft); }
+.save-btn.small { padding: 6px 14px; font-size: 0.82rem; }
 
 /* ---- Stat cards ---- */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 14px; margin-bottom: 14px; }
@@ -219,7 +227,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
   <a href="#reliability">AI health</a>
   <a href="#audience">Audience</a>
   <a href="#settings">Settings</a>
-  <a href="#logs">Logs</a>
+  <a href="#logs">Assignments</a>
 </nav>
 
 <main>
@@ -238,23 +246,41 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
   {% endif %}
 
   <form class="controls" method="get" action="/admin" id="controls">
-    <label for="days">Window</label>
-    <select name="days" id="days" onchange="this.form.submit()">
-      {% for d in [7, 14, 30, 60, 90, 180, 365] %}
-      <option value="{{ d }}" {% if days == d %}selected{% endif %}>Last {{ d }} days</option>
+    <label for="window">Window</label>
+    <select name="window" id="window">
+      {% for key, _hours, name in window_presets %}
+      <option value="{{ key }}" {% if window_key == key %}selected{% endif %}>{{ name }}</option>
       {% endfor %}
+      <option value="custom" {% if window_key == 'custom' %}selected{% endif %}>Custom range…</option>
     </select>
-    <label for="tz">Timezone</label>
-    <select name="tz" id="tz" onchange="this.form.submit()">
-      {% for off, name in [(0,'UTC'), (-4,'EDT (UTC-4)'), (-5,'EST (UTC-5)'), (-7,'PDT (UTC-7)'), (-8,'PST (UTC-8)'), (1,'CET (UTC+1)'), (5.5,'IST (UTC+5:30)'), (8,'CST (UTC+8)')] %}
-      <option value="{{ off }}" {% if tz_offset == off %}selected{% endif %}>{{ name }}</option>
-      {% endfor %}
-    </select>
+    <span id="custom-range" class="range" {% if window_key != 'custom' %}hidden{% endif %}>
+      <input type="date" name="from" value="{{ window_from }}" aria-label="From date" />
+      <span class="range-sep">to</span>
+      <input type="date" name="to" value="{{ window_to }}" aria-label="To date" />
+      <button type="submit" class="save-btn small">Apply</button>
+    </span>
     <span class="spacer"></span>
     <span style="font-size:0.78rem;color:var(--ink-soft);">
-      Hour-of-day charts are shown in {{ 'UTC' if tz_offset == 0 else 'UTC%+g'|format(tz_offset) }}
+      Showing <b>{{ window_label }}</b> in {{ tz_label }}. Account and device totals are all-time.
     </span>
   </form>
+  <script>
+  // A preset applies immediately; "Custom range" just reveals the two date
+  // fields and waits for Apply. The date inputs are dropped from a preset
+  // submit so a leftover range in the URL can't override the pick.
+  (function () {
+    const form = document.getElementById('controls');
+    const pick = document.getElementById('window');
+    const range = document.getElementById('custom-range');
+    pick.addEventListener('change', () => {
+      const custom = pick.value === 'custom';
+      range.hidden = !custom;
+      if (custom) return range.querySelector('input').focus();
+      range.querySelectorAll('input').forEach(i => { i.disabled = true; });
+      form.submit();
+    });
+  })();
+  </script>
 
   <!-- ============ HEADLINE ============ -->
   <div class="stats">
@@ -303,14 +329,6 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       from the provider) multiplied by your configured rates (not a fact — set them below).
     </p>
 
-    {% if s.money.uncosted_calls %}
-    <div class="banner banner-info">
-      <b>{{ s.money.uncosted_calls }} AI call{{ '' if s.money.uncosted_calls == 1 else 's' }} could not be costed</b>
-      — no rate is configured for their model, so they're excluded from spend and profit
-      rather than counted as free. Set the rate under <b>AI rate card</b> below to include them.
-    </div>
-    {% endif %}
-
     {% if s.hack_club.exhausted %}
     <div class="banner banner-err">
       <b>Today's ${{ '%.2f'|format(s.hack_club.cap) }} Hack Club AI credit is used up</b>
@@ -335,7 +353,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
     <div class="grid2">
       <div class="card">
         <h3>Revenue vs AI spend</h3>
-        <p class="cap">Daily, last {{ days }} days.</p>
+        <p class="cap">{{ window_label }}.</p>
         <div id="c-pnl"></div>
         <div class="legend">
           <span><i style="background:#16a34a"></i>Revenue</span>
@@ -444,7 +462,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
 
     <div class="card" style="margin-top:18px;">
       <h3>Daily activity</h3>
-      <p class="cap">Last {{ days }} days.</p>
+      <p class="cap">{{ window_label }}.</p>
       <div id="c-activity"></div>
       <div class="legend">
         <span><i style="background:#ff5a1f"></i>Fills</span>
@@ -473,11 +491,6 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
     <p class="section-note">How the filler is being used, and how often it goes wrong.</p>
     <div class="stats">
       <div class="stat-card">
-        <div class="stat-label">Handwriting use</div>
-        <div class="stat-value accent">{{ s.product.handwriting_pct }}%</div>
-        <div class="stat-sub">{{ s.product.handwriting }} of {{ s.product.total }} fills</div>
-      </div>
-      <div class="stat-card">
         <div class="stat-label">Problem reports</div>
         <div class="stat-value {{ 'red' if s.product.report_pct > 10 else '' }}">{{ s.product.report_pct }}%</div>
         <div class="stat-sub">{{ s.product.reported }} reported</div>
@@ -491,18 +504,6 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
         <div class="stat-label">Repeat usage</div>
         <div class="stat-value">{{ s.product.repeat_pct }}%</div>
         <div class="stat-sub">fills from returning IPs</div>
-      </div>
-    </div>
-    <div class="grid2" style="margin-top:18px;">
-      <div class="card">
-        <h3>Fill style</h3>
-        <p class="cap">Typed vs handwriting fonts.</p>
-        <div id="c-styles"></div>
-      </div>
-      <div class="card">
-        <h3>Busiest IPs</h3>
-        <p class="cap">Fills per source address.</p>
-        <div id="c-ips"></div>
       </div>
     </div>
   </section>
@@ -531,7 +532,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
     </div>
     <div class="card" style="margin-top:18px;">
       <h3>Signups per day</h3>
-      <p class="cap">Last {{ days }} days.</p>
+      <p class="cap">{{ window_label }}.</p>
       <div id="c-signups"></div>
     </div>
   </section>
@@ -725,14 +726,13 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       {% if activity %}
       <table>
         <thead>
-          <tr><th>#</th><th>Assignment</th><th>Style</th><th>Filled</th><th>Report</th><th>PDF</th></tr>
+          <tr><th>#</th><th>Assignment</th><th>Filled</th><th>Report</th><th>PDF</th></tr>
         </thead>
         <tbody>
           {% for entry in activity|reverse %}
           <tr>
             <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
             <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.name }}</td>
-            <td style="font-size:0.82rem;">{{ entry.style or '—' }}</td>
             <td class="mono">{{ entry.timestamp }}</td>
             <td style="max-width:320px;font-size:0.82rem;">
               {% if entry.reported %}
@@ -782,7 +782,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
         </tbody>
       </table>
       {% else %}
-      <div class="empty">No assignments filled yet.</div>
+      <div class="empty">No assignments filled in this window.</div>
       {% endif %}
     </div>
   </section>
@@ -881,13 +881,13 @@ function lineChart(id, series, opts) {
       tip(c, `${p.label} · ${s.name}: ${opts.money ? '$' : ''}${fmt(p.value, opts.dp)}`);
     });
   });
-  // Only a handful of date labels — one per day is unreadable at 90+ days.
+  // Only a handful of tick labels — one per bucket is unreadable at 90+ days.
   const step = Math.max(1, Math.ceil(pts.length / 7));
   pts.forEach((p, i) => {
     if (i % step && i !== pts.length - 1) return;
     const t = el('text', { x: x(i), y: H - 10, 'text-anchor': 'middle', fill: C.soft,
                            'font-size': 9.5, 'font-family': 'IBM Plex Mono, monospace' }, svg);
-    t.textContent = p.label.slice(5);
+    t.textContent = p.label;
   });
 }
 
@@ -930,7 +930,11 @@ function hbars(id, rows, opts) {
   if (!rows.length) return empty(id, opts.emptyMsg);
   const rowH = 30, W = 560, H = rows.length * rowH + 10;
   const svg = mount(id, W, H); if (!svg) return;
-  const labelW = opts.labelW || 150, barMax = W - labelW - 90;
+  // The value column has to fit its longest string, not a fixed guess: the
+  // token+cost subtitles ("311,458 tok · $0.0000") ran straight off the card.
+  // 6.7px per char is IBM Plex Mono's advance at 11px.
+  const valW = Math.ceil(Math.max(...rows.map(r => (r.sub || fmt(r.value)).length)) * 6.7) + 10;
+  const labelW = opts.labelW || 150, barMax = Math.max(W - labelW - valW, 40);
   const max = Math.max(...rows.map(r => r.value));
   rows.forEach((r, i) => {
     const y = i * rowH + 6;
@@ -1102,11 +1106,12 @@ lineChart('c-activity', [
   { name: 'Signups', color: C.purple, points: A.signups },
 ], { height: 240 });
 
-lineChart('c-devices', [{ name: 'Devices', color: C.blue, points: A.devices }], { area: true });
+lineChart('c-devices', [{ name: 'Devices', color: C.blue, points: A.devices }],
+          { area: true,
+            emptyMsg: A.devices_daily_only
+              ? 'Device counts are aggregated per day — pick a window of a day or more.'
+              : undefined });
 heatmap('c-devheat', S.device_heat.grid, S.device_heat.max);
-
-donut('c-styles', S.product.styles, { centerLabel: 'fills' });
-hbars('c-ips', S.product.top_ips.map(r => ({ name: r[0], value: r[1] })), { labelW: 130 });
 
 donut('c-tier', [['Pro', S.accounts.pro], ['Free', S.accounts.free]],
       { colors: [C.accent, C.soft], centerLabel: 'accounts' });
