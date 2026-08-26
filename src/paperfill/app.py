@@ -56,6 +56,7 @@ from paperfill.utils.json_utils import extract_json_object
 from paperfill.utils.plain_math import plain_math
 from paperfill.ai.preprocess import preprocess_pdf
 from paperfill.ai.multimodal_preprocess import multimodal_preprocess_pdf
+from paperfill.ai.candidates import region_preprocess_pdf
 from paperfill.ai.render import render_overlays_pdf, build_overlays_from_structure
 from paperfill.ai.vision_preprocess import VISION_MODEL, VISION_DPI
 from paperfill.ai.llm_client import call_context
@@ -1969,19 +1970,28 @@ def upload():
         except (TypeError, json.JSONDecodeError):
             formats = None
 
-    # Detector selection: deterministic ("Standard", preprocess.py, default) vs
-    # the "AI Vision" path (multimodal_preprocess.py). Note this is separate from
-    # the OCR path (vision_preprocess.py), which fires automatically on scanned
-    # pages. Chosen per-request via the `detector` form field or globally via the
+    # Detector selection: deterministic ("Standard", preprocess.py, default),
+    # the "AI Vision" path (multimodal_preprocess.py), or "Regions"
+    # (candidates.py), which proposes answer spaces geometrically and has a
+    # model pick from them. Note all three are separate from the OCR path
+    # (vision_preprocess.py), which fires automatically on scanned pages. Chosen
+    # per-request via the `detector` form field or globally via the
     # PAPERFILL_DETECTOR env var.
     detector_mode = (request.form.get("detector")
                      or os.environ.get("PAPERFILL_DETECTOR")
                      or "deterministic").strip().lower()
-    use_multimodal = detector_mode in ("multimodal", "mm", "vision2")
+    if detector_mode in ("regions", "region"):
+        detector_name = "regions"
+    elif detector_mode in ("multimodal", "mm", "vision2"):
+        detector_name = "multimodal"
+    else:
+        detector_name = "deterministic"
 
     # Quick sanity check + preprocess
     try:
-        if use_multimodal:
+        if detector_name == "regions":
+            structure = region_preprocess_pdf(str(pdf_path), formats=formats)
+        elif detector_name == "multimodal":
             structure = multimodal_preprocess_pdf(str(pdf_path), formats=formats)
         else:
             structure = preprocess_pdf(str(pdf_path), formats=formats)
@@ -2016,7 +2026,7 @@ def upload():
         # report: by then the user may have re-toggled the picker, and we want
         # what ran, not what the page currently shows. `formats` of None is
         # meaningful — it's the "detect all" case, not a missing value.
-        "detector": "multimodal" if use_multimodal else "deterministic",
+        "detector": detector_name,
         "formats": formats,
     }
     save_job(job_id)

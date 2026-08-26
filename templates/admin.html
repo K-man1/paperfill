@@ -825,6 +825,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
                   <div style="margin-top:5px;font-size:0.76rem;color:var(--ink-soft);">
                     <b>Detector:</b>
                     {% if st.detector == 'multimodal' %}AI Vision
+                    {% elif st.detector == 'regions' %}Regions
                     {% elif st.detector == 'deterministic' %}Standard
                     {% else %}not recorded (job expired){% endif %}
                     {% if st.fill_path %}

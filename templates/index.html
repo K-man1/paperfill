@@ -1103,9 +1103,9 @@ button {
             <span class="fmt-card-sub">faster and better for simple PDFs</span>
           </label>
           <label class="fmt-card">
-            <input type="radio" name="detector" value="multimodal">
+            <input type="radio" name="detector" value="regions">
             <span class="fmt-card-name">AI Vision</span>
-            <span class="fmt-card-sub">slower but better for complex PDF structures</span>
+            <span class="fmt-card-sub">slower but handles diagrams, graphs and complex layouts</span>
           </label>
         </div>
       </div>
@@ -1426,11 +1426,13 @@ function selectedDetector() {
   const r = document.querySelector("#detector-cards input[type=radio]:checked");
   return r ? r.value : "deterministic";
 }
-// The answer-format picker only drives the rule-based detector; AI vision
-// works out the layout itself, so hide it when AI vision is chosen.
+// Both AI detectors work the layout out for themselves; only the rule-based
+// one is driven by the answer-format picker.
+function detectorFindsLayout() {
+  return selectedDetector() === "multimodal" || selectedDetector() === "regions";
+}
 function syncFormatVisibility() {
-  $("fmt-block").style.display =
-    selectedDetector() === "multimodal" ? "none" : "";
+  $("fmt-block").style.display = detectorFindsLayout() ? "none" : "";
 }
 document.querySelectorAll("#detector-cards input[type=radio]").forEach(rb => {
   rb.addEventListener("change", () => {
@@ -1759,10 +1761,13 @@ function runFillWithAd(fillPromise) {
 
 async function handleUpload(file) {
   if (file.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
-  const formats = selectedFormats();
-  // The format picker only applies to the rule-based detector; AI vision
-  // ignores it and finds the layout itself.
-  if (selectedDetector() !== "multimodal" && formats.length === 0) {
+  // The format picker only applies to the rule-based detector; the AI ones
+  // ignore it and find the layout themselves. Send nothing at all for those,
+  // rather than whatever is still ticked from a previous run under Standard:
+  // the picker is hidden but keeps its state, and a stale subset silently
+  // switches off whole formats server-side (multiple choice, most visibly).
+  const formats = detectorFindsLayout() ? [] : selectedFormats();
+  if (!detectorFindsLayout() && formats.length === 0) {
     toast("Pick at least one answer format", true);
     fileInput.value = "";
     return;
