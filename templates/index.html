@@ -754,33 +754,32 @@ button {
   user-select: none;
   -webkit-user-drag: none;
 }
+/* The answers are already baked into the page image underneath, so a resting
+   box paints nothing and hides its own copy of the text. Painting both meant
+   every answer rendered twice — the PDF's glyphs showing through 8% of the
+   overlay's paper, with the browser's copy of the same string at different
+   metrics on top. A hairline is all that marks a slot until you reach for it.
+   Hover/edit flips it: now the box covers the baked text and shows the
+   editable copy, which is the only moment that copy is worth looking at. */
 .overlay {
   position: absolute;
-  border: 1px dashed rgba(255,90,31,0.45);
-  background: rgba(255, 253, 250, 0.92);
+  border: 1px dashed rgba(31,29,26,0.16);
+  border-radius: 2px;
+  background: transparent;
   font-family: "Fraunces", serif;
   color: #000000;
   box-sizing: border-box;
   display: flex;
   align-items: stretch;
+  transition: background 0.1s, border-color 0.1s;
 }
-.overlay:hover { background: rgba(255, 253, 250, 0.95); border-color: var(--accent); }
-.overlay.selected { border-style: solid; border-color: var(--accent); background: rgba(255, 253, 250, 0.97); }
-/* Handwriting on: the answers are baked into the page image underneath, so the
-   editable boxes must stop painting opaque paper + typed text over them —
-   otherwise the editor looks unchanged no matter how the render went. Keep the
-   dashed outline so slots are still findable, and bring the typed text back
-   only while a box is hovered or being edited, where reading it is the point.
-   Circle/ink overlays set their own background inline, so they're unaffected. */
-#editor-pages.hw-on .overlay:not(.ov-circle):not(.ov-ink) { background: transparent; }
-#editor-pages.hw-on .overlay:not(.ov-circle):not(.ov-ink) .ov-text {
-  color: transparent;
-  caret-color: var(--ink);
+.overlay .ov-text { color: transparent; caret-color: var(--ink); }
+.overlay:hover, .overlay.selected {
+  background: rgba(255, 253, 250, 0.98);
+  border-color: var(--accent);
 }
-#editor-pages.hw-on .overlay:hover,
-#editor-pages.hw-on .overlay.selected { background: rgba(255, 253, 250, 0.97); }
-#editor-pages.hw-on .overlay:hover .ov-text,
-#editor-pages.hw-on .overlay.selected .ov-text { color: #000000; }
+.overlay.selected { border-style: solid; }
+.overlay:hover .ov-text, .overlay.selected .ov-text { color: #000000; }
 .ov-text {
   flex: 1;
   padding: 1px 3px;
@@ -3027,8 +3026,6 @@ function reflectHwState(styleId) {
     hwToggle.classList.toggle("active", hwOn);
     hwToggle.setAttribute("aria-pressed", hwOn ? "true" : "false");
   }
-  // Uncover the rendered handwriting in the page images (see .hw-on rules).
-  $("editor-pages").classList.toggle("hw-on", hwOn);
 }
 
 async function restoreJob(jobId) {
