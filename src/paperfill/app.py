@@ -93,6 +93,11 @@ REPORTS_MARKER = REPORTS / ".last_download"
 MAX_UPLOAD_MB = 10
 ALLOWED_EXT = {".pdf"}
 
+# Page ceiling for an upload. MAX_CONTENT_LENGTH only bounds the file size, and
+# a 10 MB PDF of near-blank pages runs into the thousands — every one of which
+# /api/upload rasterises to a preview.
+MAX_PDF_PAGES = 50
+
 # Finished jobs are kept (on disk and in memory) this many days after their
 # last activity, then swept so neither outputs/ nor the in-memory JOBS dict
 # grows without bound. A re-render or handwriting pass refreshes the clock.
@@ -152,11 +157,13 @@ app.secret_key = _resolve_secret_key()
 # proxy hop) so Flask reconstructs the real https://<domain> URL.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-# Session cookie hardening. Secure (HTTPS-only) is opt-in via env so local
-# plain-HTTP dev still works; set COOKIE_SECURE=1 in the production .env.
+# Session cookie hardening. Secure (HTTPS-only) is the default so a deployment
+# that forgets to configure it doesn't ship the session cookie over plain HTTP;
+# set COOKIE_SECURE=0 to run against http://localhost, where a Secure cookie is
+# never sent back and login just silently fails.
 # HttpOnly keeps JS from reading the cookie; SameSite=Lax still allows the
 # top-level GET redirect back from Google to carry the session.
-app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "1") != "0"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
@@ -272,6 +279,38 @@ STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 PRO_PRICE = os.environ.get("PRO_PRICE", "$5/yr")
 
 
+# session["is_pro"] is written once at login, so a revoke — from /admin or from
+# Stripe's subscription.deleted webhook — wouldn't reach the user until they
+# signed out. The Pro gate re-reads the column instead, memoised per worker for
+# this long so it costs one query a minute rather than one per request.
+_PRO_TTL_SECONDS = 60
+_pro_cache: dict[str, tuple[float, bool]] = {}
+
+
+def _is_pro_now() -> bool:
+    """_is_pro(), but from the database rather than the login-time session
+    copy. Falls back to the session when the DB is off or the lookup fails: a
+    Supabase hiccup shouldn't lock a paying user out of what they bought."""
+    if session.get("role") == "admin":
+        return True
+    email = session.get("user_email", "")
+    if not email or not db.enabled():
+        return _is_pro()
+    now = time.monotonic()
+    cached = _pro_cache.get(email)
+    if cached and now - cached[0] < _PRO_TTL_SECONDS:
+        return cached[1]
+    user = db.get_user_by_email(email)
+    if user is None:
+        return _is_pro()
+    is_pro = bool(user.get("is_pro"))
+    if len(_pro_cache) > 1000:
+        _pro_cache.clear()
+    _pro_cache[email] = (now, is_pro)
+    session["is_pro"] = is_pro
+    return is_pro
+
+
 def pro_required(f):
     """Gate an /api/* route behind the Pro tier. Returns 403 if not signed in,
     402 (Payment Required) with an upgrade URL if signed in but not Pro. This
@@ -281,11 +320,25 @@ def pro_required(f):
     def wrapper(*args, **kwargs):
         if not session.get("role"):
             return jsonify({"error": "authentication required"}), 403
-        if not _is_pro():
+        if not _is_pro_now():
             return jsonify({"error": "Pro required",
                             "upgrade_url": url_for("pricing")}), 402
         return f(*args, **kwargs)
     return wrapper
+
+
+def _credit_limit_hit():
+    """The 402 for a Free account that has already spent today's credits, or
+    None if the call may go ahead. Pro is unmetered and never hits it."""
+    if _is_pro() or usage.remaining_credits(_user_key()) > 0:
+        return None
+    return jsonify({
+        "error": f"You've used all {usage.FREE_DAILY_CREDITS} free AI credits "
+                 "for today. Upgrade to Pro for unlimited fills.",
+        "limit_reached": True,
+        "credits_left": 0,
+        "upgrade_url": url_for("pricing"),
+    }), 402
 
 oauth = OAuth(app)
 oauth.register(
@@ -511,10 +564,20 @@ def _require_pro_for_ww2explained():
     return None
 
 
+# A device is a browser that loaded a page. Everything else arrives without the
+# cookie too — every /static/ asset on a cold visit, every XHR, Stripe's
+# webhook — and each one would pay for a blocking Supabase insert. With two sync
+# workers, one cookie-less page load's worth of parallel asset requests is
+# enough to stall the site.
+_UNTRACKED_PREFIXES = ("/api/", "/static/", "/stripe/", "/auth/")
+
+
 @app.before_request
 def _track_device():
     g.new_device_id = None
     if request.cookies.get(DEVICE_COOKIE):
+        return
+    if request.endpoint == "static" or request.path.startswith(_UNTRACKED_PREFIXES):
         return
     did = secrets.token_urlsafe(16)
     g.new_device_id = did
@@ -616,8 +679,14 @@ def save_job(job_id: str) -> None:
         return
     (OUTPUTS / job_id).mkdir(exist_ok=True)
     path = _job_meta_path(job_id)
+    # Write-then-rename: load_job reads this file without a lock and from
+    # another worker, so a torn write would hand it invalid JSON and it would
+    # silently serve a stale (pre-fill) copy. The temp name carries the pid so
+    # two workers saving the same job can't clobber each other's temp file.
     # Don't persist the private mtime marker.
-    path.write_text(json.dumps({k: v for k, v in job.items() if k != "_mtime"}))
+    tmp = path.with_name(f"job.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({k: v for k, v in job.items() if k != "_mtime"}))
+    os.replace(tmp, path)
     try:
         job["_mtime"] = path.stat().st_mtime_ns
     except OSError:
@@ -670,6 +739,9 @@ def sweep_old_jobs() -> None:
         # so it's still reproducible when it's read, and expires on its own
         # REPORT_RETENTION_DAYS clock in sweep_old_reports().
         (UPLOADS / f"{d.name}.pdf").unlink(missing_ok=True)
+        # The rendered PDF is a sibling of outputs/<id>/, not a file inside it,
+        # so rmtree above doesn't touch it.
+        (OUTPUTS / f"{d.name}-filled.pdf").unlink(missing_ok=True)
         JOBS.pop(d.name, None)
 
 
@@ -907,6 +979,10 @@ def strip_bboxes_for_llm(structure: dict) -> dict:
             clean["answer_key"] = u["unit_id"]
             clean["options"] = [{"label": o["label"], "text": o["text"]}
                                 for o in (u.get("options") or [])]
+        elif u["type"] == "graph":
+            # The axis range rides along in prompt_text, so the text-fill path
+            # can answer a graph it never sees an image of.
+            clean["answer_key"] = u["unit_id"]
         units_for_llm.append(clean)
     return {"units": units_for_llm}
 
@@ -1354,6 +1430,8 @@ def login():
 
 @app.post("/signup")
 def signup():
+    if not EMAIL_AUTH_ENABLED:
+        abort(404)
     email = (request.form.get("email") or "").strip().lower()
     password = request.form.get("password") or ""
     name = (request.form.get("name") or "").strip()
@@ -1388,6 +1466,8 @@ def signup():
 
 @app.route("/verify/<token>")
 def verify_email(token):
+    if not EMAIL_AUTH_ENABLED:
+        abort(404)
     user = db.get_user_by_token(token)
     if user is None:
         return render_template("login.html",
@@ -1488,6 +1568,11 @@ WINDOW_PRESETS = [
 ]
 _WINDOW_HOURS = {key: hours for key, hours, _ in WINDOW_PRESETS}
 
+# Longest custom range the picker will draw. Every chart plots one point per
+# day, so an unbounded range (from=1970-01-01) builds ~20,000 of them per
+# chart and renders a page nobody can read.
+MAX_CUSTOM_RANGE_DAYS = 366
+
 
 def _admin_window() -> tuple[stats.Window, str]:
     """The slice of time the dashboard is showing, read off the query string,
@@ -1495,16 +1580,24 @@ def _admin_window() -> tuple[stats.Window, str]:
 
     Two shapes: a relative preset (`window=6h`) or an inclusive date range
     (`from=2026-10-04&to=2026-10-07`), the latter interpreted as whole Eastern
-    calendar days because that's what someone picking dates means.
+    calendar days because that's what someone picking dates means. One end of
+    the range on its own is still a range: the other end is filled in rather
+    than dropping the admin back on a preset that contradicts the dates the
+    page is showing them.
     """
     now = datetime.now(timezone.utc)
-    tz_offset = DASH_TZ.utcoffset(now).total_seconds() / 3600.0
 
     first = _parse_date(request.args.get("from"))
     last = _parse_date(request.args.get("to"))
-    if first and last:
+    if first or last:
+        first = first or last - timedelta(days=30)
+        last = last or now.astimezone(DASH_TZ).date()
         if last < first:
             first, last = last, first
+        span = (last - first).days + 1
+        if span > MAX_CUSTOM_RANGE_DAYS:
+            abort(400, f"That range covers {span} days. The dashboard draws one "
+                       f"point per day, so pick at most {MAX_CUSTOM_RANGE_DAYS}.")
         start = datetime(first.year, first.month, first.day, tzinfo=DASH_TZ)
         # `to` is inclusive — 10/4 to 10/7 means through the end of the 7th,
         # not up to its midnight, which would silently drop a whole day.
@@ -1513,7 +1606,7 @@ def _admin_window() -> tuple[stats.Window, str]:
         label = (f"{first:%b %-d} – {last:%b %-d}" if first != last
                  else f"{first:%b %-d}")
         return (stats.Window(start.astimezone(timezone.utc),
-                             end.astimezone(timezone.utc), tz_offset, label),
+                             end.astimezone(timezone.utc), DASH_TZ, label),
                 "custom")
 
     key = (request.args.get("window") or "").strip().lower()
@@ -1534,15 +1627,15 @@ def _admin_window() -> tuple[stats.Window, str]:
     # Start on a bucket boundary. "Last 7 days" starting at 3pm would leave the
     # oldest bucket holding nine hours of a day and reading as a dip, and would
     # draw eight points for a seven-day window.
-    local_now = now + timedelta(hours=tz_offset)
+    local_now = now.astimezone(DASH_TZ)
     if hours <= 72:  # hourly buckets, matching stats.Window.hourly
         local_start = (local_now.replace(minute=0, second=0, microsecond=0)
                        - timedelta(hours=hours - 1))
     else:
         local_start = (local_now.replace(hour=0, minute=0, second=0, microsecond=0)
                        - timedelta(days=hours // 24 - 1))
-    return (stats.Window(local_start - timedelta(hours=tz_offset), now,
-                         tz_offset, label),
+    return (stats.Window(local_start.astimezone(timezone.utc), now,
+                         DASH_TZ, label),
             key)
 
 
@@ -1561,15 +1654,20 @@ def admin():
 
     window, window_key = _admin_window()
 
-    # Eight independent HTTP round-trips to Supabase. Serially that's several
+    # Nine independent HTTP round-trips to Supabase. Serially that's several
     # seconds of pure latency, so fan them out — they don't depend on each
     # other. Each fetch already swallows its own errors and returns [].
     from concurrent.futures import ThreadPoolExecutor
+    utc_day_start = datetime.now(timezone.utc).replace(hour=0, minute=0,
+                                                       second=0, microsecond=0)
     jobs = {
         "signins": db.fetch_signins,
         "assignments": db.fetch_assignments,
         "users": db.fetch_users,
-        "ai_calls": db.fetch_ai_calls,
+        "ai_calls": lambda: db.fetch_ai_calls(window.start, window.end),
+        # The Hack Club budget widget always means today's UTC day, which the
+        # windowed fetch above can't answer for a window that ended earlier.
+        "hack_club_calls": lambda: db.fetch_ai_calls(utc_day_start),
         "payments": db.fetch_payments,
         "devices_daily": db.fetch_devices_daily,
         "devices_hourly": db.fetch_devices_hourly,
@@ -1584,6 +1682,7 @@ def admin():
         users=data["users"], ai_calls=data["ai_calls"],
         payments=data["payments"], devices_daily=data["devices_daily"],
         devices_hourly=data["devices_hourly"], device_total=data["device_total"],
+        hack_club_calls=data["hack_club_calls"],
         rate_card=costs.load(), hack_club_cap_usd=HACK_CLUB_BUDGET_USD,
         window=window,
     )
@@ -1660,13 +1759,20 @@ def admin_report_pdf(job_id: str, kind: str):
                      download_name=f"report-{job_id}-{kind}.pdf")
 
 
-@app.get("/admin/reports.zip")
+@app.route("/admin/reports.zip", methods=["GET", "POST"])
 def admin_reports_zip():
     """Download report snapshots as one archive. Admin only.
 
     Only the reports filed since the last time this was pressed, so repeat
     presses don't re-download a growing pile of the same evidence; ?all=1
     takes everything still on disk, for when an archive gets lost.
+
+    Only a POST advances that marker. Consuming the queue is a persistent
+    side effect, and on a GET it happens whether or not the download ever
+    completes — a cancelled save, a link prefetch or a stray top-level
+    navigation (the admin session cookie rides along under SameSite=Lax) would
+    burn the evidence permanently. A GET still hands back the same archive; it
+    just doesn't mark it as delivered.
 
     Built in memory: these are a handful of small PDFs, so a temp file buys
     nothing. Stored uncompressed because PDF content streams are already
@@ -1686,9 +1792,10 @@ def admin_reports_zip():
                 if p.is_file():
                     zf.write(p, arcname=f"report-{job_id}/{p.name}")
     buf.seek(0)
-    # Mark the newest report we actually packed, not "now": a report filed
-    # while this archive was being built would otherwise be skipped forever.
-    _mark_reports_downloaded(reported_at(job_ids[-1]))
+    if request.method == "POST":
+        # Mark the newest report we actually packed, not "now": a report filed
+        # while this archive was being built would otherwise be skipped forever.
+        _mark_reports_downloaded(reported_at(job_ids[-1]))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     return send_file(buf, mimetype="application/zip", as_attachment=True,
                      download_name=f"paperfill-reports-{stamp}.zip")
@@ -1774,6 +1881,7 @@ def index():
         ads_enabled=get_ads_enabled(),
         vast_tags=get_vast_tags(),
         donate_url=DONATE_URL,
+        max_upload_mb=MAX_UPLOAD_MB,
     )
 
 
@@ -1898,16 +2006,20 @@ def _verify_stripe_sig(payload: bytes, sig_header: str) -> bool:
     if not STRIPE_WEBHOOK_SECRET or not sig_header:
         return False
     try:
-        parts = dict(p.split("=", 1) for p in sig_header.split(",") if "=" in p)
-        ts, v1 = parts.get("t"), parts.get("v1")
-        if not ts or not v1:
+        parts = [p.split("=", 1) for p in sig_header.split(",") if "=" in p]
+        ts = next((v.strip() for k, v in parts if k.strip() == "t"), "")
+        # During a secret rollover Stripe signs the same event with every
+        # active secret and sends one v1 per secret. Keeping only the last one
+        # (dict(parts)) rejects half the traffic for the length of the roll.
+        sigs = [v.strip() for k, v in parts if k.strip() == "v1"]
+        if not ts or not sigs:
             return False
         if abs(time.time() - int(ts)) > 300:  # drop replays older than 5 min
             return False
         signed = ts.encode() + b"." + payload
         expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode(), signed,
                             hashlib.sha256).hexdigest()
-        return hmac.compare_digest(expected, v1)
+        return any(hmac.compare_digest(expected, s) for s in sigs)
     except (ValueError, TypeError):
         return False
 
@@ -2004,15 +2116,9 @@ def upload():
     # fill isn't known until the tokens come back. This check just blocks
     # starting a new job once today's balance is already gone; the upgrade
     # card in the UI is only a hint.
-    metered = not _is_pro()
-    if metered and usage.remaining_credits(_user_key()) <= 0:
-        return jsonify({
-            "error": f"You've used all {usage.FREE_DAILY_CREDITS} free AI credits "
-                     "for today. Upgrade to Pro for unlimited fills.",
-            "limit_reached": True,
-            "credits_left": 0,
-            "upgrade_url": url_for("pricing"),
-        }), 402
+    limited = _credit_limit_hit()
+    if limited:
+        return limited
 
     sweep_old_jobs()  # opportunistic cleanup of stale jobs
     sweep_old_reports()
@@ -2020,6 +2126,21 @@ def upload():
     job_id = new_job_id()
     pdf_path = UPLOADS / f"{job_id}.pdf"
     f.save(pdf_path)
+
+    # MAX_CONTENT_LENGTH bounds the bytes, not the pages, and a mostly-blank
+    # 10 MB PDF holds thousands. Both the detector below and the preview render
+    # after it walk every page, so this has to come before either of them.
+    try:
+        with fitz.open(str(pdf_path)) as doc:
+            page_count = len(doc)
+    except (RuntimeError, ValueError) as e:
+        pdf_path.unlink(missing_ok=True)
+        return jsonify({"error": f"could not parse PDF: {e}"}), 400
+    if page_count > MAX_PDF_PAGES:
+        pdf_path.unlink(missing_ok=True)
+        return jsonify({"error": f"That PDF has {page_count} pages. Paperfill "
+                                 f"fills up to {MAX_PDF_PAGES} at a time — split "
+                                 "it and upload the part you need."}), 400
 
     # Which answer formats to detect — chosen by the user in the UI. A JSON
     # array of format ids; absent/invalid means "detect all".
@@ -2065,21 +2186,22 @@ def upload():
     # Render preview images of each page so the frontend can show
     # what was uploaded.
     doc = fitz.open(str(pdf_path))
-    # A worksheet we filled once, downloaded and handed back. Its blanks are
-    # still blank-looking, so it fills again — the answers just land on top of
-    # the ones already there. The renderer refuses to restamp text that's
-    # already in the slot; this is what lets the UI say why.
-    already_filled = FILLED_MARKER in ((doc.metadata or {}).get("keywords") or "")
-    preview_dir = OUTPUTS / job_id
-    preview_dir.mkdir(exist_ok=True)
-    page_sizes = []
-    for i, page in enumerate(doc):
-        pix = page.get_pixmap(dpi=110)
-        pix.save(str(preview_dir / f"page-{i}.png"))
-        rect = page.rect
-        page_sizes.append({"width": rect.width, "height": rect.height})
-    page_count = len(doc)
-    doc.close()
+    try:
+        # A worksheet we filled once, downloaded and handed back. Its blanks are
+        # still blank-looking, so it fills again — the answers just land on top of
+        # the ones already there. The renderer refuses to restamp text that's
+        # already in the slot; this is what lets the UI say why.
+        already_filled = FILLED_MARKER in ((doc.metadata or {}).get("keywords") or "")
+        preview_dir = OUTPUTS / job_id
+        preview_dir.mkdir(exist_ok=True)
+        page_sizes = []
+        for i, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=110)
+            pix.save(str(preview_dir / f"page-{i}.png"))
+            rect = page.rect
+            page_sizes.append({"width": rect.width, "height": rect.height})
+    finally:
+        doc.close()
 
     JOBS[job_id] = {
         "pdf_path": str(pdf_path),
@@ -2136,6 +2258,10 @@ def context():
     Returns {context: "<combined labelled text>", sources: [{name, chars}]}.
     The frontend passes `context` back into /api/fill.
     """
+    limited = _credit_limit_hit()
+    if limited:
+        return limited
+
     sources: list[tuple[str, str]] = []
     summary = []
 
@@ -2164,6 +2290,10 @@ def context():
 
 @app.post("/api/fill")
 def fill():
+    limited = _credit_limit_hit()
+    if limited:
+        return limited
+
     data = request.get_json(silent=True) or {}
     job_id = data.get("job_id")
     job = load_job(job_id)
@@ -2355,7 +2485,7 @@ def build_font_route():
         return jsonify({"error": "no filled template uploaded"}), 400
 
     import tempfile
-    from paperfill.handwriting.font_build import build_font
+    from paperfill.handwriting.font_build import PotraceMissing, build_font
     otf_variants: list[bytes] = []
     with tempfile.TemporaryDirectory() as d:
         for vi, files in enumerate(groups):
@@ -2370,6 +2500,10 @@ def build_font_route():
                 build_font(paths[0] if len(paths) == 1 else paths, out,
                            family="Paperfill Hand")
                 otf_variants.append(Path(out).read_bytes())
+            except PotraceMissing:
+                # Nothing about the upload can fix this, so don't blame it.
+                return jsonify({"error": "handwriting builds are unavailable "
+                                "on this server"}), 500
             except Exception as e:
                 # One bad copy shouldn't sink the whole build if others worked.
                 print(f"[fonts] version {vi + 1} failed to build: {e}")
@@ -2432,11 +2566,13 @@ def _rerender_job(job_id: str) -> None:
                         pen_thickness_mm=pen_thickness,
                         watermark=prefs.get(_user_key())["watermark"])
     doc = fitz.open(str(filled_path))
-    preview_dir = OUTPUTS / job_id
-    for i, page in enumerate(doc):
-        pix = page.get_pixmap(dpi=110)
-        pix.save(str(preview_dir / f"filled-{i}.png"))
-    doc.close()
+    try:
+        preview_dir = OUTPUTS / job_id
+        for i, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=110)
+            pix.save(str(preview_dir / f"filled-{i}.png"))
+    finally:
+        doc.close()
     job["filled_path"] = str(filled_path)
 
 
@@ -2563,6 +2699,10 @@ def snip():
     sent to the vision model, which returns just the answer text. The frontend
     drops that into a new, editable text box the user positions over the blank.
     """
+    limited = _credit_limit_hit()
+    if limited:
+        return limited
+
     data = request.get_json(silent=True) or {}
     job = load_job(data.get("job_id"))
     if job is None:
@@ -2591,14 +2731,16 @@ def snip():
     # edge text isn't clipped, at a DPI high enough for the model to read it.
     try:
         doc = fitz.open(job["pdf_path"])
-        page = doc[page_idx]
-        pad_pts = 4
-        clip = fitz.Rect(
-            max(0, x0 - pad_pts), max(0, y0 - pad_pts),
-            min(page.rect.width, x1 + pad_pts), min(page.rect.height, y1 + pad_pts),
-        )
-        png_bytes = page.get_pixmap(dpi=VISION_DPI, clip=clip).tobytes("png")
-        doc.close()
+        try:
+            page = doc[page_idx]
+            pad_pts = 4
+            clip = fitz.Rect(
+                max(0, x0 - pad_pts), max(0, y0 - pad_pts),
+                min(page.rect.width, x1 + pad_pts), min(page.rect.height, y1 + pad_pts),
+            )
+            png_bytes = page.get_pixmap(dpi=VISION_DPI, clip=clip).tobytes("png")
+        finally:
+            doc.close()
     except Exception as e:
         return jsonify({"error": f"could not crop page: {e}"}), 500
 
@@ -2620,6 +2762,10 @@ def refine():
     Returns {text} — the replacement. The frontend drops it back into the box
     and marks the job dirty; nothing is saved/re-rendered until the user saves.
     """
+    limited = _credit_limit_hit()
+    if limited:
+        return limited
+
     data = request.get_json(silent=True) or {}
     job = load_job(data.get("job_id"))
     if job is None:

@@ -8,7 +8,8 @@ timezone shifting, "unknown vs zero" cost handling, and the style label that
 already fooled one version of this code.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -20,7 +21,7 @@ def ts(day: int, hour: int, minute: int = 0) -> str:
     return datetime(2026, 7, day, hour, minute, tzinfo=timezone.utc).isoformat()
 
 
-def win(days: int = 7, tz_offset: float = 0.0) -> stats.Window:
+def win(days: int = 7, tz=timezone.utc) -> stats.Window:
     """`days` whole days ending now, aligned to midnight the way the dashboard
     builds it. The section functions aggregate whatever rows they are handed —
     filtering happens once in build() — so a window here only decides the
@@ -28,7 +29,12 @@ def win(days: int = 7, tz_offset: float = 0.0) -> stats.Window:
     now = datetime.now(timezone.utc)
     start = (now.replace(hour=0, minute=0, second=0, microsecond=0)
              - timedelta(days=days - 1))
-    return stats.Window(start, now, tz_offset, f"Last {days} days")
+    return stats.Window(start, now, tz, f"Last {days} days")
+
+
+# America/New_York is UTC-5 in winter and UTC-4 in summer, which is the whole
+# point of holding a zone rather than an offset.
+ET = ZoneInfo("America/New_York")
 
 
 # ---- Time of day ---------------------------------------------------------
@@ -107,7 +113,7 @@ def test_money_series_is_dense_and_ends_today():
 def test_short_windows_bucket_by_hour():
     """A six-hour window plotted as one daily point is a chart of nothing."""
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    w = stats.Window(now - timedelta(hours=5), now + timedelta(minutes=1), 0.0)
+    w = stats.Window(now - timedelta(hours=5), now + timedelta(minutes=1))
     assert w.hourly
     out = stats.money([{"ts": now.isoformat(), "cost_usd": 1.0}], [], w)
     assert len(out["cost_series"]) == 6
@@ -119,7 +125,7 @@ def test_window_filters_events_but_not_accounts():
     """The window slices event streams; account totals are a stock, not a flow,
     and windowing them would answer a question nobody asked."""
     now = datetime.now(timezone.utc)
-    w = stats.Window(now - timedelta(days=2), now, 0.0)
+    w = stats.Window(now - timedelta(days=2), now)
     recent = {"ts": (now - timedelta(hours=1)).isoformat(), "style": "Typed text"}
     old_fill = {"ts": (now - timedelta(days=40)).isoformat(), "style": "Typed text"}
     s = stats.build(signins=[], assignments=[recent, old_fill],
@@ -135,6 +141,75 @@ def test_empty_inputs_do_not_divide_by_zero():
     assert out["margin_pct"] == 0.0 and out["arpu"] == 0.0
     assert stats.accounts([], [], [])["pro_pct"] == 0.0
     assert stats.reliability([])["success_pct"] == 0.0
+
+
+# ---- Windows -------------------------------------------------------------
+
+def _et_window(first: datetime, last: datetime) -> stats.Window:
+    """A Window over whole Eastern days, built the way _admin_window does."""
+    return stats.Window(first.astimezone(timezone.utc),
+                        last.astimezone(timezone.utc), ET)
+
+
+def test_a_winter_window_buckets_at_the_winter_offset():
+    """The window carries the zone, so it buckets in its own DST regime rather
+    than whatever offset happened to be in force when the page was loaded. A
+    December range shifted by August's -4 drew eleven points for a ten-day
+    range, the last of them past the end of what was asked for."""
+    w = _et_window(datetime(2026, 12, 1, tzinfo=ET), datetime(2026, 12, 11, tzinfo=ET))
+    assert [p["label"] for p in w.series({})] == [f"12-{d:02d}" for d in range(1, 11)]
+    # ET is UTC-5 in December: 04:59 UTC on the 11th is still the 10th locally.
+    assert w.bucket(datetime(2026, 12, 11, 4, 59, tzinfo=timezone.utc)) == date(2026, 12, 10)
+    assert w.bucket(datetime(2026, 12, 11, 5, 1, tzinfo=timezone.utc)) == date(2026, 12, 11)
+
+
+def test_a_summer_window_buckets_at_the_summer_offset():
+    """The other direction — a July range read in January must use UTC-4."""
+    w = _et_window(datetime(2026, 7, 1, tzinfo=ET), datetime(2026, 7, 11, tzinfo=ET))
+    assert [p["label"] for p in w.series({})] == [f"07-{d:02d}" for d in range(1, 11)]
+    assert w.bucket(datetime(2026, 7, 11, 3, 59, tzinfo=timezone.utc)) == date(2026, 7, 10)
+    assert w.bucket(datetime(2026, 7, 11, 4, 1, tzinfo=timezone.utc)) == date(2026, 7, 11)
+
+
+def test_a_window_spanning_the_dst_change_draws_one_point_per_local_day():
+    """ET falls back on 2026-11-01, making that local day 25 hours long. The
+    axis still gets one point per calendar day, and a cost recorded that day
+    lands on it."""
+    w = _et_window(datetime(2026, 10, 30, tzinfo=ET), datetime(2026, 11, 4, tzinfo=ET))
+    calls = [{"ts": "2026-11-01T18:00:00+00:00", "cost_usd": 2.0}]
+    out = stats.money(calls, [], w)
+    assert [p["label"] for p in out["cost_series"]] == [
+        "10-30", "10-31", "11-01", "11-02", "11-03"]
+    assert [p["value"] for p in out["cost_series"]] == [0, 0, 2.0, 0, 0]
+
+
+def test_filter_includes_the_start_instant_and_excludes_the_end():
+    """[start, end) — a row exactly at `start` is in, one exactly at `end`
+    belongs to the next window. Anything else double-counts the boundary row
+    when two windows are placed back to back."""
+    start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 8, tzinfo=timezone.utc)
+    w = stats.Window(start, end)
+    rows = [
+        {"ts": (start - timedelta(microseconds=1)).isoformat(), "id": "before"},
+        {"ts": start.isoformat(), "id": "at-start"},
+        {"ts": (end - timedelta(microseconds=1)).isoformat(), "id": "before-end"},
+        {"ts": end.isoformat(), "id": "at-end"},
+    ]
+    assert [r["id"] for r in w.filter(rows)] == ["at-start", "before-end"]
+
+
+def test_devices_daily_lands_in_a_bucket_the_chart_actually_draws():
+    """devices_daily is aggregated per UTC calendar day while the chart's
+    buckets are local days. Matched on the bare UTC date, the newest row has
+    no bucket at all between UTC midnight and midnight in ET, so it silently
+    drops off the chart every night."""
+    # 20:00 ET on the 10th is already 01:00 UTC on the 11th.
+    w = _et_window(datetime(2026, 12, 5, tzinfo=ET),
+                   datetime(2026, 12, 10, 20, tzinfo=ET))
+    out = stats.activity([], [], [], [{"day": "2026-12-11", "devices": 9}], w)
+    assert [p["label"] for p in out["devices"]][-1] == "12-10"
+    assert out["devices"][-1]["value"] == 9
 
 
 # ---- Product -------------------------------------------------------------

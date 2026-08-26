@@ -34,6 +34,7 @@ from paperfill.ai.preprocess import (
     find_underscore_runs,
     line_is_whitespace,
     lines_in_reading_order,
+    text_page_rect,
     MIN_ANSWER_SPACE,
     PAGE_RIGHT_MARGIN,
 )
@@ -99,7 +100,8 @@ def _grid_lines(coords: list[float], tolerance: float = GRID_TOLERANCE) -> list[
 
 def _page_rules(page) -> tuple[list[float], list[float]]:
     """Distinct vertical (x) and horizontal (y) ruled lines on the page."""
-    width, height = page.rect.width, page.rect.height
+    page_rect = text_page_rect(page)
+    width, height = page_rect.width, page_rect.height
     xs: list[float] = []
     ys: list[float] = []
     for drawing in page.get_drawings():
@@ -257,8 +259,9 @@ def page_candidates(page, page_no: int, counter: dict) -> list[Candidate]:
             emit("graph", image, grid)
 
     xs, ys = _page_rules(page)
-    left, right = PAGE_MARGIN, page.rect.width - PAGE_RIGHT_MARGIN
-    top, bottom = PAGE_MARGIN, page.rect.height - PAGE_MARGIN
+    page_rect = text_page_rect(page)
+    left, right = PAGE_MARGIN, page_rect.width - PAGE_RIGHT_MARGIN
+    top, bottom = PAGE_MARGIN, page_rect.height - PAGE_MARGIN
     for cx0, cx1 in _bands(xs, left, right):
         for cy0, cy1 in _bands(ys, top, bottom):
             for strip in _free_strips((cx0, cy0, cx1, cy1), content):
@@ -424,10 +427,10 @@ def _default_selector(pngs: list[bytes], regions: list[dict],
                                 "schema": SELECTION_SCHEMA, "strict": True},
             },
         )
-    from paperfill.utils.json_utils import extract_json_object
+    from paperfill.utils.json_utils import json_from_response
 
-    parsed = extract_json_object(resp.choices[0].message.content or "{}")
-    picked = parsed.get("selections") if isinstance(parsed, dict) else None
+    parsed = json_from_response(resp)
+    picked = parsed.get("selections")
     return picked if isinstance(picked, list) else []
 
 
@@ -509,9 +512,15 @@ def region_preprocess_pdf(path: str, formats=None, selector=None) -> dict:
                 dropped.append({"reason": "graph_without_axis_range",
                                 "region_id": rid})
                 continue
+            # The fill step may never see the page (only the vision path sends
+            # an image), so the grid's visible range has to travel in the
+            # prompt — a point outside it is dropped without a word.
             units.append(Unit(
                 unit_id=f"u{counter['u']}", type="graph", page=region["page"],
-                bbox=bbox, prompt_text=prompt,
+                bbox=bbox,
+                prompt_text=(f"{prompt} [coordinate grid: x from {axes[0]:g} "
+                             f"to {axes[1]:g}, y from {axes[2]:g} to "
+                             f"{axes[3]:g}; answer with the points to plot]"),
                 graph={**region["grid"], "x_min": axes[0], "x_max": axes[1],
                        "y_min": axes[2], "y_max": axes[3]},
             ))

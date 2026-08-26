@@ -17,8 +17,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
+
+try:                      # POSIX only; on anything else we run lock-free.
+    import fcntl
+except ImportError:       # pragma: no cover - Windows dev boxes
+    fcntl = None
 
 from paperfill.paths import REPO_ROOT
 
@@ -84,9 +90,35 @@ def _read_index() -> dict:
         return {}
 
 
-def _write_index(idx: dict) -> None:
+def _mutate(fn):
+    """Run ``fn(idx)`` against the index and persist whatever it leaves behind,
+    returning fn's result (same shape as ``data.usage._mutate``).
+
+    Two gunicorn workers share this file, so the whole read-modify-write runs
+    under an exclusive flock or one of them loses its update. The lock lives on
+    a sibling rather than on the index itself, because the new index is swapped
+    in with os.replace — that leaves a lock held on the index's old inode
+    guarding nothing. Replacing rather than truncating in place also means a
+    concurrent _read_index never sees a half-written file, which it would
+    otherwise take for an empty index and then overwrite everyone else's entry
+    with.
+
+    Unlike the usage counter this does NOT fail open: an index we can't write
+    is a font the user thinks they saved and didn't."""
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
-    _INDEX.write_text(json.dumps(idx, indent=2))
+    with open(_INDEX.with_suffix(".lock"), "a+", encoding="utf-8") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            idx = _read_index()
+            result = fn(idx)
+            tmp = _INDEX.with_suffix(".tmp")
+            tmp.write_text(json.dumps(idx, indent=2))
+            os.replace(tmp, _INDEX)
+            return result
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def _variant_paths(font_id: str) -> list[Path]:
@@ -136,13 +168,16 @@ def save_user_font(sub: str, otf_variants: list[bytes]) -> str:
         name = f"{font_id}.otf" if i == 0 else f"{font_id}.v{i + 1}.otf"
         (FONTS_DIR / name).write_bytes(b)
 
-    idx = _read_index()
-    # Rebuilding replaces the glyphs but keeps the appearance settings the user
-    # tuned — a fresh scan shouldn't silently reset their spacing/size choices.
-    prior = (idx.get(font_id) or {}).get("settings")
-    idx[font_id] = {"label": LABEL, "owner": sub, "created": time.time(),
-                    "variants": len(variants), "settings": coerce_settings(prior)}
-    _write_index(idx)
+    def apply(idx: dict) -> None:
+        # Rebuilding replaces the glyphs but keeps the appearance settings the
+        # user tuned — a fresh scan shouldn't silently reset their
+        # spacing/size choices.
+        prior = (idx.get(font_id) or {}).get("settings")
+        idx[font_id] = {"label": LABEL, "owner": sub, "created": time.time(),
+                        "variants": len(variants),
+                        "settings": coerce_settings(prior)}
+
+    _mutate(apply)
     return font_id
 
 
@@ -155,13 +190,25 @@ def get_settings(font_id: str) -> dict:
 
 def save_settings(font_id: str, settings: dict) -> dict:
     """Persist validated appearance settings for an existing font. Returns the
-    clamped settings actually stored. Raises KeyError if the font is unknown."""
-    idx = _read_index()
-    if font_id not in idx:
+    clamped settings actually stored. Raises KeyError if the font doesn't
+    exist."""
+    if font_path(font_id) is None:
         raise KeyError(font_id)
     clean = coerce_settings(settings)
-    idx[font_id]["settings"] = clean
-    _write_index(idx)
+
+    def apply(idx: dict) -> None:
+        # The OTFs on disk are what "having a font" means everywhere else, and
+        # the index can fall behind them (a lost write, a font restored from
+        # backup). Rebuild the entry from disk rather than refusing to store
+        # settings for a font the user can plainly see.
+        entry = idx.get(font_id)
+        if not isinstance(entry, dict):
+            entry = {"label": LABEL, "created": time.time(),
+                     "variants": len(_variant_paths(font_id))}
+            idx[font_id] = entry
+        entry["settings"] = clean
+
+    _mutate(apply)
     return clean
 
 

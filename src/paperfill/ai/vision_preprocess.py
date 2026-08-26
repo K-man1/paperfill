@@ -18,7 +18,9 @@ import base64
 import os
 import re
 
-from paperfill.utils.json_utils import extract_json_object
+import fitz
+
+from paperfill.utils.json_utils import json_from_response
 from paperfill.ai.preprocess import Slot, Unit
 
 
@@ -75,10 +77,26 @@ def _clean_norm_box(box):
     return [x0, y0, x1, y1]
 
 
-def _norm_box_to_points(box, page_w: float, page_h: float):
-    """Normalized [x0,y0,x1,y1] (top-left origin) -> PDF-point bbox."""
+def _norm_box_to_points(box, page):
+    """Normalized [x0,y0,x1,y1] (top-left origin) -> PDF-point bbox.
+
+    The model saw get_pixmap()'s output, which renders the ROTATED page, so its
+    normalized coordinates are relative to page.rect. The renderer stamps into
+    the unrotated frame, so the box is derotated back into it — without that,
+    every answer on a /Rotate 90 scan lands mirrored across the page diagonal.
+    """
     x0, y0, x1, y1 = box
-    return (x0 * page_w, y0 * page_h, x1 * page_w, y1 * page_h)
+    r = page.rect
+    box_pt = fitz.Rect(x0 * r.width, y0 * r.height,
+                       x1 * r.width, y1 * r.height) * page.derotation_matrix
+    return (box_pt.x0, box_pt.y0, box_pt.x1, box_pt.y1)
+
+
+# A transposed page shows up as a clear majority of tall-narrow blanks, but two
+# such boxes are an ordinary answer column or a two-cell chart, and flipping the
+# page on that evidence mirrors every answer across the diagonal. Only believe
+# the swap once there are enough blanks for "majority" to mean something.
+MIN_TRANSPOSE_SAMPLE = 5
 
 
 def _page_is_transposed(blank_boxes: list[list[float]]) -> bool:
@@ -88,7 +106,7 @@ def _page_is_transposed(blank_boxes: list[list[float]]) -> bool:
     clear majority of blank boxes come back taller-than-wide, the frame was
     transposed.
     """
-    if len(blank_boxes) < 2:
+    if len(blank_boxes) < MIN_TRANSPOSE_SAMPLE:
         return False
     portrait = sum(1 for b in blank_boxes if (b[3] - b[1]) > (b[2] - b[0]))
     return portrait >= 0.6 * len(blank_boxes)
@@ -115,8 +133,7 @@ def _call_vision(page, client) -> dict:
             ],
             response_format={"type": "json_object"},
         )
-    content = resp.choices[0].message.content or "{}"
-    return extract_json_object(content)
+    return json_from_response(resp)
 
 
 def detect_scanned_page(page, page_num: int, counter: dict, client=None) -> list[Unit]:
@@ -129,9 +146,6 @@ def detect_scanned_page(page, page_num: int, counter: dict, client=None) -> list
     if not isinstance(items, list):
         print(f"[vision] page {page_num}: no items in model response")
         return []
-
-    page_w = page.rect.width
-    page_h = page.rect.height
 
     # Pass 1: parse items into normalized boxes (drop malformed ones).
     parsed_items: list[dict] = []
@@ -161,7 +175,7 @@ def detect_scanned_page(page, page_num: int, counter: dict, client=None) -> list
         prompt, kind, boxes = it["prompt"], it["kind"], it["boxes"]
 
         if kind == "open":
-            region = _norm_box_to_points(boxes[0], page_w, page_h)
+            region = _norm_box_to_points(boxes[0], page)
             counter["u"] += 1
             units.append(Unit(
                 unit_id=f"u{counter['u']}",
@@ -181,7 +195,7 @@ def detect_scanned_page(page, page_num: int, counter: dict, client=None) -> list
             prompt_parts.append(parts[i] if i < len(parts) else " ")
             counter["n"] += 1
             slot_id = f"s{counter['n']}"
-            sbbox = _norm_box_to_points(box, page_w, page_h)
+            sbbox = _norm_box_to_points(box, page)
             slots.append(Slot(
                 slot_id=slot_id,
                 bbox=sbbox,

@@ -825,6 +825,13 @@ button {
   transition: background 0.1s, border-color 0.1s;
 }
 .overlay .ov-text { color: transparent; caret-color: var(--ink); }
+/* Hiding the browser's copy only works while the page image underneath is in
+   sync. After a save fails the image still shows the previous answer, so the
+   overlay holds the only copy of what the user typed and has to paint it. */
+#editor-pages.stale-pages .overlay {
+  background: rgba(255, 253, 250, 0.98);
+}
+#editor-pages.stale-pages .overlay .ov-text { color: #000000; }
 .overlay:hover, .overlay.selected {
   background: rgba(255, 253, 250, 0.98);
   border-color: var(--accent);
@@ -1573,9 +1580,16 @@ const fileInput = $("file-input");
 );
 // A file is staged on drop/select; processing starts only when the user
 // clicks "Fill worksheet".
+const MAX_UPLOAD_MB = {{ max_upload_mb | tojson }};
 let stagedFile = null;
 function stageFile(f) {
   if (f.type !== "application/pdf") { toast("Please upload a PDF", true); return; }
+  // Caught here rather than at the server, which answers an oversize body with
+  // a bare 413 that carries no JSON to show the user.
+  if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
+    toast(`That PDF is ${(f.size / 1024 / 1024).toFixed(1)} MB. The limit is ${MAX_UPLOAD_MB} MB.`, true);
+    return;
+  }
   stagedFile = f;
   $("drop-title").textContent = f.name;
   $("drop-sub").textContent = "click to choose a different file";
@@ -1612,7 +1626,11 @@ function attachRow(kind, name, onRemove) {
   const li = document.createElement("li");
   const span = document.createElement("span");
   span.className = "att-name";
-  span.innerHTML = `<span class="att-kind">${kind}</span>${name}`;
+  const tag = document.createElement("span");
+  tag.className = "att-kind";
+  tag.textContent = kind;
+  span.appendChild(tag);
+  span.appendChild(document.createTextNode(name));
   const btn = document.createElement("button");
   btn.className = "att-rm";
   btn.textContent = "×";
@@ -1628,23 +1646,53 @@ $("ref-files").addEventListener("change", e => {
   e.target.value = "";
   renderAttachList();
 });
+// Same accepted forms as extract_youtube_id server-side, so a link that would
+// be dropped there never sits in the list looking as though it's attached.
+const YT_FORMS = [
+  /^[A-Za-z0-9_-]{11}$/,
+  /[?&]v=[A-Za-z0-9_-]{11}/,
+  /(?:youtu\.be\/|\/embed\/|\/shorts\/|\/v\/)[A-Za-z0-9_-]{11}/,
+];
+
 $("yt-add-btn").addEventListener("click", () => {
   const input = $("yt-url");
   const u = input.value.trim();
-  if (u) { ytUrls.push(u); input.value = ""; renderAttachList(); }
+  if (!u) return;
+  if (!YT_FORMS.some(re => re.test(u))) {
+    toast("That isn't a YouTube link. Paste a youtube.com or youtu.be video URL.", true);
+    return;
+  }
+  ytUrls.push(u);
+  input.value = "";
+  renderAttachList();
 });
 $("yt-url").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); $("yt-add-btn").click(); }
 });
 
+// A 413 from Werkzeug, or a proxy's error page, arrives as HTML: a parse
+// failure means the request was refused, not that the JSON was malformed.
+async function readJson(r) {
+  try {
+    return await r.json();
+  } catch (_) {
+    throw new Error(r.status === 413
+      ? `That file is over the ${MAX_UPLOAD_MB} MB limit. Try a smaller one.`
+      : `The server returned an unreadable response (HTTP ${r.status}). Try again.`);
+  }
+}
+
+// Throws rather than returning "": filling a worksheet with none of the
+// reference material the user attached still costs them a credit, so the
+// failure has to reach handleUpload's error path instead of passing silently.
 async function gatherContext() {
   if (refFiles.length === 0 && ytUrls.length === 0) return "";
   const form = new FormData();
   refFiles.forEach(f => form.append("files", f));
   form.append("youtube_urls", JSON.stringify(ytUrls));
   const r = await fetch("/api/context", { method: "POST", body: form });
-  if (!r.ok) return "";
-  const data = await r.json();
+  const data = await readJson(r);
+  if (!r.ok) throw new Error(data.error || "Couldn't read the reference material you attached");
   return data.context || "";
 }
 
@@ -1909,7 +1957,7 @@ async function handleUpload(file) {
         fetch("/api/upload", { method: "POST", body: form }),
         gatherContext(),
       ]);
-      const data = await r.json();
+      const data = await readJson(r);
       if (!r.ok) {
         // A 402 means the free daily credit budget is spent. Carry the flag on
         // the error so the catch below can update the meter, not just the banner.
@@ -2124,12 +2172,14 @@ function renderResult(data) {
   dirty = false;
   cancelPendingSave();   // a queued save from the previous job must not fire
   clearHistory();        // never undo across job boundaries
+  clipboardOv = null;    // a box copied out of the old job has no page here
   resetReport();
   exitDrawModes();
   hideRefineBar();
   setActiveOverlay(null);  // also reflects the doc-wide font/size into the toolbar
 
   const root = $("editor-pages");
+  root.classList.remove("stale-pages");
   root.innerHTML = "";
   for (let i = 0; i < data.page_count; i++) {
     const wrap = document.createElement("div");
@@ -2692,6 +2742,9 @@ function runEraser(wrap, pageIdx, scale, wrapRect, sx, sy) {
       !(o.kind === "ink" && o.page === pageIdx && strokeHit(o, x, y, radius)));
     if (keep.length === overlays.length) return;
     overlays = keep;
+    // Erasing bypasses deleteOverlay, so the toolbar would go on describing a
+    // stroke that no longer exists.
+    if (activeOverlayId && !findOv(activeOverlayId)) clearSelection();
     positionOverlaysOnPage(pageIdx);
     hitAny = true;
   }
@@ -3099,7 +3152,8 @@ function pasteOverlay() {
 // ---- Editor keys --------------------------------------------------------
 // ⌘Z is captured even inside a box's contenteditable. The browser's native undo
 // would roll the DOM text back without telling `overlays`, so the model and the
-// screen would disagree and the next save would write the wrong thing.
+// screen would disagree and the next save would write the wrong thing. Ordinary
+// form fields aren't part of the document, so they keep their native undo.
 document.addEventListener("keydown", e => {
   if (!$("stage-result").classList.contains("active")) return;
   if ($("report-backdrop").classList.contains("open")) return;
@@ -3110,8 +3164,18 @@ document.addEventListener("keydown", e => {
   const inText = !!active?.classList?.contains("ov-text");
   const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(active?.tagName || "");
 
-  if (mod && k === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
-  if (mod && k === "y") { e.preventDefault(); redo(); return; }
+  if (mod && k === "z") {
+    if (inField) return;
+    e.preventDefault();
+    e.shiftKey ? redo() : undo();
+    return;
+  }
+  if (mod && k === "y") {
+    if (inField) return;
+    e.preventDefault();
+    redo();
+    return;
+  }
 
   if (mod && k === "c") {
     if (inField) return;
@@ -3315,12 +3379,14 @@ async function saveOverlays({ silent = false } = {}) {
       const i = img.dataset.page;
       img.src = `/api/preview/${currentJob.job_id}/filled/${i}?t=${Date.now()}`;
     });
+    $("editor-pages").classList.remove("stale-pages");
     // Edits made while this request was in flight are not on the server yet.
     if (seq === editSeq) dirty = false;
     setStatus("Saved");
     if (!silent) toast("Changes saved");
     return true;
   } catch (err) {
+    $("editor-pages").classList.add("stale-pages");
     toast(err.message, true);
     setStatus("Save failed");
     return false;

@@ -294,93 +294,95 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
     """
     images = images or {}
     doc = fitz.open(pdf_path)
-    for ov in overlays:
-        page_idx = ov.get("page", 0)
-        if page_idx < 0 or page_idx >= len(doc):
-            continue
-        page = doc[page_idx]
-
-        if ov.get("kind") == "circle":
-            x0, y0, x1, y1 = ov["bbox"]
-            rect = fitz.Rect(x0 - _CIRCLE_PAD, y0 - _CIRCLE_PAD,
-                             x1 + _CIRCLE_PAD, y1 + _CIRCLE_PAD)
-            try:
-                page.draw_oval(rect, color=_CIRCLE_COLOR, width=_CIRCLE_WIDTH)
-            except Exception:
-                pass
-            continue
-
-        if ov.get("kind") == "points":
-            plot = ov.get("plot", "points")
-            pts = [(float(x), float(y)) for x, y in (ov.get("points") or [])]
-            if plot == "none" or not pts:
+    try:
+        for ov in overlays:
+            page_idx = ov.get("page", 0)
+            if page_idx < 0 or page_idx >= len(doc):
                 continue
-            try:
-                shape = page.new_shape()
-                if plot == "curve":
-                    shape.draw_polyline([fitz.Point(x, y)
-                                         for x, y in curve_through(pts)])
-                    shape.finish(color=_POINT_COLOR, width=_CURVE_WIDTH,
-                                 closePath=False, lineCap=1, lineJoin=1)
-                else:
-                    for x, y in pts:
-                        shape.draw_circle(fitz.Point(x, y), _POINT_RADIUS)
-                    shape.finish(color=_POINT_COLOR, fill=_POINT_COLOR,
-                                 width=0.4)
-                shape.commit()
-            except Exception:
-                pass
-            continue
+            page = doc[page_idx]
 
-        if ov.get("kind") == "ink":
-            points = ov.get("points") or []
-            if len(points) >= 2:
+            if ov.get("kind") == "circle":
+                x0, y0, x1, y1 = ov["bbox"]
+                rect = fitz.Rect(x0 - _CIRCLE_PAD, y0 - _CIRCLE_PAD,
+                                 x1 + _CIRCLE_PAD, y1 + _CIRCLE_PAD)
+                try:
+                    page.draw_oval(rect, color=_CIRCLE_COLOR, width=_CIRCLE_WIDTH)
+                except Exception:
+                    pass
+                continue
+
+            if ov.get("kind") == "points":
+                plot = ov.get("plot", "points")
+                pts = [(float(x), float(y)) for x, y in (ov.get("points") or [])]
+                if plot == "none" or not pts:
+                    continue
                 try:
                     shape = page.new_shape()
-                    shape.draw_polyline([fitz.Point(x, y) for x, y in points])
-                    shape.finish(color=_hex_to_rgb(ov.get("color")),
-                                width=float(ov.get("width", 2.0)),
-                                closePath=False, lineCap=1, lineJoin=1)
+                    if plot == "curve":
+                        shape.draw_polyline([fitz.Point(x, y)
+                                             for x, y in curve_through(pts)])
+                        shape.finish(color=_POINT_COLOR, width=_CURVE_WIDTH,
+                                     closePath=False, lineCap=1, lineJoin=1)
+                    else:
+                        for x, y in pts:
+                            shape.draw_circle(fitz.Point(x, y), _POINT_RADIUS)
+                        shape.finish(color=_POINT_COLOR, fill=_POINT_COLOR,
+                                     width=0.4)
                     shape.commit()
                 except Exception:
                     pass
-            continue
-
-        png = images.get(ov.get("id"))
-        if png:
-            try:
-                _insert_handwriting_image(page, ov["bbox"], png, pen_thickness_mm)
                 continue
-            except Exception:
-                pass  # fall through to text rendering on any image failure
 
-        html = _overlay_to_html(ov)
-        if not html:
-            continue
-        if _already_printed(page, ov["bbox"], ov.get("text") or ""):
-            continue
-        rect = fitz.Rect(*ov["bbox"])
-        try:
-            page.insert_htmlbox(rect, html)
-        except Exception:
-            # htmlbox failed (bad rect, unsupported font) — fall back to plain text
-            insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
-    if watermark:
-        _stamp_watermark(doc)
-    # Tag our own output so a re-upload of it is recognisable. Merged into the
-    # existing Info dict rather than replacing it, because set_metadata writes
-    # the whole dict and would otherwise drop the source document's author.
-    meta = dict(doc.metadata or {})
-    keywords = meta.get("keywords") or ""
-    if FILLED_MARKER not in keywords:
-        meta["keywords"] = f"{keywords} {FILLED_MARKER}".strip()
-        doc.set_metadata(meta)
-    # garbage=4 + deflate strip orphaned objects and compress streams; without
-    # them PyMuPDF leaves the source PDF's bloat in place (a study guide ballooned
-    # to ~178MB). With them the same file lands around 10MB.
-    doc.save(out_path, garbage=4, deflate=True, deflate_images=True,
-             deflate_fonts=True, clean=True)
-    doc.close()
+            if ov.get("kind") == "ink":
+                points = ov.get("points") or []
+                if len(points) >= 2:
+                    try:
+                        shape = page.new_shape()
+                        shape.draw_polyline([fitz.Point(x, y) for x, y in points])
+                        shape.finish(color=_hex_to_rgb(ov.get("color")),
+                                    width=float(ov.get("width", 2.0)),
+                                    closePath=False, lineCap=1, lineJoin=1)
+                        shape.commit()
+                    except Exception:
+                        pass
+                continue
+
+            png = images.get(ov.get("id"))
+            if png:
+                try:
+                    _insert_handwriting_image(page, ov["bbox"], png, pen_thickness_mm)
+                    continue
+                except Exception:
+                    pass  # fall through to text rendering on any image failure
+
+            html = _overlay_to_html(ov)
+            if not html:
+                continue
+            if _already_printed(page, ov["bbox"], ov.get("text") or ""):
+                continue
+            rect = fitz.Rect(*ov["bbox"])
+            try:
+                page.insert_htmlbox(rect, html)
+            except Exception:
+                # htmlbox failed (bad rect, unsupported font) — fall back to plain text
+                insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
+        if watermark:
+            _stamp_watermark(doc)
+        # Tag our own output so a re-upload of it is recognisable. Merged into the
+        # existing Info dict rather than replacing it, because set_metadata writes
+        # the whole dict and would otherwise drop the source document's author.
+        meta = dict(doc.metadata or {})
+        keywords = meta.get("keywords") or ""
+        if FILLED_MARKER not in keywords:
+            meta["keywords"] = f"{keywords} {FILLED_MARKER}".strip()
+            doc.set_metadata(meta)
+        # garbage=4 + deflate strip orphaned objects and compress streams; without
+        # them PyMuPDF leaves the source PDF's bloat in place (a study guide ballooned
+        # to ~178MB). With them the same file lands around 10MB.
+        doc.save(out_path, garbage=4, deflate=True, deflate_images=True,
+                 deflate_fonts=True, clean=True)
+    finally:
+        doc.close()
 
 
 _POINT_RADIUS = 2.0

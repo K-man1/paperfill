@@ -130,9 +130,33 @@ def test_glyph_bounds_sane(filled, tmp_path):
         assert (y1 - y0) < 1050, f"{ch!r} too tall: {(y0, y1)}"
 
 
+def _glyph_bounds(otf_path) -> dict:
+    """Every glyph's outline bounds, keyed by character."""
+    f = TTFont(otf_path)
+    cmap, gs = f.getBestCmap(), f.getGlyphSet()
+    out = {}
+    for ch in T.glyphs():
+        name = cmap.get(ord(ch))
+        if name is None:
+            continue
+        pen = BoundsPen(gs)
+        gs[name].draw(pen)
+        if pen.bounds:
+            out[ch] = pen.bounds
+    return out
+
+
 @requires_build
-def test_build_survives_perspective(tmp_path):
-    """Marker detection + homography recover the grid from warped 'photos'."""
+def test_build_survives_perspective(filled, tmp_path):
+    """Marker detection + homography recover the grid from warped 'photos'.
+
+    Asserting the glyphs merely EXIST proves nothing: when _find_markers fails,
+    rectify falls back to resizing the whole photo, and a resized cell still
+    holds enough ink to trace something for every character. What the fallback
+    can't do is put the ink back where it belongs — it shifts and crops the
+    glyphs. So compare the warped build's outlines against the flat scan's:
+    with the homography the two agree to a fraction of an em, without it they
+    drift by tens of units and the worst glyph is cropped to pieces."""
     import cv2
     from paperfill.handwriting.font_build import build_font
     paths = []
@@ -140,9 +164,21 @@ def test_build_survives_perspective(tmp_path):
         p = tmp_path / f"w{i}.png"
         cv2.imwrite(str(p), _warp(page))
         paths.append(str(p))
-    f = TTFont(build_font(paths, str(tmp_path / "f.otf")))
-    cmap = f.getBestCmap()
-    assert all(ord(c) in cmap for c in "ABCXYZabcxyz123")
+
+    flat = _glyph_bounds(build_font(filled, str(tmp_path / "flat.otf")))
+    warped = _glyph_bounds(build_font(paths, str(tmp_path / "warped.otf")))
+    assert set(flat) == set(warped)
+    assert set("ABCXYZabcxyz123") <= set(flat)
+
+    drift = {ch: max(abs(a - b) for a, b in zip(flat[ch], warped[ch]))
+             for ch in flat}
+    worst, off = max(drift.items(), key=lambda kv: kv[1])
+    # Font units, UPM = 1000. The homography leaves a wobble of a couple of
+    # units from the resampling; the resize fallback averages ~100 units off
+    # with its worst glyph out by ~800, so either bound separates the two by a
+    # factor of four or better.
+    assert sum(drift.values()) / len(drift) < 8, "outlines drifted across the board"
+    assert off < 60, f"{worst!r} is off by {off:.0f} units"
 
 
 # ---- font_render ----------------------------------------------------------
@@ -161,16 +197,41 @@ def test_render_text_png(filled, tmp_path):
     assert render_text_png("   ", otf) == b""
 
 
-def test_pen_calibrated_answer_is_stamped_not_typeset(tmp_path):
-    """A pen-thickness recalibration must not blow up mid-stamp.
-
-    render_overlays_pdf catches any stamping failure and quietly falls back to
-    typeset text, so a bug here doesn't raise — the whole worksheet just comes
-    out typed with no error anywhere. Assert on the rendered page instead: the
-    answer has to land as an image, and the text must NOT be in the page's text
-    layer (which is what the fallback would produce)."""
+def _stamped_ink(pdf_path, slot_bbox):
+    """The alpha of the handwriting image stamped into ``slot_bbox``, plus the
+    page points one of its pixels covers — enough to read a stroke width back
+    off the page in millimetres."""
     import io
     import fitz
+    doc = fitz.open(str(pdf_path))
+    page = doc[0]
+    slot = fitz.Rect(slot_bbox)
+    # The watermark is stamped too, so pick the image that lands in the slot.
+    stamped = [(img, r) for img in page.get_images(full=True)
+               for r in page.get_image_rects(img[0]) if r.intersects(slot)]
+    assert len(stamped) == 1, f"{len(stamped)} images in the answer slot"
+    img, rect = stamped[0]
+    # insert_image splits an RGBA PNG into an RGB image plus a soft mask, and
+    # the ink is entirely in that mask (the colour plane is flat black).
+    smask = doc.extract_image(img[1])["image"]
+    alpha = np.array(Image.open(io.BytesIO(smask)).convert("L"))
+    doc.close()
+    return alpha, rect.width / alpha.shape[1]
+
+
+@requires_build
+def test_pen_thickness_lands_on_the_page_as_a_real_stroke_width(filled, tmp_path):
+    """The mm setting has to survive the whole path: build the font, render the
+    answer, stamp it, then measure the ink that actually reached the page.
+
+    render_overlays_pdf catches any stamping failure and quietly falls back to
+    typeset text, so a bug here doesn't raise — the worksheet just comes out
+    typed. And a calibration that erodes the ink away, or ignores the setting,
+    still stamps a perfectly valid image. So check the ink itself."""
+    import fitz
+    from paperfill.handwriting.font_build import build_font
+    from paperfill.handwriting.font_render import (MM_PER_PT, estimate_stroke_px,
+                                                   render_text_png)
     from paperfill.ai.render import render_overlays_pdf
 
     src = tmp_path / "src.pdf"
@@ -179,23 +240,31 @@ def test_pen_calibrated_answer_is_stamped_not_typeset(tmp_path):
     doc.save(str(src))
     doc.close()
 
-    # Stand-in for a handwriting render: dark ink on alpha, same as font_render.
-    ink = np.zeros((150, 400, 4), dtype=np.uint8)
-    ink[60:90, 20:380, 3] = 255
-    buf = io.BytesIO()
-    Image.fromarray(ink, "RGBA").save(buf, format="PNG")
+    otf = build_font(filled, str(tmp_path / "f.otf"))
+    png = render_text_png("Handwriting sample", otf, max_width_px=1400)
+    bbox = [20, 40, 280, 120]
 
-    overlays = [{"id": "ov0", "page": 0, "bbox": [20, 40, 280, 90],
-                 "text": "UNIQUEANSWER"}]
-    out = tmp_path / "out.pdf"
-    render_overlays_pdf(str(src), overlays, str(out),
-                        images={"ov0": buf.getvalue()}, pen_thickness_mm=0.4)
+    def stamp(mm):
+        out = tmp_path / f"out{mm}.pdf"
+        render_overlays_pdf(str(src), [{"id": "ov0", "page": 0, "bbox": bbox,
+                                        "text": "UNIQUEANSWER"}], str(out),
+                            images={"ov0": png}, pen_thickness_mm=mm)
+        with fitz.open(str(out)) as stamped:
+            assert "UNIQUEANSWER" not in stamped[0].get_text(), \
+                "fell back to typeset text"
+        alpha, pt_per_px = _stamped_ink(out, bbox)
+        assert (alpha > 60).any(), "the calibrated answer has no ink left"
+        return estimate_stroke_px(alpha) * pt_per_px * MM_PER_PT
 
-    doc = fitz.open(str(out))
-    page = doc[0]
-    assert page.get_images(full=True), "answer was not stamped as an image"
-    assert "UNIQUEANSWER" not in page.get_text(), "fell back to typeset text"
-    doc.close()
+    fine = stamp(0.4)
+    # estimate_stroke_px reads a dilated glyph a few percent thick (corners and
+    # joins cost perimeter), and the dilation radius is a whole number of
+    # render pixels — ~0.04mm each here — so allow a few pixels of slack. It
+    # still excludes the font's own uncalibrated stroke, 0.25mm on this build.
+    assert abs(fine - 0.4) < 0.12, f"0.4mm pen measured {fine:.3f}mm"
+    # The top of the slider has to keep moving: MAX_PEN_RADIUS_PX capping too
+    # low would flatten a bold nib back onto the fine one.
+    assert stamp(1.2) > 1.5 * fine
 
 
 # ---- font_store -----------------------------------------------------------

@@ -117,6 +117,18 @@ class Unit:
     graph: dict | None = None
 
 
+def text_page_rect(page) -> fitz.Rect:
+    """The page box in the space char bboxes and drawing calls actually use.
+
+    `page.rect` reports the ROTATED frame: on a /Rotate 90 page it comes back
+    792x612. But get_text() char bboxes, draw_rect, insert_text and insert_image
+    all stay in the unrotated frame (612x792), so comparing a char bbox against
+    page.rect mixes two coordinate spaces and every margin/footer offset lands
+    somewhere else. Everything downstream measures geometry against this box.
+    """
+    return page.rect * page.derotation_matrix
+
+
 def chars_of_span(span) -> list[dict]:
     """Get character list from a rawdict span."""
     return span.get("chars", [])
@@ -179,9 +191,17 @@ def extract_inline_blanks_from_group(group: list[dict], page_num: int,
     covering all of them. The prompt is the joined text with {{slot_id}}
     placeholders; each slot has its precise per-run bbox.
     """
-    # Flatten chars across all lines in this group, in reading order.
+    # Flatten chars across all lines in this group, in reading order. The
+    # newline between lines is load-bearing twice over: it keeps an underscore
+    # run from spanning two ruled answer lines — one slot with a bbox tall
+    # enough to cover both only ever gets written on its bottom rule — and it
+    # supplies the space at a wrapped prompt's break ("The capital of" /
+    # "France is ___"). It collapses away with the rest of the whitespace
+    # below, so it never reaches the model as a character.
     all_chars: list[dict] = []
     for line in group:
+        if all_chars:
+            all_chars.append({"c": "\n", "bbox": None})
         for span in line["spans"]:
             all_chars.extend(chars_of_span(span))
 
@@ -441,12 +461,17 @@ def _option_label_bbox(line: dict) -> tuple[float, float, float, float]:
     (or numeral) and its '.'/')'. That is what the renderer circles, so we want it
     tight to the label, not the whole option text."""
     chars = line["chars"]
-    end = 0
-    for i, c in enumerate(chars[:8]):        # label lives in the first few chars
+    # LABEL_LINE_RE matched the lstripped text, so the label starts at the
+    # first non-space glyph, not at index 0: on an indented option the leading
+    # spaces would otherwise fill the window and the bbox would cover the blank
+    # space to the left of the letter instead of the letter itself.
+    start = next((i for i, c in enumerate(chars) if not c["c"].isspace()), 0)
+    end = start
+    for i in range(start, min(start + 8, len(chars))):   # label is a few chars
         end = i
-        if c["c"] in ".)":
+        if chars[i]["c"] in ".)":
             break
-    return bbox_of_chars(chars, 0, end)
+    return bbox_of_chars(chars, start, end)
 
 
 def _make_mc_unit(options: list[dict], page_num: int, counter: dict,
@@ -1035,123 +1060,126 @@ def preprocess_pdf(path: str, formats=None) -> dict:
     all_units: list[Unit] = []
     ocr_client = None
 
-    for page_num, page in enumerate(doc):
-        # Scanned page: either no text layer at all, or a full-page image with a
-        # baked-in OCR text layer that would feed the text parser pure noise.
-        # Either way, route it through the OCR detector.
-        if page_is_scanned(page) or not page_has_text_layer(page):
-            from paperfill.ai.vision_preprocess import detect_scanned_page, _build_client
-            if ocr_client is None:
-                ocr_client = _build_client()
-            all_units.extend(
-                detect_scanned_page(page, page_num, counter, client=ocr_client)
-            )
-            continue
-
-        # Find tables first so we can exclude their content from inline
-        # detection. Only relevant when the table format is selected; otherwise
-        # table cells are treated as ordinary lines (so e.g. underscores inside
-        # a grid still get filled).
-        table_bboxes = []
-        if "table" in active:
-            try:
-                tables = page.find_tables()
-            except Exception:
-                tables = None
-            table_bboxes = [t.bbox for t in tables.tables] if tables else []
-
-            for t in (tables.tables if tables else []):
-                tu = extract_table_unit(t, page_num, counter)
-                if not tu:
-                    continue
-                populate_table_cell_slots(tu, page, counter)
-                has_slots = any(
-                    cell and cell["slots"]
-                    for row in tu.table_cells for cell in row
+    try:
+        for page_num, page in enumerate(doc):
+            # Scanned page: either no text layer at all, or a full-page image with a
+            # baked-in OCR text layer that would feed the text parser pure noise.
+            # Either way, route it through the OCR detector.
+            if page_is_scanned(page) or not page_has_text_layer(page):
+                from paperfill.ai.vision_preprocess import detect_scanned_page, _build_client
+                if ocr_client is None:
+                    ocr_client = _build_client()
+                all_units.extend(
+                    detect_scanned_page(page, page_num, counter, client=ocr_client)
                 )
-                if has_slots:
-                    tu.prompt_text = build_table_prompt(tu)
-                    all_units.append(tu)
-                else:
-                    # No underscores anywhere — treat as a fill-in-the-chart grid.
-                    all_units.extend(table_fill_regions(tu, page, counter))
+                continue
 
-        # Extract lines in reading order
-        lines = lines_in_reading_order(page)
+            text_rect = text_page_rect(page)
 
-        # Image blocks also occupy space — collect them so answers aren't
-        # written over diagrams/figures.
-        image_bboxes = [
-            block["bbox"] for block in page.get_text("rawdict")["blocks"]
-            if block.get("type") == 1
-        ]
-        obstacle_bboxes = table_bboxes + image_bboxes
+            # Find tables first so we can exclude their content from inline
+            # detection. Only relevant when the table format is selected; otherwise
+            # table cells are treated as ordinary lines (so e.g. underscores inside
+            # a grid still get filled).
+            table_bboxes = []
+            if "table" in active:
+                try:
+                    tables = page.find_tables()
+                except Exception:
+                    tables = None
+                table_bboxes = [t.bbox for t in tables.tables] if tables else []
 
-        def in_any_table(line_bbox):
-            cx = (line_bbox[0] + line_bbox[2]) / 2
-            cy = (line_bbox[1] + line_bbox[3]) / 2
-            for tb in table_bboxes:
-                if tb[0] <= cx <= tb[2] and tb[1] <= cy <= tb[3]:
-                    return True
-            return False
+                for t in (tables.tables if tables else []):
+                    tu = extract_table_unit(t, page_num, counter)
+                    if not tu:
+                        continue
+                    populate_table_cell_slots(tu, page, counter)
+                    has_slots = any(
+                        cell and cell["slots"]
+                        for row in tu.table_cells for cell in row
+                    )
+                    if has_slots:
+                        tu.prompt_text = build_table_prompt(tu)
+                        all_units.append(tu)
+                    else:
+                        # No underscores anywhere — treat as a fill-in-the-chart grid.
+                        all_units.extend(table_fill_regions(tu, page, counter))
 
-        non_table_lines = ([l for l in lines if not in_any_table(l["bbox"])]
-                           if table_bboxes else lines)
+            # Extract lines in reading order
+            lines = lines_in_reading_order(page)
 
-        # Lines already consumed by a detector — kept out of the inline pass.
-        covered: set = set()
+            # Image blocks also occupy space — collect them so answers aren't
+            # written over diagrams/figures.
+            image_bboxes = [
+                block["bbox"] for block in page.get_text("rawdict")["blocks"]
+                if block.get("type") == 1
+            ]
+            obstacle_bboxes = table_bboxes + image_bboxes
 
-        # Detect multiple-choice questions first: an option list must not also
-        # be read as a stack of open-response prompts, so it claims its lines
-        # (options + stem) before the other detectors run.
-        if "multiple_choice" in active:
-            mc_units, mc_consumed = detect_multiple_choice_units(
-                non_table_lines, page_num, counter
-            )
-            all_units.extend(mc_units)
-            covered |= mc_consumed
+            def in_any_table(line_bbox):
+                cx = (line_bbox[0] + line_bbox[2]) / 2
+                cy = (line_bbox[1] + line_bbox[3]) / 2
+                for tb in table_bboxes:
+                    if tb[0] <= cx <= tb[2] and tb[1] <= cy <= tb[3]:
+                        return True
+                return False
 
-        # Detect open-response question units (prompts with vertical gaps).
-        if "open_response" in active:
-            or_units = detect_open_response_units(
-                [l for l in non_table_lines if id(l) not in covered],
-                page_num, page.rect, counter, obstacle_bboxes
-            )
-            all_units.extend(or_units)
-            for u in or_units:
-                for l in non_table_lines:
-                    if (l["bbox"][1] >= u.bbox[1] - 1 and
-                        l["bbox"][3] <= u.bbox[3] + 1 and
-                        l["bbox"][0] >= u.bbox[0] - 1):
-                        covered.add(id(l))
+            non_table_lines = ([l for l in lines if not in_any_table(l["bbox"])]
+                               if table_bboxes else lines)
 
-        # Detect empty answer bullets sitting under a question/heading.
-        if "bullet_answer" in active:
-            ba_units, ba_consumed = detect_bullet_answer_units(
-                non_table_lines, page_num, page.rect, counter, skip_ids=covered
-            )
-            all_units.extend(ba_units)
-            covered |= ba_consumed
+            # Lines already consumed by a detector — kept out of the inline pass.
+            covered: set = set()
 
-        # Detect "<label> -" lines whose answer goes to the right of the dash.
-        if "open_response" in active or "inline_blanks" in active:
-            td_units, td_consumed = detect_trailing_dash_blanks(
-                non_table_lines, page_num, page.rect, counter, skip_ids=covered
-            )
-            all_units.extend(td_units)
-            covered |= td_consumed
+            # Detect multiple-choice questions first: an option list must not also
+            # be read as a stack of open-response prompts, so it claims its lines
+            # (options + stem) before the other detectors run.
+            if "multiple_choice" in active:
+                mc_units, mc_consumed = detect_multiple_choice_units(
+                    non_table_lines, page_num, counter
+                )
+                all_units.extend(mc_units)
+                covered |= mc_consumed
 
-        # Inline blanks: group remaining lines into logical units (bullets,
-        # paragraphs), then emit one unit per group that contains underscores.
-        if "inline_blanks" in active:
-            remaining = [l for l in non_table_lines if id(l) not in covered]
-            groups = group_lines_into_logical_units(remaining)
-            for grp in groups:
-                unit = extract_inline_blanks_from_group(grp, page_num, counter)
-                if unit:
-                    all_units.append(unit)
+            # Detect open-response question units (prompts with vertical gaps).
+            if "open_response" in active:
+                or_units = detect_open_response_units(
+                    [l for l in non_table_lines if id(l) not in covered],
+                    page_num, text_rect, counter, obstacle_bboxes
+                )
+                all_units.extend(or_units)
+                for u in or_units:
+                    for l in non_table_lines:
+                        if (l["bbox"][1] >= u.bbox[1] - 1 and
+                            l["bbox"][3] <= u.bbox[3] + 1 and
+                            l["bbox"][0] >= u.bbox[0] - 1):
+                            covered.add(id(l))
 
-    doc.close()
+            # Detect empty answer bullets sitting under a question/heading.
+            if "bullet_answer" in active:
+                ba_units, ba_consumed = detect_bullet_answer_units(
+                    non_table_lines, page_num, text_rect, counter, skip_ids=covered
+                )
+                all_units.extend(ba_units)
+                covered |= ba_consumed
+
+            # Detect "<label> -" lines whose answer goes to the right of the dash.
+            if "open_response" in active or "inline_blanks" in active:
+                td_units, td_consumed = detect_trailing_dash_blanks(
+                    non_table_lines, page_num, text_rect, counter, skip_ids=covered
+                )
+                all_units.extend(td_units)
+                covered |= td_consumed
+
+            # Inline blanks: group remaining lines into logical units (bullets,
+            # paragraphs), then emit one unit per group that contains underscores.
+            if "inline_blanks" in active:
+                remaining = [l for l in non_table_lines if id(l) not in covered]
+                groups = group_lines_into_logical_units(remaining)
+                for grp in groups:
+                    unit = extract_inline_blanks_from_group(grp, page_num, counter)
+                    if unit:
+                        all_units.append(unit)
+    finally:
+        doc.close()
 
     # Serialize to dict
     return {

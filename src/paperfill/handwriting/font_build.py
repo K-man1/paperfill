@@ -3,6 +3,8 @@ Build a real ``.otf`` from a photo / scan of a filled handwriting template.
 
 Pipeline (no FontForge, no GPU):
 
+  0. match each uploaded page to the template page it was printed from by the
+     QR each page carries (the upload order is whatever the file picker gave),
   1. for each filled page, find the four concentric-square registration markers,
   2. warp the page back to its canonical pixel space (template_geometry.json)
      so it works on phone photos, not just clean scans,
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +46,20 @@ SIDE_BEARING = 60          # font units of left/right bearing per glyph
 MIN_COMPONENT_PX = 18      # connected components smaller than this are noise
 INK_THRESHOLD = 120        # dark <= this is ink; lighter (ruled guides) dropped
 DESCENDER_BASELINE = 0.65  # baseline sits this far down a descender's ink box
+
+RASTER_DPI = 200           # what an uploaded PDF's pages are rendered at
+# Ceiling on one rasterised page. US Letter at RASTER_DPI is 3.7M px, so this
+# still takes oversized paper while capping a page at ~60MB of BGR — an upload
+# is allowed to be slow, not to exhaust the worker's memory.
+MAX_PAGE_PIXELS = 20_000_000
+
+# Resolved once: potrace missing is a broken deployment, not a bad photo, and
+# the two want very different errors in front of the user.
+_POTRACE = shutil.which("potrace")
+
+
+class PotraceMissing(RuntimeError):
+    """The potrace binary isn't installed, so no font can be traced at all."""
 
 
 # ---- Marker detection + rectification ------------------------------------
@@ -161,7 +178,7 @@ def _trace_svg(mask: np.ndarray):
         in_path = os.path.join(d, "cell.bmp")
         out_path = os.path.join(d, "cell.svg")
         cv2.imwrite(in_path, bmp)
-        subprocess.run(["potrace", in_path, "-b", "svg", "--flat",
+        subprocess.run([_POTRACE, in_path, "-b", "svg", "--flat",
                         "-o", out_path], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         svg = open(out_path, encoding="utf-8").read()
@@ -256,10 +273,15 @@ def _synth_charstring(ch: str):
     return None
 
 
-def _page_images(sources) -> list[np.ndarray]:
-    """Load the filled-template pages as BGR images, in page order. ``sources``
-    is a path or list of paths; a multi-page PDF expands to one image per page,
-    images are taken in the order given."""
+def _page_images(sources, limit: int) -> list[np.ndarray]:
+    """Load the filled-template pages as BGR images, in upload order.
+    ``sources`` is a path or list of paths; a multi-page PDF expands to one
+    image per page, images are taken in the order given.
+
+    Refuses to rasterise more than ``limit`` pages, and refuses an
+    unreasonably large one. A 300KB PDF can hold thousands of pages and each
+    one costs ~11MB rendered, so rendering first and counting afterwards is
+    enough to OOM the worker — which no per-request `except` can catch."""
     if isinstance(sources, (str, os.PathLike)):
         sources = [sources]
     imgs: list[np.ndarray] = []
@@ -268,14 +290,28 @@ def _page_images(sources) -> list[np.ndarray]:
         if s.lower().endswith(".pdf"):
             import fitz
             doc = fitz.open(s)
-            for page in doc:
-                pix = page.get_pixmap(dpi=200)
-                arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-                    pix.height, pix.width, pix.n)
-                code = cv2.COLOR_RGB2BGR if pix.n == 3 else cv2.COLOR_RGBA2BGR
-                imgs.append(cv2.cvtColor(arr, code))
-            doc.close()
+            try:
+                if len(imgs) + doc.page_count > limit:
+                    raise ValueError(f"expected {limit} filled template pages, "
+                                     f"got {len(imgs) + doc.page_count}")
+                for page in doc:
+                    # Pixel count follows from the page box and the dpi, so
+                    # check it before get_pixmap rather than after it has
+                    # already allocated the buffer.
+                    box = page.rect
+                    if box.width * box.height * (RASTER_DPI / 72.0) ** 2 > MAX_PAGE_PIXELS:
+                        raise ValueError("page is far too large to be a filled template")
+                    pix = page.get_pixmap(dpi=RASTER_DPI)
+                    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                        pix.height, pix.width, pix.n)
+                    code = cv2.COLOR_RGB2BGR if pix.n == 3 else cv2.COLOR_RGBA2BGR
+                    imgs.append(cv2.cvtColor(arr, code))
+            finally:
+                doc.close()
         else:
+            if len(imgs) >= limit:
+                raise ValueError(f"expected {limit} filled template pages, "
+                                 f"got at least {len(imgs) + 1}")
             im = cv2.imread(s, cv2.IMREAD_COLOR)
             if im is None:
                 raise ValueError("could not read image (unsupported or corrupt file)")
@@ -283,13 +319,74 @@ def _page_images(sources) -> list[np.ndarray]:
     return imgs
 
 
+_qr_pages: dict[str, int] | None = None
+
+
+def _template_qr_codes() -> dict[str, int]:
+    """QR payload printed on each template page -> that page's ordinal. Decoded
+    from the shipped template on first use, so re-cutting the template needs no
+    second calibration pass."""
+    global _qr_pages
+    if _qr_pages is None:
+        import fitz
+        detector = cv2.QRCodeDetector()
+        codes: dict[str, int] = {}
+        doc = fitz.open(str(template.TEMPLATE_PDF))
+        try:
+            for i, gp in enumerate(template.pages()):
+                pix = doc[gp["index"]].get_pixmap(dpi=template.geometry()["dpi"])
+                arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                    pix.height, pix.width, pix.n)
+                code = cv2.COLOR_RGB2GRAY if pix.n == 3 else cv2.COLOR_RGBA2GRAY
+                payload = detector.detectAndDecode(cv2.cvtColor(arr, code))[0]
+                if payload:
+                    codes[payload] = i
+        finally:
+            doc.close()
+        _qr_pages = codes
+    return _qr_pages
+
+
+def _order_by_qr(imgs: list[np.ndarray]) -> list[np.ndarray] | None:
+    """Put uploaded pages into template-page order using each page's printed QR.
+    Returns None if a code can't be read — a blurry photo shouldn't cost the
+    user their font — leaving the caller with the order they were uploaded in.
+    Two pages resolving to the same template page is a different matter: it is
+    definitely wrong and the count check can't see it, so it raises."""
+    codes = _template_qr_codes()
+    if len(codes) != len(imgs):
+        return None
+    detector = cv2.QRCodeDetector()
+    placed: dict[int, np.ndarray] = {}
+    for img in imgs:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        page = codes.get(detector.detectAndDecode(gray)[0])
+        if page is None:
+            return None
+        if page in placed:
+            raise ValueError(f"template page {page + 1} was uploaded twice")
+        placed[page] = img
+    return [placed[i] for i in sorted(placed)]
+
+
 def build_font(sources, out_path: str, family: str = "Paperfill Hand") -> str:
     """Build an OTF from a filled template. ``sources`` is a photo/scan path, a
-    multi-page PDF path, or a list of page images (in template-page order).
-    Returns ``out_path``."""
-    imgs = _page_images(sources)
+    multi-page PDF path, or a list of page images (in any order — they are
+    matched to their template page by QR). Returns ``out_path``."""
+    if _POTRACE is None:
+        raise PotraceMissing("potrace is not installed")
     geo_pages = template.pages()
     descenders = template.descenders()
+
+    # Every page has to be present exactly once: a missing or duplicated page
+    # doesn't fail, it silently builds a font where cell i of whatever page was
+    # supplied becomes glyph i of the template — every letter drawn as some
+    # other letter.
+    imgs = _page_images(sources, len(geo_pages))
+    if len(imgs) != len(geo_pages):
+        raise ValueError(f"expected {len(geo_pages)} filled template pages, "
+                         f"got {len(imgs)}")
+    imgs = _order_by_qr(imgs) or imgs
 
     # Read every cell across all supplied pages; keep the best-inked mask per
     # glyph. Cells share one drawing height, so all glyphs scale consistently.

@@ -194,12 +194,21 @@ def fetch_assignments() -> list[dict]:
     return _get("assignments?select=job_id,name,ts,ip,style,feedback&order=ts.asc")
 
 
-def fetch_ai_calls(limit: int = 20000) -> list[dict]:
-    """Metered LLM calls, newest first. Capped because this table grows with
-    every fill and the dashboard only ever plots a window of it."""
-    return _get("ai_calls?select=ts,purpose,model,provider,prompt_tokens,"
-                f"output_tokens,total_tokens,cost_usd,latency_ms,ok,error,"
-                f"is_pro,job_id&order=ts.desc&limit={int(limit)}")
+def fetch_ai_calls(start=None, end=None, limit: int = 20000) -> list[dict]:
+    """Metered LLM calls, newest first, restricted to [start, end) when either
+    bound is given.
+
+    The window has to go into the query. This table grows with every fill, so
+    slicing a newest-first page of `limit` rows in Python reports $0 spend and
+    100% profit for any window that predates that page. The limit stays as a
+    backstop."""
+    q = ("ai_calls?select=ts,purpose,model,provider,prompt_tokens,"
+         "output_tokens,total_tokens,cost_usd,latency_ms,ok,error,is_pro,job_id")
+    if start is not None:
+        q += f"&ts=gte.{requests.utils.quote(start.isoformat(), safe='')}"
+    if end is not None:
+        q += f"&ts=lt.{requests.utils.quote(end.isoformat(), safe='')}"
+    return _get(f"{q}&order=ts.desc&limit={int(limit)}")
 
 
 def fetch_payments() -> list[dict]:
@@ -254,6 +263,9 @@ def get_or_create_user(google_sub: str, email: str, name: str, picture: str,
                        is_pro: bool = False) -> dict | None:
     """Look up a user by their Google subject ID; create if missing.
     Returns the user row dict, or None on error."""
+    # Lookups by email are exact matches, so the stored address has to be
+    # lowercase the way the login and signup paths already write it.
+    email = (email or "").strip().lower()
     if not enabled():
         return {"google_sub": google_sub, "email": email, "name": name,
                 "picture": picture, "is_pro": is_pro}
@@ -289,11 +301,14 @@ def get_or_create_user(google_sub: str, email: str, name: str, picture: str,
 
 
 def get_user_by_email(email: str) -> dict | None:
-    """Fetch a single user row by email (case-insensitive), or None."""
+    """Fetch a single user row by its (already lowercased) email, or None."""
     if not enabled():
         return None
-    # PostgREST `ilike` gives a case-insensitive exact match here (no wildcards).
-    rows = _get(f"users?email=ilike.{requests.utils.quote(email, safe='')}")
+    # `eq.`, not `ilike.`: PostgREST maps ilike to SQL ILIKE, where `_` and `%`
+    # in the address are wildcards that percent-encoding doesn't neutralise, so
+    # a_b@gmail.com would also match axb@gmail.com. Every caller lowercases the
+    # address first, which is what makes the case-sensitive match correct.
+    rows = _get(f"users?email=eq.{requests.utils.quote(email, safe='')}")
     return rows[0] if rows else None
 
 
@@ -358,14 +373,14 @@ def mark_email_verified(token: str) -> dict | None:
 
 
 def set_user_pro(email: str, is_pro: bool) -> bool:
-    """Flip a user's Pro flag by email (case-insensitive). Returns True only if
+    """Flip a user's Pro flag by its (already lowercased) email. Returns True only if
     a matching row was actually updated (so callers can tell 'no such user'
     apart from success). Used by the Stripe webhook and the admin grant form."""
     if not enabled():
         return False
     try:
         r = requests.patch(
-            _rest(f"users?email=ilike.{requests.utils.quote(email, safe='')}"),
+            _rest(f"users?email=eq.{requests.utils.quote(email, safe='')}"),
             headers=_headers({"Prefer": "return=representation"}),
             json={"is_pro": bool(is_pro)},
             timeout=_TIMEOUT,
@@ -393,7 +408,7 @@ def set_stripe_ids(email: str, customer_id: str, subscription_id: str) -> bool:
         return False
     try:
         r = requests.patch(
-            _rest(f"users?email=ilike.{requests.utils.quote(email, safe='')}"),
+            _rest(f"users?email=eq.{requests.utils.quote(email, safe='')}"),
             headers=_headers({"Prefer": "return=representation"}),
             json=patch,
             timeout=_TIMEOUT,
@@ -414,7 +429,7 @@ def set_cancel_at_period_end(email: str, flag: bool) -> bool:
         return False
     try:
         r = requests.patch(
-            _rest(f"users?email=ilike.{requests.utils.quote(email, safe='')}"),
+            _rest(f"users?email=eq.{requests.utils.quote(email, safe='')}"),
             headers=_headers({"Prefer": "return=representation"}),
             json={"cancel_at_period_end": bool(flag)},
             timeout=_TIMEOUT,

@@ -102,16 +102,21 @@ def test_amount_and_currency_are_taken_from_the_event(client, recorded):
     assert p["currency"] == "GBP"          # raw at this layer
 
 
-def test_db_layer_normalises_currency(monkeypatch):
-    """The lowercasing the webhook doesn't do, record_payment does."""
+def test_db_layer_normalises_currency_and_asks_postgres_to_dedupe(monkeypatch):
+    """Two things record_payment does that the webhook doesn't: lowercase the
+    currency, and send `Prefer: resolution=ignore-duplicates` so the UNIQUE
+    `stripe_event_id` swallows a redelivery instead of booking it twice. The
+    header is the whole defence against double-counted revenue, so it's
+    captured here rather than thrown away with the rest of the kwargs."""
     sent = {}
     monkeypatch.setattr(A.db, "enabled", lambda: True)
-    monkeypatch.setattr(A.db.requests, "post",
-                        lambda url, **kw: sent.update(kw.get("json") or {}))
+    monkeypatch.setattr(A.db.requests, "post", lambda url, **kw: sent.update(kw))
     A.db.record_payment(email="a@b.com", amount_cents=500, currency="GBP",
                         event_id="evt_x", livemode=False)
-    assert sent["currency"] == "gbp"
-    assert sent["amount_cents"] == 500
+    assert sent["json"]["currency"] == "gbp"
+    assert sent["json"]["amount_cents"] == 500
+    assert sent["json"]["stripe_event_id"] == "evt_x"
+    assert sent["headers"]["Prefer"] == "resolution=ignore-duplicates"
 
 
 # ---- Rejections ----------------------------------------------------------
@@ -130,6 +135,23 @@ def test_missing_secret_rejects_everything(client, monkeypatch, recorded):
     monkeypatch.setattr(A, "STRIPE_WEBHOOK_SECRET", "")
     assert post(client, event()).status_code == 400
     assert recorded["payments"] == []
+
+
+def test_any_of_the_v1_signatures_is_accepted(client, recorded):
+    """Mid-rollover Stripe signs the event with every active secret and sends
+    one v1 per secret, in no guaranteed order. Reading the header into a dict
+    keeps only the last, which rejects half the traffic for the length of the
+    roll."""
+    body = json.dumps(event()).encode()
+    ts = int(time.time())
+    live = sign(body, ts=ts).split("v1=")[1]
+    rolled = sign(body, secret="whsec_the_other_one", ts=ts).split("v1=")[1]
+    for header in (f"t={ts},v1={rolled},v1={live}", f"t={ts},v1={live},v1={rolled}"):
+        recorded["payments"].clear()
+        r = client.post("/stripe/webhook", data=body,
+                        headers={"Stripe-Signature": header})
+        assert r.status_code == 200
+        assert len(recorded["payments"]) == 1
 
 
 def test_stale_timestamp_is_rejected(client, recorded):

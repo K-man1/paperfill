@@ -8,7 +8,7 @@ route down to "fetch, aggregate, render".
 
 Three conventions worth knowing before reading further:
 
-* **Timestamps are stored in UTC** and shifted by `tz_offset` hours only for
+* **Timestamps are stored in UTC** and moved into the display zone only for
   display. Every "by hour of day" number depends on that shift, so the page
   always states which zone it's showing.
 * **Unknown is not zero.** A model with no configured rate produces a NULL
@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -49,11 +49,11 @@ def parse_ts(value) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def shift(dt: datetime | None, tz_offset: float) -> datetime | None:
+def shift(dt: datetime | None, tz: tzinfo) -> datetime | None:
     """Move a UTC datetime into the dashboard's display zone."""
     if dt is None:
         return None
-    return dt + timedelta(hours=tz_offset or 0)
+    return dt.astimezone(tz)
 
 
 @dataclass(frozen=True)
@@ -61,20 +61,29 @@ class Window:
     """The slice of time the dashboard is showing.
 
     Half-open [start, end) in UTC so an event can never land in two buckets.
-    `tz_offset` is display-only — it decides which local day or hour a UTC
-    timestamp is drawn in, never which rows are included.
+    `tz` is display-only — it decides which local day or hour a UTC timestamp
+    is drawn in, never which rows are included. It is a zone rather than a
+    fixed offset because a window can span a DST change (or sit entirely in a
+    different regime from today's), and bucketing a December range with
+    August's offset draws points outside the range that was asked for.
 
     Buckets are hourly for short spans: "last 6 hours" plotted as one daily
     point is a chart of nothing.
     """
     start: datetime
     end: datetime
-    tz_offset: float = 0.0
+    tz: tzinfo = timezone.utc
     label: str = ""
 
     @property
     def hourly(self) -> bool:
         return self.end - self.start <= timedelta(days=3)
+
+    @property
+    def tz_offset(self) -> float:
+        """Hours east of UTC at the end of the window, for the zone label the
+        page prints. Nothing is bucketed with this."""
+        return self.end.astimezone(self.tz).utcoffset().total_seconds() / 3600.0
 
     def filter(self, rows: list[dict], field: str = "ts") -> list[dict]:
         """The rows whose timestamp falls in the window. Rows with an
@@ -88,14 +97,16 @@ class Window:
         return out
 
     def key(self, dt: datetime):
-        """The bucket a display-zone datetime belongs to."""
+        """The bucket a display-zone datetime belongs to. Hourly keys drop the
+        zone so they stay comparable across a DST change, where the same wall
+        clock hour carries two different offsets."""
         if self.hourly:
-            return dt.replace(minute=0, second=0, microsecond=0)
+            return dt.replace(tzinfo=None, minute=0, second=0, microsecond=0)
         return dt.date()
 
     def bucket(self, dt: datetime | None):
         """The bucket key for a UTC timestamp, or None if it won't parse."""
-        local = shift(dt, self.tz_offset)
+        local = shift(dt, self.tz)
         return self.key(local) if local else None
 
     def series(self, counts: dict, scale: float = 1.0) -> list[dict]:
@@ -105,11 +116,14 @@ class Window:
         them implies activity that never happened.
         """
         step = timedelta(hours=1) if self.hourly else timedelta(days=1)
-        cur = shift(self.start, self.tz_offset).replace(minute=0, second=0,
-                                                        microsecond=0)
+        # Walk the local wall clock, not UTC: one point per local day/hour is
+        # what the axis claims to show, and stepping in UTC would land 23:00 or
+        # 01:00 on the far side of a DST change.
+        cur = shift(self.start, self.tz).replace(tzinfo=None, minute=0,
+                                                 second=0, microsecond=0)
         if not self.hourly:
             cur = cur.replace(hour=0)
-        end = shift(self.end, self.tz_offset)
+        end = shift(self.end, self.tz).replace(tzinfo=None)
         out = []
         while cur < end:
             out.append({"label": self._point_label(cur),
@@ -127,10 +141,14 @@ class Window:
         return dt.strftime("%m-%d %H:%M")
 
 
-def _stamps(rows: list[dict], field: str, tz_offset: float) -> list[datetime]:
+def _stamps(rows: list[dict], field: str, tz) -> list[datetime]:
+    """Display-zone timestamps. `tz` is a zone, or the fixed offset in hours
+    that time_of_day still takes."""
+    if not isinstance(tz, tzinfo):
+        tz = timezone(timedelta(hours=tz or 0))
     out = []
     for r in rows or []:
-        dt = shift(parse_ts(r.get(field)), tz_offset)
+        dt = shift(parse_ts(r.get(field)), tz)
         if dt is not None:
             out.append(dt)
     return out
@@ -195,7 +213,7 @@ def time_of_day(assignments, signins, tz_offset: float) -> dict:
 
 def activity(assignments, signins, users, devices_daily, window: Window) -> dict:
     """Volume time series for the main charts, bucketed to fit the window."""
-    tz = window.tz_offset
+    tz = window.tz
     fills = Counter(window.key(dt) for dt in _stamps(assignments, "ts", tz))
     logins = Counter(window.key(dt) for dt in _stamps(signins, "ts", tz))
     signups = Counter(window.key(dt) for dt in _stamps(users, "created_at", tz))
@@ -203,13 +221,24 @@ def activity(assignments, signins, users, devices_daily, window: Window) -> dict
     # devices_daily is pre-aggregated per calendar day in Postgres, so it can't
     # be split into hours. An hourly window gets an empty series rather than a
     # day total smeared across 24 buckets.
+    #
+    # Its days are UTC days; the chart's buckets are local ones. A row is a
+    # span of 24 hours starting at its own UTC midnight, so resolve that
+    # instant through the same bucket() every other count goes through.
+    # Matching the bare UTC date against a local bucket key instead leaves the
+    # newest row with nowhere to land for the hours between UTC midnight and
+    # local midnight, and it drops off the chart every night.
     dev = {}
     if not window.hourly:
         for row in devices_daily or []:
             try:
-                dev[datetime.fromisoformat(str(row.get("day"))).date()] = int(row.get("devices") or 0)
+                day = datetime.fromisoformat(str(row.get("day")))
+                count = int(row.get("devices") or 0)
             except (ValueError, TypeError):
                 continue
+            key = window.bucket(day.replace(tzinfo=timezone.utc))
+            if key is not None:
+                dev[key] = count
 
     return {
         "fills": window.series(fills),
@@ -502,15 +531,17 @@ def devices_heatmap(rows) -> dict:
 
 def build(*, signins, assignments, users, ai_calls, payments,
           devices_daily, devices_hourly, device_total,
-          window: Window,
+          window: Window, hack_club_calls: list[dict] | None = None,
           rate_card: dict | None = None, hack_club_cap_usd: float = 3.0) -> dict:
     """Everything the dashboard needs, in one dict.
 
     The window is applied here, once, so every section is slicing the same
     rows. Two deliberate exceptions: `accounts` stays all-time (see the module
-    docstring), and `hack_club_budget` gets the unfiltered calls because it
-    answers a fixed question — today's credit — that has nothing to do with
-    whatever window the page is showing.
+    docstring), and `hack_club_budget` answers a fixed question — today's
+    credit — that has nothing to do with whatever window the page is showing.
+    `ai_calls` is fetched pre-windowed, so today's rows are handed in
+    separately as `hack_club_calls`; without them a window that ends before
+    today would report the day's proxy draw as $0.
     """
     win_assignments = window.filter(assignments)
     win_signins = window.filter(signins)
@@ -522,7 +553,9 @@ def build(*, signins, assignments, users, ai_calls, payments,
         "activity": activity(win_assignments, win_signins, users,
                              devices_daily, window),
         "money": money(win_calls, win_payments, window),
-        "hack_club": hack_club_budget(ai_calls, rate_card or {}, hack_club_cap_usd),
+        "hack_club": hack_club_budget(
+            ai_calls if hack_club_calls is None else hack_club_calls,
+            rate_card or {}, hack_club_cap_usd),
         "reliability": reliability(win_calls),
         "accounts": accounts(users, assignments, payments),
         "product": product(win_assignments),

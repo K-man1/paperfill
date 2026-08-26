@@ -59,7 +59,8 @@ def _extract_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _extract_image(data: bytes, mime: str) -> str:
+def _extract_image(data: bytes, mime: str, user_key: str = "",
+                   is_pro: bool = False) -> str:
     """OCR / describe an image with the vision model.
 
     Goes through llm_client rather than building a raw OpenAI client so these
@@ -73,7 +74,7 @@ def _extract_image(data: bytes, mime: str) -> str:
     except RuntimeError:
         return "[image attached, but no API key configured to read it]"
     data_uri = f"data:{mime};base64," + base64.b64encode(data).decode()
-    with call_context("context_image"):
+    with call_context("context_image", is_pro=is_pro, user_key=user_key):
         resp = client.chat.completions.create(
             model=VISION_MODEL,
             messages=[{
@@ -91,11 +92,15 @@ def _extract_image(data: bytes, mime: str) -> str:
     return resp.choices[0].message.content or ""
 
 
-def extract_file_text(filename: str, data: bytes) -> str:
+def extract_file_text(filename: str, data: bytes, user_key: str = "",
+                      is_pro: bool = False) -> str:
     """
     Return the textual content of an uploaded reference file, truncated to
     MAX_FILE_CHARS. Unsupported types yield a short marker string rather than
     raising, so one bad attachment never sinks the whole fill request.
+
+    `user_key`/`is_pro` identify whose budget an image OCR call spends against;
+    without them the tokens are logged but never debited.
     """
     ext = os.path.splitext(filename or "")[1].lower()
     try:
@@ -105,7 +110,7 @@ def extract_file_text(filename: str, data: bytes) -> str:
             text = _extract_text(data)
         elif ext in IMAGE_EXTS:
             mime = "image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}"
-            text = _extract_image(data, mime)
+            text = _extract_image(data, mime, user_key, is_pro)
         else:
             return f"[unsupported file type: {filename}]"
     except Exception as e:  # extraction is best-effort

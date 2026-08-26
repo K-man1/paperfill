@@ -1,39 +1,7 @@
-"""
-AI Vision answer-space detector — a parallel path to preprocess.py.
-
-This is the "AI Vision" detection method the user picks on the home screen
-(detector=multimodal). It is distinct from the OCR path in vision_preprocess.py,
-which only runs automatically on scanned image-only pages.
-
-Instead of finding blanks deterministically from underscore runs and vertical
-gaps, this module asks an AI Vision model to read the worksheet and list every
-place a student writes an answer. Crucially the model never emits coordinates:
-for each answer space it returns the printed text the blank attaches to
-(`anchor_text`, transcribed verbatim) plus where the blank sits relative to
-that anchor. A deterministic resolver then matches each anchor back against the
-page's PyMuPDF character map and re-derives the blank/answer geometry, reusing
-the very same routines preprocess.py uses (find_underscore_runs, the
-open-response answer-region geometry, char bbox helpers).
-
-The output is the SAME structure dict that preprocess_pdf produces, so the
-renderer (render.py) consumes it unchanged.
-
-Design seams:
-  * The model call is isolated in `_default_detector` and can be swapped by
-    passing a `detector` callable to `multimodal_preprocess_pdf` (used by the
-    A/B harness to inject recorded responses, and to swap providers).
-  * Structured JSON-schema output forces the response shape — no
-    "return only JSON" prompt-scraping.
-  * The whole PDF is uploaded once via the Files API; pages are addressed by
-    index in the returned items.
-
-Anchors that cannot be resolved to a location are dropped and logged — never
-guessed into place.
-"""
-
 import os
 import re
 import base64
+import unicodedata
 from dataclasses import asdict
 
 import fitz
@@ -47,6 +15,7 @@ from paperfill.ai.preprocess import (
     line_is_whitespace,
     is_empty_bullet_line,
     lines_in_reading_order,
+    text_page_rect,
     MIN_ANSWER_SPACE,
     PAGE_RIGHT_MARGIN,
 )
@@ -208,13 +177,15 @@ def _page_image_parts(pdf_path: str) -> list[dict]:
     """Render each page to a PNG and return interleaved page-marker + image
     content parts (all pages in one message)."""
     doc = fitz.open(pdf_path)
-    parts: list[dict] = []
-    for i, page in enumerate(doc):
-        pix = page.get_pixmap(dpi=MULTIMODAL_DPI)
-        uri = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
-        parts.append({"type": "text", "text": f"--- PAGE {i} IMAGE ---"})
-        parts.append({"type": "image_url", "image_url": {"url": uri}})
-    doc.close()
+    try:
+        parts: list[dict] = []
+        for i, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=MULTIMODAL_DPI)
+            uri = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
+            parts.append({"type": "text", "text": f"--- PAGE {i} IMAGE ---"})
+            parts.append({"type": "image_url", "image_url": {"url": uri}})
+    finally:
+        doc.close()
     return parts
 
 
@@ -271,11 +242,10 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
             },
             extra_body=extra_body or None,
         )
-    content = resp.choices[0].message.content or "{}"
-    from paperfill.utils.json_utils import extract_json_object
+    from paperfill.utils.json_utils import json_from_response
 
-    parsed = extract_json_object(content)
-    items = parsed.get("items") if isinstance(parsed, dict) else None
+    parsed = json_from_response(resp)
+    items = parsed.get("items")
     return items if isinstance(items, list) else []
 
 
@@ -304,14 +274,32 @@ def _canon_char(ch: str) -> str:
 
 
 def _normalize(s: str) -> str:
-    s = "".join(_canon_char(ch) for ch in (s or ""))
+    # NFC first: the page's char map carries "país" composed while a model
+    # often transcribes it decomposed (i + U+0301), and the two never match.
+    s = unicodedata.normalize("NFC", s or "")
+    s = "".join(_canon_char(ch) for ch in s)
     return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _alnum_char(ch: str) -> str:
+    """One char reduced to its fuzzy-matching form: the lowercase base letter
+    with any combining accent dropped, or "" if it isn't alphanumeric.
+
+    Both the anchor and the page go through this, which is the point. They
+    used to disagree — the page kept "í" and "²" while the anchor was stripped
+    to [a-z0-9], so 'el país es grande' indexed as 'elpaísesgrande' against an
+    anchor of 'elpases' and no accent or superscript could match through the
+    fuzzy fallback. Folding the accent off also lets a decomposed page and a
+    composed transcription meet in the middle.
+    """
+    base = unicodedata.normalize("NFD", ch.lower())[:1]
+    return base if base.isalnum() else ""
 
 
 def _alnum(s: str) -> str:
     """Letters/digits only, lowercased — a punctuation/space-insensitive form
     used as a fuzzy fallback when exact text matching fails."""
-    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+    return "".join(_alnum_char(ch) for ch in (s or ""))
 
 
 def _flatten_chars(lines: list[dict]) -> list[dict]:
@@ -363,8 +351,8 @@ def _alnum_index(flat: list[dict]) -> tuple[str, list[int]]:
     alnum: list[str] = []
     idx_map: list[int] = []
     for i, c in enumerate(flat):
-        ch = c["c"].lower()
-        if ch.isalnum():
+        ch = _alnum_char(c["c"])
+        if ch:
             alnum.append(ch)
             idx_map.append(i)
     return "".join(alnum), idx_map
@@ -416,11 +404,13 @@ class _PageIndex:
 
     def __init__(self, page, lines):
         self.page = page
+        # Char bboxes live in the unrotated frame; page.rect does not.
+        self.page_rect = text_page_rect(page)
         self.lines = lines
         self.flat = _flatten_chars(lines)
         self.norm, self.norm_map = _norm_index(self.flat)
         self.alnum, self.alnum_map = _alnum_index(self.flat)
-        self.used_src: set[int] = set()      # chosen source start indices
+        self.used_src: set[tuple[int, int]] = set()   # chosen source spans
         self.cursor_src = -1                 # reading-order cursor (source idx)
 
     def _spans(self, needle: str, hay: str, idx_map: list[int], *,
@@ -443,7 +433,11 @@ class _PageIndex:
         sorts ahead of the item number it belongs to) and preferring what is
         ahead would reach into the next item instead.
         """
-        fresh = [sp for sp in spans if sp[0] not in self.used_src]
+        # Keyed on the whole span, not its start: the prompt tells the model
+        # to lengthen an anchor with neighbouring words until it is unique, so
+        # two anchors opening on the same word ("La capital" / "La capital de
+        # Mexico") are the expected shape and both have to stay resolvable.
+        fresh = [sp for sp in spans if sp not in self.used_src]
         if not use_cursor:
             return fresh
         ahead = [sp for sp in fresh if sp[0] >= self.cursor_src]
@@ -455,7 +449,7 @@ class _PageIndex:
         "domain:" and its "range:" blank) and must stay available, while the
         span nearest the blank is what has to advance on the next anchor."""
         spans = sorted(spans)
-        self.used_src.add(spans[-1][0])
+        self.used_src.add(spans[-1])
         self.cursor_src = max(self.cursor_src, spans[-1][1])
         return spans
 
@@ -496,8 +490,8 @@ class _PageIndex:
         if seed_box is None:
             return None
         cx, cy = (seed_box[0] + seed_box[2]) / 2, (seed_box[1] + seed_box[3]) / 2
-        max_dx = MAX_CLUSTER_WIDTH_FRAC * self.page.rect.width
-        max_dy = MAX_CLUSTER_HEIGHT_FRAC * self.page.rect.height
+        max_dx = MAX_CLUSTER_WIDTH_FRAC * self.page_rect.width
+        max_dy = MAX_CLUSTER_HEIGHT_FRAC * self.page_rect.height
 
         def offset(sp):
             b = _anchor_bbox(self.flat, [sp])
@@ -557,7 +551,7 @@ class _PageIndex:
 
         chosen = self._available(sorted(spans))
         if not chosen:
-            return None
+            return self._cluster(anchor)
         return self._take([chosen[0]])
 
 
@@ -597,7 +591,7 @@ def _first_real_char(flat, spans):
 # Geometry derivation (reuses preprocess routines).
 # --------------------------------------------------------------------------
 
-def _inline_slot_bbox(line, anchor_ci, position, page):
+def _inline_slot_bbox(line, anchor_ci, position, page_rect):
     """
     Re-derive the blank geometry for an inline anchor on `line`.
 
@@ -641,7 +635,7 @@ def _inline_slot_bbox(line, anchor_ci, position, page):
     # anchor ends the line. This gives definition/sentence blanks real room.
     ax0, ay0, ax1, ay1 = chars[anchor_ci]["bbox"]
     start_x = ax1 + 3
-    right_limit = page.rect.x1 - PAGE_RIGHT_MARGIN
+    right_limit = page_rect.x1 - PAGE_RIGHT_MARGIN
     for c in chars[anchor_ci + 1:]:
         if c["bbox"] and not c["c"].isspace():
             right_limit = min(right_limit, c["bbox"][0] - 4)
@@ -651,7 +645,7 @@ def _inline_slot_bbox(line, anchor_ci, position, page):
     return (start_x, ay0, end_x, ay1), 0
 
 
-def _open_region_for_anchor(anchor_bbox, page, lines, obstacle_bboxes):
+def _open_region_for_anchor(anchor_bbox, page_rect, lines, obstacle_bboxes):
     """
     Answer region beneath an open-response anchor — the same geometry
     detect_open_response_units uses: span from just under the prompt to the
@@ -659,14 +653,14 @@ def _open_region_for_anchor(anchor_bbox, page, lines, obstacle_bboxes):
     only if there's at least MIN_ANSWER_SPACE of blank room.
     """
     p_x0, p_top, p_x1, p_bottom = anchor_bbox
-    answer_right = page.rect.x1 - PAGE_RIGHT_MARGIN
+    answer_right = page_rect.x1 - PAGE_RIGHT_MARGIN
 
     # Only real content lines bound the answer area — whitespace-only lines
     # (stray space glyphs) are the blank space we want to write into, exactly
     # as detect_open_response_units filters them.
     below = [l["bbox"][1] for l in lines
              if not line_is_whitespace(l) and l["bbox"][1] > p_bottom + 1]
-    next_top = min(below) if below else page.rect.y1 - 60
+    next_top = min(below) if below else page_rect.y1 - 60
     for ob in obstacle_bboxes:
         if p_bottom <= ob[1] < next_top and ob[0] < answer_right and ob[2] > p_x0:
             next_top = ob[1]
@@ -676,7 +670,7 @@ def _open_region_for_anchor(anchor_bbox, page, lines, obstacle_bboxes):
     return (p_x0 + 4, p_bottom + 4, max(p_x1, answer_right), next_top - 6)
 
 
-def _empty_bullet_regions_below(page, lines, q_bottom, boundary_top):
+def _empty_bullet_regions_below(page_rect, lines, q_bottom, boundary_top):
     """
     Answer regions for empty answer bullets (○/■/•) that sit between a question
     (q_bottom) and the next detected question (boundary_top). Each empty bullet's
@@ -684,7 +678,7 @@ def _empty_bullet_regions_below(page, lines, q_bottom, boundary_top):
     Google-Docs study-guide layout where an empty bullet IS the answer space and
     there is no printed text to anchor to. Mirrors detect_bullet_answer_units.
     """
-    answer_right = page.rect.x1 - PAGE_RIGHT_MARGIN
+    answer_right = page_rect.x1 - PAGE_RIGHT_MARGIN
     span = sorted(
         (l for l in lines
          if q_bottom - 1 < l["bbox"][1] < boundary_top - 1),
@@ -724,195 +718,238 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
     want_open = "open_response" in active
 
     doc = fitz.open(path)
-    pages = _page_texts(doc)
+    try:
+        pages = _page_texts(doc)
 
-    if detector is None:
-        detector = _default_detector
-    raw_items = detector(path, pages) or []
+        if detector is None:
+            detector = _default_detector
+        raw_items = detector(path, pages) or []
 
-    # Some models number pages 1..N despite the 0-indexed instruction. If every
-    # returned page is >=1 and the max equals the page count (not count-1),
-    # treat the whole batch as 1-based and shift it down.
-    page_vals = [int(it.get("page", 0) or 0) for it in raw_items
-                 if isinstance(it, dict)]
-    if (page_vals and min(page_vals) >= 1 and max(page_vals) == len(doc)
-            and len(doc) >= 1):
-        print("[multimodal] 1-based page indices detected; shifting to 0-based")
-        for it in raw_items:
-            if isinstance(it, dict) and "page" in it:
-                it["page"] = int(it.get("page", 1) or 1) - 1
+        # Some models number pages 1..N despite the 0-indexed instruction.
+        # A batch sitting entirely inside 1..len(doc) is ambiguous: a 5-page
+        # packet whose blanks are all on 1-based pages 1-3 (4-5 being an
+        # answer key) reads exactly like a 0-based batch. Only max == len(doc)
+        # rules 0-based out outright; otherwise the two conventions are told
+        # apart by which actually resolves, since reading one page off makes
+        # nearly every anchor miss.
+        page_vals = [int(it.get("page", 0) or 0) for it in raw_items
+                     if isinstance(it, dict)]
+        maybe_one_based = (bool(page_vals) and min(page_vals) >= 1
+                           and max(page_vals) <= len(doc))
 
-    # Per-page index, built lazily and cached.
-    page_idx_cache: dict[int, _PageIndex] = {}
-    obstacle_cache: dict[int, list] = {}
+        counter = {"u": 0, "n": 0}
+        units: list[Unit] = []
 
-    def page_index(pn: int) -> _PageIndex | None:
-        if pn < 0 or pn >= len(doc):
-            return None
-        if pn not in page_idx_cache:
-            lines = lines_in_reading_order(doc[pn])
-            page_idx_cache[pn] = _PageIndex(doc[pn], lines)
-            obstacle_cache[pn] = [
-                b["bbox"] for b in doc[pn].get_text("rawdict")["blocks"]
-                if b.get("type") == 1
-            ]
-        return page_idx_cache[pn]
+        # Keep items in (page, model order) so reading-order disambiguation is sane.
+        indexed = [(i, it) for i, it in enumerate(raw_items) if isinstance(it, dict)]
+        indexed.sort(key=lambda t: (t[1].get("page", 0), t[0]))
 
-    counter = {"u": 0, "n": 0}
-    units: list[Unit] = []
-    dropped: list[dict] = []
+        def resolve_pass(shift: int):
+            """Resolve every anchor to geometry, reading its page as
+            (page - shift).
 
-    def drop(item, reason):
-        rec = {"reason": reason, "anchor_text": item.get("anchor_text", ""),
-               "page": item.get("page"), "kind": item.get("kind")}
-        dropped.append(rec)
-        print(f"[multimodal] dropped anchor (reason={reason}, "
-              f"page={rec['page']}): {rec['anchor_text']!r}")
+            Each pass builds its own page indexes: resolving consumes
+            reading-order and used-span state, so a trial offset cannot share
+            them with the pass that ends up being kept.
+            """
+            idx_cache: dict[int, _PageIndex] = {}
+            obs_cache: dict[int, list] = {}
 
-    # Keep items in (page, model order) so reading-order disambiguation is sane.
-    indexed = [(i, it) for i, it in enumerate(raw_items) if isinstance(it, dict)]
-    indexed.sort(key=lambda t: (t[1].get("page", 0), t[0]))
+            def page_index(pn: int) -> _PageIndex | None:
+                if pn < 0 or pn >= len(doc):
+                    return None
+                if pn not in idx_cache:
+                    lines = lines_in_reading_order(doc[pn])
+                    idx_cache[pn] = _PageIndex(doc[pn], lines)
+                    obs_cache[pn] = [
+                        b["bbox"] for b in doc[pn].get_text("rawdict")["blocks"]
+                        if b.get("type") == 1
+                    ]
+                return idx_cache[pn]
 
-    # Pass 1: resolve every anchor to geometry (disambiguation state lives here).
-    resolved: list[dict] = []
-    for _, item in indexed:
-        kind = "open" if item.get("kind") == "open" else "inline"
-        anchor = str(item.get("anchor_text", "")).strip()
-        pn = int(item.get("page", 0) or 0)
-        if not anchor:
-            drop(item, "empty_anchor")
-            continue
-        if kind == "open" and not want_open:
-            continue
-        if kind == "inline" and not want_inline:
-            continue
-        pidx = page_index(pn)
-        if pidx is None:
-            drop(item, "bad_page")
-            continue
-        spans = pidx.resolve(anchor)
-        if spans is None:
-            drop(item, "anchor_not_found")
-            continue
-        abbox = _anchor_bbox(pidx.flat, spans)
-        if abbox is None:
-            drop(item, "no_anchor_bbox")
-            continue
-        resolved.append({"item": item, "kind": kind, "anchor": anchor, "pn": pn,
-                         "pidx": pidx, "spans": spans, "abbox": abbox})
+            resolved: list[dict] = []
+            drops: list[dict] = []
 
-    # Per-page sorted anchor tops — used to scope a question's empty answer
-    # bullets to the vertical band before the NEXT detected question.
-    anchor_tops: dict[int, list[float]] = {}
-    for r in resolved:
-        anchor_tops.setdefault(r["pn"], []).append(r["abbox"][1])
-    for pn in anchor_tops:
-        anchor_tops[pn].sort()
+            def drop(item, reason):
+                drops.append({"reason": reason,
+                              "anchor_text": item.get("anchor_text", ""),
+                              "page": item.get("page"), "kind": item.get("kind")})
 
-    def boundary_below(pn: int, y: float) -> float:
-        for t in anchor_tops.get(pn, []):
-            if t > y + 1:
-                return t
-        return page_index(pn).page.rect.y1 - 40
+            for _, item in indexed:
+                kind = "open" if item.get("kind") == "open" else "inline"
+                anchor = str(item.get("anchor_text", "")).strip()
+                pn = int(item.get("page", 0) or 0) - shift
+                if not anchor:
+                    drop(item, "empty_anchor")
+                    continue
+                if kind == "open" and not want_open:
+                    continue
+                if kind == "inline" and not want_inline:
+                    continue
+                pidx = page_index(pn)
+                if pidx is None:
+                    drop(item, "bad_page")
+                    continue
+                spans = pidx.resolve(anchor)
+                if spans is None:
+                    drop(item, "anchor_not_found")
+                    continue
+                abbox = _anchor_bbox(pidx.flat, spans)
+                if abbox is None:
+                    drop(item, "no_anchor_bbox")
+                    continue
+                resolved.append({"item": item, "kind": kind, "anchor": anchor,
+                                 "pn": pn, "pidx": pidx, "spans": spans,
+                                 "abbox": abbox})
+            return resolved, drops, page_index, obs_cache
 
-    # Pass 2: build units.
-    for r in resolved:
-        item, kind, anchor, pn, pidx, abbox = (
-            r["item"], r["kind"], r["anchor"], r["pn"], r["pidx"], r["abbox"])
-        spans = r["spans"]
+        # Pass 1: resolve every anchor to geometry (disambiguation state lives here).
+        resolved, dropped, page_index, obstacle_cache = resolve_pass(0)
+        # Only worth trying the other convention when this one lost anchors;
+        # a clean 0-based run is already the shape the prompt asks for.
+        if maybe_one_based and dropped:
+            shifted = resolve_pass(1)
+            if len(shifted[0]) > len(resolved):
+                print("[multimodal] 1-based page indices detected; shifting "
+                      f"to 0-based ({len(shifted[0])} anchors resolve vs "
+                      f"{len(resolved)})")
+                resolved, dropped, page_index, obstacle_cache = shifted
 
-        if kind == "open":
-            # First try empty answer bullets beneath the question (study-guide
-            # layout). Each empty bullet has no text to anchor to, so the model
-            # only flags the question — we place the answers on the bullets here.
-            bullets = _empty_bullet_regions_below(
-                pidx.page, pidx.lines, abbox[3], boundary_below(pn, abbox[3])
-            )
-            if bullets:
-                n = len(bullets)
-                for k, reg in enumerate(bullets):
-                    ptext = _normalize(anchor)
-                    if n > 1:  # multi-bullet question -> distinct points
-                        ptext = (f"{ptext} [multi-part answer: give point "
-                                 f"{k + 1} of {n}, distinct from the others]")
-                    counter["u"] += 1
-                    units.append(Unit(
-                        unit_id=f"u{counter['u']}", type="open_response",
-                        page=pn, bbox=abbox, prompt_text=ptext,
-                        answer_region=reg,
-                    ))
+        for rec in dropped:
+            print(f"[multimodal] dropped anchor (reason={rec['reason']}, "
+                  f"page={rec['page']}): {rec['anchor_text']!r}")
+
+        def drop(item, reason):
+            rec = {"reason": reason, "anchor_text": item.get("anchor_text", ""),
+                   "page": item.get("page"), "kind": item.get("kind")}
+            dropped.append(rec)
+            print(f"[multimodal] dropped anchor (reason={reason}, "
+                  f"page={rec['page']}): {rec['anchor_text']!r}")
+
+        # Per-page sorted anchor tops — used to scope a question's empty answer
+        # bullets to the vertical band before the NEXT detected question.
+        anchor_tops: dict[int, list[float]] = {}
+        for r in resolved:
+            anchor_tops.setdefault(r["pn"], []).append(r["abbox"][1])
+        for pn in anchor_tops:
+            anchor_tops[pn].sort()
+
+        def boundary_below(pn: int, y: float) -> float:
+            for t in anchor_tops.get(pn, []):
+                if t > y + 1:
+                    return t
+            return page_index(pn).page_rect.y1 - 40
+
+        # Pass 2: build units.
+        for r in resolved:
+            item, kind, anchor, pn, pidx, abbox = (
+                r["item"], r["kind"], r["anchor"], r["pn"], r["pidx"], r["abbox"])
+            spans = r["spans"]
+
+            if kind == "open":
+                # First try empty answer bullets beneath the question (study-guide
+                # layout). Each empty bullet has no text to anchor to, so the model
+                # only flags the question — we place the answers on the bullets here.
+                bullets = _empty_bullet_regions_below(
+                    pidx.page_rect, pidx.lines, abbox[3], boundary_below(pn, abbox[3])
+                )
+                if bullets:
+                    n = len(bullets)
+                    for k, reg in enumerate(bullets):
+                        ptext = _normalize(anchor)
+                        if n > 1:  # multi-bullet question -> distinct points
+                            ptext = (f"{ptext} [multi-part answer: give point "
+                                     f"{k + 1} of {n}, distinct from the others]")
+                        counter["u"] += 1
+                        units.append(Unit(
+                            unit_id=f"u{counter['u']}", type="open_response",
+                            page=pn, bbox=abbox, prompt_text=ptext,
+                            answer_region=reg,
+                        ))
+                    continue
+                # Otherwise an open answer area (a vertical gap below the prompt).
+                region = _open_region_for_anchor(
+                    abbox, pidx.page_rect, pidx.lines, obstacle_cache.get(pn, [])
+                )
+                if region is None:
+                    drop(item, "no_answer_space_below")
+                    continue
+                counter["u"] += 1
+                units.append(Unit(
+                    unit_id=f"u{counter['u']}", type="open_response",
+                    page=pn, bbox=abbox, prompt_text=_normalize(anchor),
+                    answer_region=region,
+                ))
                 continue
-            # Otherwise an open answer area (a vertical gap below the prompt).
-            region = _open_region_for_anchor(
-                abbox, pidx.page, pidx.lines, obstacle_cache.get(pn, [])
-            )
-            if region is None:
-                drop(item, "no_answer_space_below")
+
+            # inline
+            position = item.get("blank_position", "after")
+            if position not in ("after", "before"):
+                position = "after"
+            end_char = (_last_real_char(pidx.flat, spans)
+                        if position == "after"
+                        else _first_real_char(pidx.flat, spans))
+            if end_char is None:
+                drop(item, "no_anchor_bbox")
                 continue
+            line = pidx.lines[end_char["line"]]
+            slot_bbox, ulen = _inline_slot_bbox(line, end_char["ci"], position,
+                                                pidx.page_rect)
+
             counter["u"] += 1
+            counter["n"] += 1
+            slot_id = f"s{counter['n']}"
+            ptext = _normalize(anchor)
+            prompt = (f"{ptext} {{{{{slot_id}}}}}" if position == "after"
+                      else f"{{{{{slot_id}}}}} {ptext}")
             units.append(Unit(
-                unit_id=f"u{counter['u']}", type="open_response",
-                page=pn, bbox=abbox, prompt_text=_normalize(anchor),
-                answer_region=region,
+                unit_id=f"u{counter['u']}",
+                type="inline_blanks",
+                page=pn,
+                bbox=slot_bbox,
+                prompt_text=prompt,
+                slots=[Slot(slot_id=slot_id, bbox=slot_bbox,
+                            underscore_length=ulen)],
             ))
-            continue
 
-        # inline
-        position = item.get("blank_position", "after")
-        if position not in ("after", "before"):
-            position = "after"
-        end_char = (_last_real_char(pidx.flat, spans)
-                    if position == "after"
-                    else _first_real_char(pidx.flat, spans))
-        if end_char is None:
-            drop(item, "no_anchor_bbox")
-            continue
-        line = pidx.lines[end_char["line"]]
-        slot_bbox, ulen = _inline_slot_bbox(line, end_char["ci"], position, pidx.page)
-
-        counter["u"] += 1
-        counter["n"] += 1
-        slot_id = f"s{counter['n']}"
-        ptext = _normalize(anchor)
-        prompt = (f"{ptext} {{{{{slot_id}}}}}" if position == "after"
-                  else f"{{{{{slot_id}}}}} {ptext}")
-        units.append(Unit(
-            unit_id=f"u{counter['u']}",
-            type="inline_blanks",
-            page=pn,
-            bbox=slot_bbox,
-            prompt_text=prompt,
-            slots=[Slot(slot_id=slot_id, bbox=slot_bbox,
-                        underscore_length=ulen)],
-        ))
-
-    # Multiple-choice questions are located deterministically here, not through
-    # the model's blank anchors. Option labels (A/B/C/D…) are reliable in the
-    # text layer, and the vision model is told to find BLANKS, not option lists —
-    # so an MC worksheet returns almost nothing on this path unless we add it.
-    # (This is the same detector the Standard path uses.)
-    if "multiple_choice" in active:
-        from paperfill.ai.preprocess import detect_multiple_choice_units
-        for pn in range(len(doc)):
-            pidx = page_index(pn)
-            if pidx is None:
-                continue
-            mc_units, _ = detect_multiple_choice_units(pidx.lines, pn, counter)
-            if not mc_units:
-                continue
-            # Drop any model-derived unit that overlaps an MC question's vertical
-            # band on this page, so an option line the model mistook for a blank
-            # isn't both circled and written into.
-            bands = [(u.bbox[1], u.bbox[3]) for u in mc_units]
-            def _in_mc_band(u):
-                if u.page != pn:
-                    return False
-                cy = (u.bbox[1] + u.bbox[3]) / 2
-                return any(t - 1 <= cy <= b + 1 for t, b in bands)
-            units = [u for u in units if not _in_mc_band(u)]
-            units.extend(mc_units)
-
-    doc.close()
+        # Multiple-choice questions are located deterministically here, not through
+        # the model's blank anchors. Option labels (A/B/C/D…) are reliable in the
+        # text layer, and the vision model is told to find BLANKS, not option lists —
+        # so an MC worksheet returns almost nothing on this path unless we add it.
+        # (This is the same detector the Standard path uses.)
+        if "multiple_choice" in active:
+            from paperfill.ai.preprocess import detect_multiple_choice_units
+            for pn in range(len(doc)):
+                pidx = page_index(pn)
+                if pidx is None:
+                    continue
+                mc_units, _ = detect_multiple_choice_units(pidx.lines, pn, counter)
+                if not mc_units:
+                    continue
+                # Drop any model-derived unit that overlaps an MC question's vertical
+                # band on this page, so an option line the model mistook for a blank
+                # isn't both circled and written into.
+                bands = [(u.bbox[1], u.bbox[3]) for u in mc_units]
+                def _in_mc_band(u):
+                    if u.page != pn:
+                        return False
+                    cy = (u.bbox[1] + u.bbox[3]) / 2
+                    return any(t - 1 <= cy <= b + 1 for t, b in bands)
+                kept = []
+                for u in units:
+                    if _in_mc_band(u):
+                        dropped.append({"reason": "overlaps_multiple_choice",
+                                        "anchor_text": u.prompt_text,
+                                        "page": u.page, "kind": u.type})
+                        print(f"[multimodal] dropped unit (reason="
+                              f"overlaps_multiple_choice, page={u.page}): "
+                              f"{u.prompt_text!r}")
+                    else:
+                        kept.append(u)
+                units = kept
+                units.extend(mc_units)
+    finally:
+        doc.close()
 
     if dropped:
         print(f"[multimodal] {len(dropped)} anchor(s) dropped of "
@@ -922,7 +959,9 @@ def multimodal_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
         "source": path,
         "detector": "multimodal",
         "unit_count": len(units),
-        "slot_count": counter["n"],
+        # Counted off the surviving units, not the slot counter: a unit dropped
+        # for overlapping a choice list took its slot ids with it.
+        "slot_count": sum(len(u.slots) for u in units),
         "dropped_count": len(dropped),
         "dropped": dropped,
         "units": [asdict(u) for u in units],

@@ -7,11 +7,22 @@ drawn ("points", "curve", or "none" — see GRAPH_MODES in index.html).
 File-backed JSON keyed by the same user key as the credit ledger (_user_key()
 in app.py — a Google sub or "email:<addr>"), same pattern as the ads-enabled
 / auto-Pro settings, just keyed per account instead of global.
+
+Two gunicorn workers share the file, so it is locked the same way usage.json
+is: an exclusive lock around save()'s read-modify-write (without it the second
+writer drops the first one's row) and a shared lock around the read (without
+it a fill mid-save reads a truncated file, and falling back to DEFAULTS there
+stamps the watermark onto a sheet for someone who turned it off).
 """
 
 from __future__ import annotations
 
 import json
+
+try:                      # POSIX only; on anything else we run lock-free.
+    import fcntl
+except ImportError:       # pragma: no cover - Windows dev boxes
+    fcntl = None
 
 from paperfill.paths import REPO_ROOT
 
@@ -28,14 +39,23 @@ DEFAULTS = {
 
 
 def _read() -> dict:
+    """Every account's stored preferences. Empty when nobody has saved any;
+    a JSONDecodeError here is real corruption, not a race, and is left to
+    raise rather than being quietly answered with DEFAULTS."""
     try:
-        return json.loads(PREFS_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
+        fh = open(PREFS_PATH, encoding="utf-8")
+    except FileNotFoundError:
         return {}
-
-
-def _write(data: dict) -> None:
-    PREFS_PATH.write_text(json.dumps(data, indent=2))
+    with fh:
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_SH)
+        try:
+            raw = fh.read().strip()
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    data = json.loads(raw) if raw else {}
+    return data if isinstance(data, dict) else {}
 
 
 def get(user_key: str) -> dict:
@@ -63,7 +83,20 @@ def save(user_key: str, raw: dict) -> dict:
         "graph_plot": raw.get("graph_plot")
                      if raw.get("graph_plot") in PLOT_MODES else "points",
     }
-    data = _read()
-    data[user_key] = clean
-    _write(data)
+    with open(PREFS_PATH, "a+", encoding="utf-8") as fh:
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            fh.seek(0)
+            body = fh.read().strip()
+            data = json.loads(body) if body else {}
+            if not isinstance(data, dict):
+                data = {}
+            data[user_key] = clean
+            fh.seek(0)
+            fh.truncate()
+            json.dump(data, fh, indent=2)
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fh, fcntl.LOCK_UN)
     return clean

@@ -165,6 +165,9 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
 .rating-summary .face { font-size: 1.25rem; }
 .pdf-link { font-size: 0.78rem; font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
 .pdf-link:hover { text-decoration: underline; }
+/* Consuming the "new reports" marker is a POST, so this one is a button. */
+.zip-form { display: inline; }
+button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit; }
 
 /* ---- Settings ---- */
 .settings-card {
@@ -254,9 +257,9 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       <option value="custom" {% if window_key == 'custom' %}selected{% endif %}>Custom range…</option>
     </select>
     <span id="custom-range" class="range" {% if window_key != 'custom' %}hidden{% endif %}>
-      <input type="date" name="from" value="{{ window_from }}" aria-label="From date" />
+      <input type="date" name="from" value="{{ window_from }}" aria-label="From date" required />
       <span class="range-sep">to</span>
-      <input type="date" name="to" value="{{ window_to }}" aria-label="To date" />
+      <input type="date" name="to" value="{{ window_to }}" aria-label="To date" required />
       <button type="submit" class="save-btn small">Apply</button>
     </span>
     <span class="spacer"></span>
@@ -709,7 +712,9 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       <span class="rating-none">{{ activity_total - report_count }} with no report</span>
       {% if stored_report_count %}
         {% if new_report_count %}
-          <a class="pdf-link" href="{{ url_for('admin_reports_zip') }}">↓ Download all ({{ new_report_count }} new)</a>
+          <form method="post" action="{{ url_for('admin_reports_zip') }}" class="zip-form">
+            <button type="submit" class="pdf-link">↓ Download all ({{ new_report_count }} new)</button>
+          </form>
         {% else %}
           <span class="rating-none">No new reports since the last download</span>
         {% endif %}
@@ -1109,7 +1114,7 @@ lineChart('c-activity', [
 lineChart('c-devices', [{ name: 'Devices', color: C.blue, points: A.devices }],
           { area: true,
             emptyMsg: A.devices_daily_only
-              ? 'Device counts are aggregated per day — pick a window of a day or more.'
+              ? 'Device counts are aggregated per day — pick a window longer than 3 days.'
               : undefined });
 heatmap('c-devheat', S.device_heat.grid, S.device_heat.max);
 
