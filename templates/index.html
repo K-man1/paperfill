@@ -455,6 +455,7 @@ button {
 .editor-toolbar #add-box-btn.active,
 .editor-toolbar #snip-btn.active,
 .editor-toolbar #draw-btn.active,
+.editor-toolbar #erase-btn.active,
 .editor-toolbar .fmt-btn.active {
   background: var(--accent);
   color: #fff;
@@ -545,6 +546,45 @@ button {
   color: var(--ink-soft);
   margin-right: 4px;
 }
+/* Undo/redo: square, quiet, and the first thing in the toolbar. */
+#undo-btn, #redo-btn {
+  font-size: 17px;
+  line-height: 1;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink);
+}
+#undo-btn:hover:not(:disabled), #redo-btn:hover:not(:disabled) { border-color: var(--ink-soft); }
+#undo-btn:disabled, #redo-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+/* Reads "what the two pickers next to me are about to change". */
+.fmt-scope {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: var(--paper-deep);
+  border-radius: 3px;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+.fmt-scope.one-box { background: var(--accent-tint); color: var(--accent-deep); }
+.fmt-apply-all {
+  font-size: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.fmt-apply-all:hover { color: var(--ink); border-color: var(--ink-soft); }
+.fmt-apply-all[hidden] { display: none; }
 /* ---- Freehand pen (draw group in the editor toolbar) ---- */
 .draw-picker-wrap { position: relative; }
 /* IDs here aren't just hooks — they out-specificity the generic
@@ -649,6 +689,16 @@ button {
   margin-bottom: 16px;
   text-align: center;
 }
+.editor-help kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 5px;
+  background: #fff;
+  color: var(--ink);
+}
 /* ---- Report a problem ---- */
 .report-btn {
   white-space: nowrap;
@@ -747,6 +797,7 @@ button {
   max-width: 100%;
 }
 .editor-page.adding { cursor: crosshair; touch-action: none; }
+.editor-page.erasing { cursor: cell; }
 .editor-page img {
   display: block;
   width: 100%;
@@ -780,6 +831,18 @@ button {
 }
 .overlay.selected { border-style: solid; }
 .overlay:hover .ov-text, .overlay.selected .ov-text { color: #000000; }
+/* Ink, circles and graphs keep their own inline transparent background, so
+   they show selection with an outline instead of a fill. */
+.overlay.ov-ink.selected,
+.overlay.ov-circle.selected,
+.overlay.ov-points.selected {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+}
+/* While a tool is armed the page canvas owns the pointer: without this, an
+   existing stroke's bounding box (huge, for anything diagonal) swallows every
+   pen-down aimed at the paper underneath it. */
+.editor-page.adding .overlay { pointer-events: none; }
 .ov-text {
   flex: 1;
   padding: 1px 3px;
@@ -1038,7 +1101,7 @@ button {
   .editor-toolbar { gap: 8px; padding: 12px; top: 0; }
   .editor-toolbar button { padding: 12px 14px; }
   .fmt-group { padding: 0 6px; }
-  #add-box-btn, #snip-btn, #draw-btn { flex: 1 1 auto; }
+  #add-box-btn, #snip-btn, #draw-btn, #erase-btn { flex: 1 1 auto; }
   .fmt-cards .fmt-card { width: 100%; }
 }
 
@@ -1211,18 +1274,28 @@ button {
   <section class="stage" id="stage-result">
     <div class="editor-toolbar">
       <div class="fmt-group">
-        <span class="fmt-label">Font</span>
-        <select id="fmt-font" title="Font — applies to the selected box, or the whole document if none is selected">
+        <button id="undo-btn" type="button" title="Undo (⌘Z)" disabled>↶</button>
+        <button id="redo-btn" type="button" title="Redo (⇧⌘Z)" disabled>↷</button>
+      </div>
+      <div class="fmt-group">
+        <!-- The scope chip is the whole point of this group: font and size have
+             always applied either to one box or to the entire document, and
+             which one it was depended on invisible selection state. Now it says
+             so. -->
+        <span class="fmt-scope" id="fmt-scope">All text</span>
+        <select id="fmt-font">
           <option value="sans">IBM Plex Sans</option>
           <option value="serif">Georgia</option>
           <option value="mono">Courier</option>
         </select>
-        <select id="fmt-size" title="Size — applies to the selected box, or the whole document if none is selected">
+        <select id="fmt-size">
           <option>8</option><option>9</option><option>10</option>
           <option>11</option><option>12</option><option>14</option>
           <option>16</option><option>18</option><option>20</option>
           <option>24</option><option>28</option><option>32</option>
         </select>
+        <button class="fmt-apply-all" id="fmt-apply-all" type="button" hidden
+                title="Give every text box this font and size">Apply to all</button>
       </div>
       <div class="fmt-group">
         <button class="fmt-btn b" id="fmt-bold" disabled title="Bold (⌘B)">B</button>
@@ -1230,7 +1303,7 @@ button {
         <button class="fmt-btn u" id="fmt-underline" disabled title="Underline (⌘U)">U</button>
       </div>
       <div class="fmt-group draw-group">
-        <button class="btn-ghost" id="draw-btn" type="button" title="Draw freehand on the page">✎ Draw</button>
+        <button class="btn-ghost" id="draw-btn" type="button" title="Draw freehand on the page (D)">✎ Draw</button>
         <div class="draw-picker-wrap">
           <button class="draw-picker-btn" id="draw-picker-btn" type="button"
                   title="Pen color &amp; thickness" aria-haspopup="true" aria-expanded="false">
@@ -1251,6 +1324,8 @@ button {
             </div>
           </div>
         </div>
+        <button class="btn-ghost" id="erase-btn" type="button"
+                title="Erase pen strokes — drag across the ones you want gone (E)">⌫ Erase</button>
       </div>
       <div class="fmt-group hw-group">
         {% if not is_pro %}
@@ -1272,6 +1347,10 @@ button {
       </div>
       {% if donate_url %}<a class="btn-ghost donate-btn" href="{{ donate_url }}" target="_blank" rel="noopener">♥ Donate</a>{% endif %}
     </div>
+    <p class="editor-help">
+      Click any answer to edit it. <kbd>⌘Z</kbd> undo · <kbd>⌘C</kbd>/<kbd>⌘V</kbd> copy a box ·
+      <kbd>D</kbd> draw · <kbd>E</kbd> erase · <kbd>Esc</kbd> deselect
+    </p>
     <div class="editor-pages" id="editor-pages"></div>
   </section>
 </main>
@@ -1897,6 +1976,7 @@ let pageScales = [];         // px-per-point for each page (after image load)
 let addMode = false;
 let snipMode = false;        // drag a box → AI answers the snipped question
 let inkMode = false;         // freehand pen; stays on across strokes until toggled off
+let eraseMode = false;       // drag across pen strokes to remove them
 let drawColor = "#1a1a1a";
 let drawWidth = 2.5;
 let dirty = false;
@@ -1910,12 +1990,140 @@ function ovDefaults() {
 function findOv(id) { return overlays.find(o => o.id === id); }
 function findOvEl(id) { return document.querySelector(`.overlay[data-id="${CSS.escape(id)}"]`); }
 
+// ---- Undo / redo --------------------------------------------------------
+// Snapshots, not a command log. `overlays` is the document's entire editable
+// state and it's plain JSON, so cloning it costs microseconds and every
+// operation — including ones added later — gets undo for free, with no inverse
+// to write per action and no way for a pair to drift apart. What it costs is
+// memory proportional to (steps x document size), which HISTORY_LIMIT caps.
+const HISTORY_LIMIT = 80;
+const COALESCE_MS = 900;
+const undoStack = [];
+const redoStack = [];
+let lastPushKey = null;
+let lastPushAt = 0;
+
+function snapshotOverlays() { return JSON.parse(JSON.stringify(overlays)); }
+
+function fileSnapshot(snap) {
+  undoStack.push(snap);
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  redoStack.length = 0;   // a fresh edit forks the timeline
+  reflectHistoryUI();
+}
+
+// Record the state *before* a mutation. `key` collapses a run of related edits
+// into one step — without it every keystroke would be its own undo, which is
+// not what anyone means by "undo my typing".
+function pushHistory(key = null) {
+  const now = Date.now();
+  if (key && key === lastPushKey && now - lastPushAt < COALESCE_MS) {
+    lastPushAt = now;
+    return;
+  }
+  fileSnapshot(snapshotOverlays());
+  lastPushKey = key;
+  lastPushAt = now;
+}
+
+// For gestures: take the snapshot up front, file it only if the pointer
+// actually changed something, so a click that misses doesn't become a step.
+function pushIfChanged(before) {
+  if (JSON.stringify(before) === JSON.stringify(overlays)) return;
+  fileSnapshot(before);
+  lastPushKey = null;
+}
+
+function clearHistory() {
+  undoStack.length = 0;
+  redoStack.length = 0;
+  lastPushKey = null;
+  reflectHistoryUI();
+}
+
+function reflectHistoryUI() {
+  $("undo-btn").disabled = undoStack.length === 0;
+  $("redo-btn").disabled = redoStack.length === 0;
+}
+
+function restoreSnapshot(snap) {
+  const refocusId = activeOverlayId;
+  overlays = snap;
+  clearSelection();
+  for (let i = 0; i < pageScales.length; i++) positionOverlaysOnPage(i);
+  markDirty();
+  // Rebuilding the pages destroys the element the caret was in. Undoing
+  // mid-sentence shouldn't also mean losing your place, so put it back at the
+  // end of the box that's still being edited.
+  const back = refocusId ? findOv(refocusId) : null;
+  const txt = back && !back.kind ? findOvEl(refocusId)?.querySelector(".ov-text") : null;
+  if (!txt) return;
+  txt.focus();
+  const range = document.createRange();
+  range.selectNodeContents(txt);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshotOverlays());
+  restoreSnapshot(undoStack.pop());
+  lastPushKey = null;   // never coalesce a post-undo edit into a pre-undo run
+  reflectHistoryUI();
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshotOverlays());
+  restoreSnapshot(redoStack.pop());
+  lastPushKey = null;
+  reflectHistoryUI();
+}
+
+// ---- Selection ----------------------------------------------------------
+// One selection concept for every kind of overlay: text boxes select by taking
+// focus, everything else by being clicked. Whatever is selected is what the
+// format controls, ⌘C and Delete act on.
+function clearSelection() {
+  document.querySelectorAll(".overlay.selected").forEach(el => el.classList.remove("selected"));
+  setActiveOverlay(null);
+  hideRefineBar();
+}
+
+function selectOverlay(el, ov) {
+  document.querySelectorAll(".overlay.selected").forEach(o => {
+    if (o !== el) o.classList.remove("selected");
+  });
+  el.classList.add("selected");
+  setActiveOverlay(ov.id);
+}
+
+function deleteOverlay(id) {
+  pushHistory();
+  overlays = overlays.filter(o => o.id !== id);
+  const el = findOvEl(id);
+  if (el) el.remove();
+  if (activeOverlayId === id) clearSelection();
+  markDirty();
+}
+
+// Move an overlay by (dx, dy) page points. Graph overlays carry both a bbox
+// and the plotted points, so both have to travel together.
+function offsetOverlay(ov, dx, dy) {
+  if (ov.bbox) ov.bbox = [ov.bbox[0] + dx, ov.bbox[1] + dy, ov.bbox[2] + dx, ov.bbox[3] + dy];
+  if (ov.points) ov.points = ov.points.map(([x, y]) => [x + dx, y + dy]);
+}
+
 function renderResult(data) {
   overlays = (data.overlays || []).map(o => ({ ...ovDefaults(), ...o }));
   pageSizes = data.page_sizes || [];
   pageScales = new Array(data.page_count).fill(1);
   dirty = false;
   cancelPendingSave();   // a queued save from the previous job must not fire
+  clearHistory();        // never undo across job boundaries
   resetReport();
   exitDrawModes();
   hideRefineBar();
@@ -1984,7 +2192,18 @@ function createOverlayEl(ov, scale) {
   txt.spellcheck = false;
   txt.textContent = ov.text || "";
   applyOverlayTextStyle(txt, ov, scale);
-  txt.addEventListener("input", () => { ov.text = txt.innerText; markDirty(AUTOSAVE_TYPING_MS); });
+  txt.addEventListener("input", () => {
+    pushHistory("text:" + ov.id);   // still holds the pre-keystroke text
+    ov.text = txt.innerText;
+    markDirty(AUTOSAVE_TYPING_MS);
+  });
+  // A contenteditable pastes rich HTML by default, which drops styled markup
+  // into a box whose content is only ever a plain string.
+  txt.addEventListener("paste", e => {
+    e.preventDefault();
+    const plain = (e.clipboardData || window.clipboardData).getData("text/plain");
+    document.execCommand("insertText", false, plain);
+  });
   txt.addEventListener("focus", () => {
     el.classList.add("selected");
     setActiveOverlay(ov.id);
@@ -2017,10 +2236,7 @@ function createOverlayEl(ov, scale) {
   del.addEventListener("pointerdown", e => e.stopPropagation());
   del.addEventListener("click", e => {
     e.stopPropagation();
-    overlays = overlays.filter(o => o.id !== ov.id);
-    el.remove();
-    if (activeOverlayId === ov.id) { setActiveOverlay(null); hideRefineBar(); }
-    markDirty();
+    deleteOverlay(ov.id);
   });
 
   const resize = document.createElement("div");
@@ -2066,9 +2282,13 @@ function createCircleOverlayEl(ov, scale) {
   del.addEventListener("pointerdown", e => e.stopPropagation());
   del.addEventListener("click", e => {
     e.stopPropagation();
-    overlays = overlays.filter(o => o.id !== ov.id);
-    el.remove();
-    markDirty();
+    deleteOverlay(ov.id);
+  });
+
+  el.addEventListener("click", e => {
+    if (toolActive()) return;
+    e.stopPropagation();
+    selectOverlay(el, ov);
   });
 
   el.appendChild(drag);
@@ -2262,9 +2482,13 @@ function createInkOverlayEl(ov, scale) {
   del.addEventListener("pointerdown", e => e.stopPropagation());
   del.addEventListener("click", e => {
     e.stopPropagation();
-    overlays = overlays.filter(o => o.id !== ov.id);
-    el.remove();
-    markDirty();
+    deleteOverlay(ov.id);
+  });
+
+  el.addEventListener("click", e => {
+    if (toolActive()) return;
+    e.stopPropagation();
+    selectOverlay(el, ov);
   });
 
   el.appendChild(drag);
@@ -2280,6 +2504,7 @@ function attachInkDragMove(handle, overlayEl, ov) {
     const scale = pageScales[ov.page] || 1;
     const startX = e.clientX, startY = e.clientY;
     const origPoints = ov.points.map(p => [...p]);
+    const before = snapshotOverlays();
     function onMove(ev) {
       const dx = (ev.clientX - startX) / scale;
       const dy = (ev.clientY - startY) / scale;
@@ -2290,6 +2515,7 @@ function attachInkDragMove(handle, overlayEl, ov) {
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onUp);
+      pushIfChanged(before);
       markDirty();
     }
     handle.addEventListener("pointermove", onMove);
@@ -2317,6 +2543,7 @@ function attachResize(handle, overlayEl, ov) {
     const scale = pageScales[ov.page] || 1;
     const startX = e.clientX, startY = e.clientY;
     const origBbox = [...ov.bbox];
+    const before = snapshotOverlays();
     overlayEl.classList.add("selected");
     function onMove(ev) {
       const dx = (ev.clientX - startX) / scale;
@@ -2332,7 +2559,8 @@ function attachResize(handle, overlayEl, ov) {
       handle.removeEventListener("pointercancel", onUp);
       // On touch (no hover) keep the box selected so its handles stay reachable.
       if (ev.pointerType === "mouse") overlayEl.classList.remove("selected");
-      else setActiveOverlay(ov.id);
+      else selectOverlay(overlayEl, ov);
+      pushIfChanged(before);
       markDirty();
     }
     handle.addEventListener("pointermove", onMove);
@@ -2357,6 +2585,7 @@ function attachDragMove(handle, overlayEl, ov) {
     const scale = pageScales[ov.page] || 1;
     const startX = e.clientX, startY = e.clientY;
     const origBbox = [...ov.bbox];
+    const before = snapshotOverlays();
     overlayEl.classList.add("selected");
     function onMove(ev) {
       const dx = (ev.clientX - startX) / scale;
@@ -2370,7 +2599,8 @@ function attachDragMove(handle, overlayEl, ov) {
       handle.removeEventListener("pointercancel", onUp);
       // On touch (no hover) keep the box selected so its handles stay reachable.
       if (ev.pointerType === "mouse") overlayEl.classList.remove("selected");
-      else setActiveOverlay(ov.id);
+      else selectOverlay(overlayEl, ov);
+      pushIfChanged(before);
       markDirty();
     }
     handle.addEventListener("pointermove", onMove);
@@ -2418,6 +2648,7 @@ function startFreehandStroke(wrap, pageIdx, scale, wrapRect, sx, sy, pointerId) 
     svg.remove();
     if (screenPts.length < 2) return;  // a tap with no drag: nothing to keep
     const points = screenPts.map(([x, y]) => [x / scale, y / scale]);
+    pushHistory();
     overlays.push({ id: newOvId(), page: pageIdx, kind: "ink", points, color: drawColor, width: drawWidth });
     positionOverlaysOnPage(pageIdx);
     markDirty();
@@ -2427,10 +2658,65 @@ function startFreehandStroke(wrap, pageIdx, scale, wrapRect, sx, sy, pointerId) 
   wrap.addEventListener("pointercancel", onUp);
 }
 
+// Distance from a point to segment ab, all in page points. The eraser needs it
+// because a stroke is a polyline: "did the cursor touch this stroke" is a
+// nearest-point question against every segment, not against the bounding box.
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (!len2) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function strokeHit(ov, x, y, radius) {
+  const slop = radius + (ov.width || 2) / 2;
+  for (let i = 0; i + 1 < ov.points.length; i++) {
+    const [ax, ay] = ov.points[i], [bx, by] = ov.points[i + 1];
+    if (distToSegment(x, y, ax, ay, bx, by) <= slop) return true;
+  }
+  return false;
+}
+
+// Erasing removes whole strokes rather than clipping them: a stroke is the unit
+// the pen created, so it's the unit the eraser takes back. The whole drag
+// collapses into one undo step.
+function runEraser(wrap, pageIdx, scale, wrapRect, sx, sy) {
+  const before = snapshotOverlays();
+  const radius = 7 / scale;   // ~7 screen px of slop, expressed in page points
+  let hitAny = false;
+
+  function eraseAt(cx, cy) {
+    const x = cx / scale, y = cy / scale;
+    const keep = overlays.filter(o =>
+      !(o.kind === "ink" && o.page === pageIdx && strokeHit(o, x, y, radius)));
+    if (keep.length === overlays.length) return;
+    overlays = keep;
+    positionOverlaysOnPage(pageIdx);
+    hitAny = true;
+  }
+  eraseAt(sx, sy);
+
+  function onMove(ev) { eraseAt(ev.clientX - wrapRect.left, ev.clientY - wrapRect.top); }
+  function onUp() {
+    wrap.removeEventListener("pointermove", onMove);
+    wrap.removeEventListener("pointerup", onUp);
+    wrap.removeEventListener("pointercancel", onUp);
+    if (hitAny) { pushIfChanged(before); markDirty(); }
+  }
+  wrap.addEventListener("pointermove", onMove);
+  wrap.addEventListener("pointerup", onUp);
+  wrap.addEventListener("pointercancel", onUp);
+}
+
 function attachPageDrawHandlers(wrap, pageIdx) {
   wrap.addEventListener("pointerdown", e => {
-    if (!addMode && !snipMode && !inkMode) return;
-    if (e.target.closest(".overlay")) return;
+    // No tool armed: a click on bare paper means "deselect", the way clicking
+    // off an object works in every editor.
+    if (!toolActive()) {
+      if (!e.target.closest(".overlay")) clearSelection();
+      return;
+    }
     e.preventDefault();
     wrap.setPointerCapture?.(e.pointerId);
     const scale = pageScales[pageIdx] || 1;
@@ -2438,6 +2724,10 @@ function attachPageDrawHandlers(wrap, pageIdx) {
     const sx = e.clientX - wrapRect.left;
     const sy = e.clientY - wrapRect.top;
 
+    if (eraseMode) {
+      runEraser(wrap, pageIdx, scale, wrapRect, sx, sy);
+      return;
+    }
     if (inkMode) {
       startFreehandStroke(wrap, pageIdx, scale, wrapRect, sx, sy, e.pointerId);
       return;
@@ -2496,6 +2786,8 @@ function attachPageDrawHandlers(wrap, pageIdx) {
 function addOverlayAt(pageIdx, bbox, text, { focus = false } = {}) {
   const ov = { ...ovDefaults(), id: newOvId(), page: pageIdx, bbox, text: text || "" };
   ov.font = docFont || ov.font;   // adopt the document's font
+  ov.size = docSize || ov.size;
+  pushHistory();
   overlays.push(ov);
   positionOverlaysOnPage(pageIdx);
   markDirty();
@@ -2511,30 +2803,29 @@ function addOverlayAt(pageIdx, bbox, text, { focus = false } = {}) {
 }
 
 // Turn off every draw mode and clear the crosshair cursor / button states.
-function exitDrawModes() {
-  addMode = false;
-  snipMode = false;
-  inkMode = false;
-  $("add-box-btn").classList.remove("active");
-  $("snip-btn").classList.remove("active");
-  $("draw-btn").classList.remove("active");
-  document.querySelectorAll(".editor-page").forEach(p => p.classList.remove("adding"));
-}
+function exitDrawModes() { setDrawMode(null); }
 
-function setDrawMode(mode) {  // mode: "add" | "snip" | "draw" | null
+function toolActive() { return addMode || snipMode || inkMode || eraseMode; }
+
+function setDrawMode(mode) {  // mode: "add" | "snip" | "draw" | "erase" | null
   addMode = (mode === "add");
   snipMode = (mode === "snip");
   inkMode = (mode === "draw");
+  eraseMode = (mode === "erase");
   $("add-box-btn").classList.toggle("active", addMode);
   $("snip-btn").classList.toggle("active", snipMode);
   $("draw-btn").classList.toggle("active", inkMode);
-  const on = addMode || snipMode || inkMode;
-  document.querySelectorAll(".editor-page").forEach(p => p.classList.toggle("adding", on));
+  $("erase-btn").classList.toggle("active", eraseMode);
+  document.querySelectorAll(".editor-page").forEach(p => {
+    p.classList.toggle("adding", toolActive());
+    p.classList.toggle("erasing", eraseMode);
+  });
 }
 
 $("add-box-btn").addEventListener("click", () => setDrawMode(addMode ? null : "add"));
 $("snip-btn").addEventListener("click", () => setDrawMode(snipMode ? null : "snip"));
 $("draw-btn").addEventListener("click", () => setDrawMode(inkMode ? null : "draw"));
+$("erase-btn").addEventListener("click", () => setDrawMode(eraseMode ? null : "erase"));
 
 // Pen color/thickness dropdown: pick anytime, independent of whether Draw
 // mode is currently on. Closes on an outside click.
@@ -2628,23 +2919,34 @@ function reflectDocFontUI() {
 function setActiveOverlay(id) {
   activeOverlayId = id;
   const ov = id ? findOv(id) : null;
-  ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).disabled = !ov);
-  if (!ov) {
+  // Only text boxes carry font state; ink, circles and graphs can be selected
+  // but have nothing for these controls to edit.
+  const textOv = ov && !ov.kind ? ov : null;
+  ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).disabled = !textOv);
+  const scope = $("fmt-scope");
+  if (!textOv) {
     ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).classList.remove("active"));
+    scope.textContent = "All text";
+    scope.classList.remove("one-box");
+    $("fmt-apply-all").hidden = true;
     reflectDocFontUI();
     return;
   }
-  $("fmt-font").value = ov.font;
-  $("fmt-size").value = String(Math.round(ov.size));
-  $("fmt-bold").classList.toggle("active", !!ov.bold);
-  $("fmt-italic").classList.toggle("active", !!ov.italic);
-  $("fmt-underline").classList.toggle("active", !!ov.underline);
+  scope.textContent = "This box";
+  scope.classList.add("one-box");
+  $("fmt-apply-all").hidden = false;
+  $("fmt-font").value = textOv.font;
+  $("fmt-size").value = String(Math.round(textOv.size));
+  $("fmt-bold").classList.toggle("active", !!textOv.bold);
+  $("fmt-italic").classList.toggle("active", !!textOv.italic);
+  $("fmt-underline").classList.toggle("active", !!textOv.underline);
 }
 
 function applyActiveFmt(patch) {
   if (!activeOverlayId) return;
   const ov = findOv(activeOverlayId);
   if (!ov) return;
+  pushHistory("fmt:" + ov.id + ":" + Object.keys(patch).join(","));
   Object.assign(ov, patch);
   const el = findOvEl(ov.id);
   if (el) {
@@ -2667,6 +2969,7 @@ function toggleFmt(key) {
 // overlays don't have a font). Used when the pickers are touched with
 // nothing selected.
 function applyDocFontPatch(patch) {
+  pushHistory();
   if (patch.font) docFont = patch.font;
   if (patch.size) docSize = patch.size;
   overlays.filter(o => !o.kind).forEach(o => Object.assign(o, patch));
@@ -2743,12 +3046,111 @@ $("fmt-size").addEventListener("change", e => {
   if (activeOverlayId) applyActiveFmt({ size });
   else applyDocFontPatch({ size });
 });
+// Push the selected box's font and size onto every other text box. This is the
+// document-wide path made reachable *with* a box selected; with nothing
+// selected the two pickers already apply to everything, which the scope chip
+// now says out loud.
+$("fmt-apply-all").addEventListener("click", () => {
+  const ov = activeOverlayId ? findOv(activeOverlayId) : null;
+  if (!ov || ov.kind) return;
+  applyDocFontPatch({ font: ov.font, size: ov.size });
+  toast(`Every text box is now ${$("fmt-font").selectedOptions[0].text} ${Math.round(ov.size)}`);
+});
 $("fmt-bold").addEventListener("click", () => toggleFmt("bold"));
 $("fmt-italic").addEventListener("click", () => toggleFmt("italic"));
 $("fmt-underline").addEventListener("click", () => toggleFmt("underline"));
 
 // Initialize disabled
 setActiveOverlay(null);
+
+// ---- Clipboard ----------------------------------------------------------
+// A copied overlay lives in a variable, not the system clipboard: it's a
+// positioned object with a bbox, a font and possibly a polyline, and there's no
+// honest text/plain form of that to hand to another application.
+const PASTE_OFFSET = 12;   // page points, so the copy lands beside the original
+let clipboardOv = null;
+
+function copyActiveOverlay() {
+  const ov = activeOverlayId ? findOv(activeOverlayId) : null;
+  if (!ov) return false;
+  clipboardOv = JSON.parse(JSON.stringify(ov));
+  toast(ov.kind === "ink" ? "Stroke copied" : "Box copied");
+  return true;
+}
+
+function pasteOverlay() {
+  if (!clipboardOv) return;
+  const ov = JSON.parse(JSON.stringify(clipboardOv));
+  ov.id = newOvId();
+  offsetOverlay(ov, PASTE_OFFSET, PASTE_OFFSET);
+  pushHistory();
+  overlays.push(ov);
+  positionOverlaysOnPage(ov.page);
+  markDirty();
+  const el = findOvEl(ov.id);
+  if (el) {
+    selectOverlay(el, ov);
+    el.scrollIntoView({ block: "nearest" });
+  }
+  // Paste again and the next copy steps further down instead of stacking.
+  clipboardOv = JSON.parse(JSON.stringify(ov));
+}
+
+// ---- Editor keys --------------------------------------------------------
+// ⌘Z is captured even inside a box's contenteditable. The browser's native undo
+// would roll the DOM text back without telling `overlays`, so the model and the
+// screen would disagree and the next save would write the wrong thing.
+document.addEventListener("keydown", e => {
+  if (!$("stage-result").classList.contains("active")) return;
+  if ($("report-backdrop").classList.contains("open")) return;
+
+  const mod = e.metaKey || e.ctrlKey;
+  const k = e.key.toLowerCase();
+  const active = document.activeElement;
+  const inText = !!active?.classList?.contains("ov-text");
+  const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(active?.tagName || "");
+
+  if (mod && k === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if (mod && k === "y") { e.preventDefault(); redo(); return; }
+
+  if (mod && k === "c") {
+    if (inField) return;
+    // Characters highlighted inside a box: that's an ordinary text copy.
+    const sel = window.getSelection();
+    if (inText && sel && !sel.isCollapsed) return;
+    if (copyActiveOverlay()) e.preventDefault();
+    return;
+  }
+  if (mod && k === "v") {
+    if (inText || inField) return;   // the box's own paste handler takes it
+    if (clipboardOv) { e.preventDefault(); pasteOverlay(); }
+    return;
+  }
+
+  if (e.key === "Escape") {
+    if (toolActive()) exitDrawModes();
+    else if (activeOverlayId) { active?.blur?.(); clearSelection(); }
+    return;
+  }
+
+  // Delete only what's visibly selected. A text box drops .selected on blur, so
+  // a stray Backspace after clicking away can't silently remove it.
+  if ((e.key === "Delete" || e.key === "Backspace") && !inText && !inField && activeOverlayId) {
+    const el = findOvEl(activeOverlayId);
+    if (!el || !el.classList.contains("selected")) return;
+    e.preventDefault();
+    deleteOverlay(activeOverlayId);
+    return;
+  }
+
+  if (mod || e.altKey || inText || inField) return;
+  if (k === "d") { e.preventDefault(); setDrawMode(inkMode ? null : "draw"); }
+  else if (k === "e") { e.preventDefault(); setDrawMode(eraseMode ? null : "erase"); }
+  else if (k === "a") { e.preventDefault(); setDrawMode(addMode ? null : "add"); }
+});
+
+$("undo-btn").addEventListener("click", undo);
+$("redo-btn").addEventListener("click", redo);
 
 // ---- Floating "refine box" toolbar (AI shorten / lengthen / custom) ----
 const refineBar = $("refine-bar");
@@ -2794,6 +3196,7 @@ async function refineActiveBox(mode, instruction = "") {
     if (!r.ok) throw new Error(data.error || "Couldn't rewrite that");
     const newText = (data.text || "").trim();
     if (!newText) { toast("The AI didn't return any text", true); return; }
+    pushHistory();
     ov.text = newText;
     const el = findOvEl(ov.id);
     if (el) {
