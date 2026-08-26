@@ -50,6 +50,7 @@ if _env_path.exists():
 
 from paperfill.data import costs
 from paperfill.data import db
+from paperfill.data import prefs
 from paperfill.data import stats
 from paperfill.data import usage
 from paperfill.utils.json_utils import extract_json_object
@@ -58,7 +59,7 @@ from paperfill.ai.preprocess import preprocess_pdf
 from paperfill.ai.multimodal_preprocess import multimodal_preprocess_pdf
 from paperfill.ai.candidates import region_preprocess_pdf
 from paperfill.ai.render import (render_overlays_pdf, build_overlays_from_structure,
-                                 FILLED_MARKER)
+                                 apply_name_date_fill, FILLED_MARKER)
 from paperfill.ai.vision_preprocess import VISION_MODEL, VISION_DPI
 from paperfill.ai.llm_client import call_context
 from paperfill.handwriting import font_store
@@ -1761,6 +1762,26 @@ def handwriting_settings():
     return redirect(url_for("handwriting_page"))
 
 
+@app.route("/settings")
+def settings_page():
+    """Fill preferences: the Goodnotes watermark, auto-filling Name/Date
+    header blanks, and the default way a detected graph gets drawn."""
+    if not session.get("role"):
+        return redirect(url_for("login"))
+    return render_template("settings.html")
+
+
+@app.get("/api/settings")
+def get_settings():
+    return jsonify(prefs.get(_user_key()))
+
+
+@app.post("/api/settings")
+def save_settings():
+    data = request.get_json(silent=True) or {}
+    return jsonify(prefs.save(_user_key(), data))
+
+
 @app.route("/pricing")
 def pricing():
     """Free vs Pro comparison + the upgrade call-to-action. Viewable signed-out
@@ -2141,7 +2162,11 @@ def fill():
         except Exception as e:
             return jsonify({"error": f"LLM call failed: {e}"}), 502
 
-    overlays = build_overlays_from_structure(job["structure"], answers)
+    user_prefs = prefs.get(_user_key())
+    if user_prefs["fill_name_date"]:
+        apply_name_date_fill(job["structure"], answers, user_prefs["name"])
+    overlays = build_overlays_from_structure(job["structure"], answers,
+                                             default_plot=user_prefs["graph_plot"])
     # Which of the two fill paths above actually produced these answers. The
     # vision path can silently fall back to text-only, so the detector the user
     # picked doesn't tell you this on its own.
@@ -2369,7 +2394,8 @@ def _rerender_job(job_id: str) -> None:
     filled_path = OUTPUTS / f"{job_id}-filled.pdf"
     render_overlays_pdf(job["pdf_path"], job["overlays"], str(filled_path),
                         images=_load_hw_images(job_id),
-                        pen_thickness_mm=pen_thickness)
+                        pen_thickness_mm=pen_thickness,
+                        watermark=prefs.get(_user_key())["watermark"])
     doc = fitz.open(str(filled_path))
     preview_dir = OUTPUTS / job_id
     for i, page in enumerate(doc):

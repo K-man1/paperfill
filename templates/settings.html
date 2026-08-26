@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Paperfill — Settings</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#f7f4ee;--ink:#1f1d1a;--ink-soft:#5c564c;--rule:#d5cec1;--accent:#ff5a1f;--accent-deep:#c93f10;--serif:"Fraunces",serif;--sans:"IBM Plex Sans",system-ui,sans-serif;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.5;}
+.wrap{max-width:680px;margin:0 auto;padding:42px 22px 80px;}
+a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
+h1{font-family:var(--serif);font-weight:800;font-size:34px;margin:14px 0 6px;}
+.lede{color:var(--ink-soft);margin:0 0 28px;}
+h2.section{font-family:var(--serif);font-size:22px;margin:34px 0 4px;}
+h2.section:first-of-type{margin-top:0;}
+.section-note{color:var(--ink-soft);font-size:14px;margin:0 0 14px;}
+
+.card{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:6px 22px;margin:0 0 18px;}
+.control{padding:16px 0;border-bottom:1px solid #e6e1d6;}
+.control:last-child{border-bottom:none;}
+.toggle-row{display:flex;justify-content:space-between;align-items:center;gap:16px;}
+.toggle-copy .name{font-weight:600;font-size:15px;}
+.toggle-copy .hint{font-size:13px;color:var(--ink-soft);margin:2px 0 0;}
+input[type=checkbox]{width:20px;height:20px;accent-color:var(--accent);flex:0 0 auto;cursor:pointer;}
+
+.name-row{display:none;margin-top:12px;}
+.name-row.open{display:block;}
+.name-row input[type=text]{width:100%;padding:10px 12px;border:1px solid var(--rule);border-radius:8px;font:inherit;}
+.name-row .err{display:block;margin-top:6px;}
+
+.plot-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:4px;}
+.plot-card{border:1px solid var(--rule);border-radius:10px;padding:12px 10px;text-align:center;cursor:pointer;}
+.plot-card.selected{border-color:var(--accent);background:#fff5ef;}
+.plot-card input{display:none;}
+.plot-card .name{display:block;font-weight:600;font-size:14px;}
+.plot-card .sub{display:block;font-size:12px;color:var(--ink-soft);margin-top:2px;}
+
+.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:none;border-radius:8px;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;}
+.btn.accent{background:var(--accent);} .btn.accent:hover{background:var(--accent-deep);}
+.btn:disabled{opacity:.5;cursor:default;}
+.saved{color:#40643a;font-weight:600;font-size:14px;opacity:0;transition:opacity .2s;}
+.saved.show{opacity:1;}
+.err{color:var(--accent-deep);font-weight:500;font-size:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">Back to Paperfill</a>
+  <h1>Settings</h1>
+  <p class="lede">Preferences for how a worksheet gets filled. Saved to your
+     account, so they apply the next time you fill one.</p>
+
+  <h2 class="section">Watermark</h2>
+  <div class="card">
+    <div class="control toggle-row">
+      <div class="toggle-copy">
+        <span class="name">Goodnotes watermark</span>
+        <p class="hint">Stamp the "Made with Goodnotes" badge on every filled page.</p>
+      </div>
+      <input type="checkbox" id="watermark" />
+    </div>
+  </div>
+
+  <h2 class="section">Name and date</h2>
+  <div class="card">
+    <div class="control">
+      <div class="toggle-row">
+        <div class="toggle-copy">
+          <span class="name">Fill in Name and Date</span>
+          <p class="hint">Write your name and today's date into a worksheet's
+             "Name ___" / "Date ___" header, instead of leaving it to the AI.</p>
+        </div>
+        <input type="checkbox" id="fill_name_date" />
+      </div>
+      <div class="name-row" id="name-row">
+        <input type="text" id="name" maxlength="200" placeholder="What name should we use?" />
+        <span class="err" id="name-err"></span>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="section">Graphs</h2>
+  <p class="section-note">How a detected graph answer is drawn by default. You
+     can still change it per question from the editor.</p>
+  <div class="plot-cards" id="plot-cards">
+    <label class="plot-card" data-value="points">
+      <input type="radio" name="graph_plot" value="points" checked>
+      <span class="name">Points only</span>
+      <span class="sub">dots at each answer</span>
+    </label>
+    <label class="plot-card" data-value="curve">
+      <input type="radio" name="graph_plot" value="curve">
+      <span class="name">Graph it</span>
+      <span class="sub">a drawn line or curve</span>
+    </label>
+    <label class="plot-card" data-value="none">
+      <input type="radio" name="graph_plot" value="none">
+      <span class="name">Don't graph</span>
+      <span class="sub">leave the grid blank</span>
+    </label>
+  </div>
+
+  <div class="actions">
+    <button class="btn accent" id="save" type="button">Save settings</button>
+    <span class="saved" id="saved">Saved</span>
+    <span class="err" id="save-err"></span>
+  </div>
+</div>
+
+<script>
+const el = (id) => document.getElementById(id);
+
+function selectPlotCard(value) {
+  document.querySelectorAll(".plot-card").forEach(card => {
+    card.classList.toggle("selected", card.dataset.value === value);
+  });
+}
+
+document.querySelectorAll(".plot-card").forEach(card => {
+  card.addEventListener("click", () => {
+    card.querySelector("input").checked = true;
+    selectPlotCard(card.dataset.value);
+    markDirty();
+  });
+});
+
+function currentPlot() {
+  return document.querySelector('input[name="graph_plot"]:checked').value;
+}
+
+function markDirty() { el("saved").classList.remove("show"); }
+
+el("watermark").addEventListener("change", markDirty);
+el("fill_name_date").addEventListener("change", () => {
+  el("name-row").classList.toggle("open", el("fill_name_date").checked);
+  markDirty();
+});
+el("name").addEventListener("input", () => { el("name-err").textContent = ""; markDirty(); });
+
+function setValues(s) {
+  el("watermark").checked = !!s.watermark;
+  el("fill_name_date").checked = !!s.fill_name_date;
+  el("name").value = s.name || "";
+  el("name-row").classList.toggle("open", !!s.fill_name_date);
+  selectPlotCard(s.graph_plot || "points");
+  document.querySelector(`input[name="graph_plot"][value="${s.graph_plot || 'points'}"]`).checked = true;
+}
+
+el("save").addEventListener("click", async () => {
+  const save = el("save"), err = el("save-err"), nameErr = el("name-err");
+  err.textContent = ""; nameErr.textContent = "";
+
+  const fillNameDate = el("fill_name_date").checked;
+  const name = el("name").value.trim();
+  if (fillNameDate && !name) {
+    nameErr.textContent = "Enter a name first.";
+    el("name").focus();
+    return;
+  }
+
+  save.disabled = true;
+  try {
+    const r = await fetch("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        watermark: el("watermark").checked,
+        fill_name_date: fillNameDate,
+        name,
+        graph_plot: currentPlot(),
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "save failed");
+    setValues(data);
+    el("saved").classList.add("show");
+  } catch (ex) {
+    err.textContent = "Couldn't save: " + ex.message;
+  } finally { save.disabled = false; }
+});
+
+(async function load() {
+  try {
+    const r = await fetch("/api/settings");
+    if (!r.ok) return;
+    setValues(await r.json());
+  } catch (_) { /* leave the defaults in the markup */ }
+})();
+</script>
+</body>
+</html>

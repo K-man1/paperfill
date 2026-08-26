@@ -1084,6 +1084,7 @@ button {
             </svg>
           </button>
           <div class="settings-dropdown" id="settings-dropdown">
+            <a href="{{ url_for('settings_page') }}">Fill settings</a>
             {% if is_pro %}
             <a href="{{ url_for('handwriting_page') }}">Your handwriting</a>
             {% if cancel_at_period_end %}

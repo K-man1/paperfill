@@ -6,6 +6,7 @@ preprocessor. Text auto-fits to the slot bbox.
 
 import os
 import re
+from datetime import datetime
 
 import fitz
 
@@ -22,8 +23,8 @@ MIN_FONT_SIZE = 6
 
 # "Made with Goodnotes" badge stamped on the bottom-left of every rendered page.
 WATERMARK_PATH = str(REPO_ROOT / "assets" / "goodnotes_watermark.png")
-WATERMARK_WIDTH = 117                                                                                            # px wide on the page (aspect ratio preserved)
-WATERMARK_MARGIN = 20   # px from the left and bottom edges
+WATERMARK_WIDTH = 58.5                                                                                            # px wide on the page (aspect ratio preserved)
+WATERMARK_MARGIN = 10   # px from the left and bottom edges
 # Handwriting is rendered by the font pipeline as fixed-height line bands
 # (LINE_BAND_PX tall) whose glyphs are drawn at RENDER_PX em. We scale every
 # band so the *em* lands at a target px on the page — sizing by the actual
@@ -278,7 +279,8 @@ def _stamp_watermark(doc) -> None:
 
 def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
                         images: dict[str, bytes] | None = None,
-                        pen_thickness_mm: float | None = None) -> None:
+                        pen_thickness_mm: float | None = None,
+                        watermark: bool = True) -> None:
     """
     Render the flat overlay list onto a copy of the PDF. Each overlay carries
     its own formatting (font, size, bold/italic/underline) which is applied
@@ -287,7 +289,8 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
     If `images` maps an overlay id -> PNG bytes (rendered handwriting), that
     overlay is stamped as an image instead of typeset text. `pen_thickness_mm`,
     if given, recalibrates every stamped answer's ink to that physical stroke
-    width (see `_insert_handwriting_image`).
+    width (see `_insert_handwriting_image`). `watermark` gates the Goodnotes
+    badge stamp, on by default — a user turns it off from the settings page.
     """
     images = images or {}
     doc = fitz.open(pdf_path)
@@ -362,7 +365,8 @@ def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
         except Exception:
             # htmlbox failed (bad rect, unsupported font) — fall back to plain text
             insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
-    _stamp_watermark(doc)
+    if watermark:
+        _stamp_watermark(doc)
     # Tag our own output so a re-upload of it is recognisable. Merged into the
     # existing Info dict rather than replacing it, because set_metadata writes
     # the whole dict and would otherwise drop the source document's author.
@@ -486,6 +490,41 @@ def _match_option(answer: str, options: list[dict]) -> dict | None:
     if tok[:1] in by_label:
         return by_label[tok[:1]]
     return None
+
+
+_NAME_DATE_LABEL_RE = re.compile(r"[a-z]+")
+
+
+def apply_name_date_fill(structure: dict, answers: dict, name: str) -> None:
+    """Overwrite the AI's guesses for a worksheet's "Name ___" / "Date ___"
+    header blanks with the given name and today's date, in place.
+
+    Only a slot whose immediately preceding word (stripped of punctuation) is
+    literally "name" or "date" qualifies — a mid-sentence blank like "the
+    dog's name is ___" ends in "is", not "name", so it's left to the AI. That
+    keeps this to the header fields it's meant for.
+    """
+    if not name:
+        return
+    today = datetime.now().strftime("%m/%d/%Y")
+    for u in structure["units"]:
+        if u["type"] != "inline_blanks":
+            continue
+        prompt = u["prompt_text"]
+        for slot in u["slots"]:
+            token = f"{{{{{slot['slot_id']}}}}}"
+            idx = prompt.find(token)
+            if idx == -1:
+                continue
+            label = prompt[:idx].rsplit("}}", 1)[-1]
+            words = _NAME_DATE_LABEL_RE.findall(label.lower())
+            if not words:
+                continue
+            last = words[-1]
+            if last == "name":
+                answers[slot["slot_id"]] = name
+            elif last == "date":
+                answers[slot["slot_id"]] = today
 
 
 def build_overlays_from_structure(structure: dict, answers: dict,
