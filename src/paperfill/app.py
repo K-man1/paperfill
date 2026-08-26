@@ -56,7 +56,7 @@ from paperfill.data import stats
 from paperfill.data import usage
 from paperfill.utils.json_utils import extract_json_object
 from paperfill.utils.plain_math import plain_math
-from paperfill.ai.preprocess import preprocess_pdf
+from paperfill.ai.preprocess import preprocess_pdf, text_page_rect
 from paperfill.ai.multimodal_preprocess import multimodal_preprocess_pdf
 from paperfill.ai.candidates import region_preprocess_pdf
 from paperfill.ai.render import (render_overlays_pdf, build_overlays_from_structure,
@@ -97,6 +97,13 @@ ALLOWED_EXT = {".pdf"}
 # a 10 MB PDF of near-blank pages runs into the thousands — every one of which
 # /api/upload rasterises to a preview.
 MAX_PDF_PAGES = 50
+
+# Editor previews render at 110 dpi, derotated. Overlay bboxes come from
+# get_text(), which always reports the unrotated frame, so a /Rotate page
+# rendered normally gives the browser a 792x612 image to position 612x792
+# coordinates against and every box lands somewhere else. Composing the
+# derotation matrix in is a no-op on an unrotated page (byte-identical output).
+PREVIEW_MATRIX = fitz.Matrix(110 / 72, 110 / 72)
 
 # Finished jobs are kept (on disk and in memory) this many days after their
 # last activity, then swept so neither outputs/ nor the in-memory JOBS dict
@@ -2196,9 +2203,9 @@ def upload():
         preview_dir.mkdir(exist_ok=True)
         page_sizes = []
         for i, page in enumerate(doc):
-            pix = page.get_pixmap(dpi=110)
+            pix = page.get_pixmap(matrix=PREVIEW_MATRIX * page.derotation_matrix)
             pix.save(str(preview_dir / f"page-{i}.png"))
-            rect = page.rect
+            rect = text_page_rect(page)
             page_sizes.append({"width": rect.width, "height": rect.height})
     finally:
         doc.close()
@@ -2569,7 +2576,7 @@ def _rerender_job(job_id: str) -> None:
     try:
         preview_dir = OUTPUTS / job_id
         for i, page in enumerate(doc):
-            pix = page.get_pixmap(dpi=110)
+            pix = page.get_pixmap(matrix=PREVIEW_MATRIX * page.derotation_matrix)
             pix.save(str(preview_dir / f"filled-{i}.png"))
     finally:
         doc.close()
