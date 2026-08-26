@@ -188,8 +188,6 @@ def _inject_auth_flags():
         "credits_left": None if pro else usage.remaining_credits(_user_key()),
     }
 
-PASSWORD_ADMIN = os.environ.get("ADMIN_PASSWORD", "alien")
-
 # Accounts whose email is in this allowlist get the "admin" role at login.
 # Everyone else is a normal user (or pro, per their is_pro column). Read from
 # env as a comma-separated list so it's configurable without a code change;
@@ -351,26 +349,8 @@ VISION_FILL_DPI = int(os.environ.get("VISION_FILL_DPI", "150"))
 # against today's cap so it's visible before the proxy runs dry for the day.
 HACK_CLUB_BUDGET_USD = float(os.environ.get("HACK_CLUB_BUDGET_USD", "3.0"))
 
-# The user access code is changeable from the admin panel and persisted to
-# disk so it survives restarts and is shared across all gunicorn workers. It
-# is read fresh from disk on every login attempt, so a change takes effect
-# immediately for every worker process.
-DEFAULT_USER_PASSWORD = "spurs"
-USER_PASSWORD_PATH = BASE_DIR / "user_password.txt"
-
-def get_user_password() -> str:
-    try:
-        pw = USER_PASSWORD_PATH.read_text().strip()
-        if pw:
-            return pw
-    except OSError:
-        pass
-    return DEFAULT_USER_PASSWORD
-
-def set_user_password(pw: str) -> None:
-    USER_PASSWORD_PATH.write_text(pw.strip())
-
-# ---- Ad settings (file-backed, same pattern as the user password) -----------
+# ---- Ad settings (file-backed so they survive restarts and are shared across
+# gunicorn workers; read fresh on each request) ------------------------------
 # "Include Ads" shows a full-screen Google AdSense display ad while the worksheet
 # fills. Needs the AdSense client (ca-pub-…) and an ad-unit slot ID. All default
 # to off/empty so nothing changes until an admin opts in and supplies both.
@@ -1530,10 +1510,7 @@ def admin():
     )
 
     # Read from the shared database so every worker shows the same numbers.
-    signin_log = data["signins"]
     activity_log = data["assignments"]
-    for e in signin_log:
-        e["timestamp"] = _fmt_ts(e.get("ts"))
     for e in activity_log:
         e["timestamp"] = _fmt_ts(e.get("ts"))
         # A non-empty `feedback` column *is* a report — the report text and the
@@ -1544,9 +1521,6 @@ def admin():
                                             "filled") is not None
         e["settings"] = (read_report_settings(e.get("job_id") or "")
                          if e["reported"] else None)
-    user_count = sum(1 for e in signin_log if e.get("result") == "user")
-    admin_count = sum(1 for e in signin_log if e.get("result") == "admin")
-    fail_count = sum(1 for e in signin_log if e.get("result") == "failed")
     report_count = sum(1 for e in activity_log if e["reported"])
     # Snapshots live on this machine's disk while the rows come from the shared
     # DB, so a reported row can legitimately have no PDF here.
@@ -1555,11 +1529,6 @@ def admin():
     rate_card = costs.load()
     return render_template(
         "admin.html",
-        logs=signin_log,
-        total=len(signin_log),
-        user_count=user_count,
-        admin_count=admin_count,
-        fail_count=fail_count,
         activity=activity_log,
         activity_total=len(activity_log),
         report_count=report_count,
@@ -1583,8 +1552,6 @@ def admin():
         rates_status=request.args.get("rates_status"),
         db_enabled=db.enabled(),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        current_user_password=get_user_password(),
-        pw_status=request.args.get("pw_status"),
         ads_enabled=get_ads_enabled(),
         vast_tags="\n".join(get_vast_tags()),
         ads_status=request.args.get("ads_status"),
@@ -1651,22 +1618,6 @@ def _mark_reports_downloaded(ts: float) -> None:
         REPORTS_MARKER.write_text(f"{ts:.6f}")
     except OSError as e:
         print(f"[report] could not record download marker: {e}")
-
-
-@app.post("/admin/user-password")
-def change_user_password():
-    if session.get("role") != "admin":
-        return redirect(url_for("login"))
-    new_pw = (request.form.get("new_password") or "").strip()
-    confirm = (request.form.get("confirm_password") or "").strip()
-    if len(new_pw) < 3:
-        return redirect(url_for("admin", pw_status="short"))
-    if new_pw != confirm:
-        return redirect(url_for("admin", pw_status="mismatch"))
-    if new_pw == PASSWORD_ADMIN:
-        return redirect(url_for("admin", pw_status="conflict"))
-    set_user_password(new_pw)
-    return redirect(url_for("admin", pw_status="ok"))
 
 
 @app.post("/admin/grant-pro")

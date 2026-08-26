@@ -145,10 +145,6 @@ tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--paper); }
 td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem; }
 .mono { font-family: var(--mono); font-size: 0.82rem; }
-.pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
-.pill-user { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-.pill-admin { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
-.pill-fail { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
 .empty { padding: 40px; text-align: center; color: var(--ink-soft); font-size: 0.9rem; }
 
 /* ---- Report flags ---- */
@@ -222,7 +218,6 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
   <a href="#accounts">Accounts</a>
   <a href="#reliability">AI health</a>
   <a href="#audience">Audience</a>
-  <a href="#security">Security</a>
   <a href="#settings">Settings</a>
   <a href="#logs">Logs</a>
 </nav>
@@ -636,86 +631,9 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
     </div>
   </section>
 
-  <!-- ============ SECURITY ============ -->
-  <section id="security">
-    <div class="section-title">Security</div>
-    <p class="section-note">Sign-in outcomes and repeat failures.</p>
-    <div class="stats">
-      <div class="stat-card">
-        <div class="stat-label">Total attempts</div>
-        <div class="stat-value">{{ s.security.total }}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Successful</div>
-        <div class="stat-value green">{{ s.security.user + s.security.admin }}</div>
-        <div class="stat-sub">{{ s.security.admin }} admin</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Failed</div>
-        <div class="stat-value {{ 'red' if s.security.fail_pct > 25 else '' }}">{{ s.security.failed }}</div>
-        <div class="stat-sub">{{ s.security.fail_pct }}% of attempts</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Unique IPs</div>
-        <div class="stat-value blue">{{ s.security.unique_ips }}</div>
-      </div>
-    </div>
-    <div class="grid2" style="margin-top:18px;">
-      <div class="card">
-        <h3>Failed sign-ins per day</h3>
-        <p class="cap">A spike here is someone guessing.</p>
-        <div id="c-fails"></div>
-      </div>
-      <div class="card">
-        <h3>IPs with most failures</h3>
-        <p class="cap">Repeat offenders.</p>
-        <div class="table-wrap" style="border:none;">
-          <table>
-            <thead><tr><th>IP</th><th class="num">Failures</th></tr></thead>
-            <tbody>
-              {% for ip, n in s.security.top_failed_ips %}
-              <tr><td class="mono">{{ ip }}</td><td class="num">{{ n }}</td></tr>
-              {% else %}
-              <tr><td colspan="2" class="empty">No failed sign-ins.</td></tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- ============ SETTINGS ============ -->
   <section id="settings">
     <div class="section-title">Settings</div>
-
-    <div class="section-title" style="font-size:1rem;">Access control</div>
-    <div class="settings-card">
-      {% if pw_status == 'ok' %}
-        <div class="banner banner-ok">User access code updated. New sign-ins must use the new code.</div>
-      {% elif pw_status == 'mismatch' %}
-        <div class="banner banner-err">The two codes didn't match. Nothing was changed.</div>
-      {% elif pw_status == 'short' %}
-        <div class="banner banner-err">Code must be at least 3 characters. Nothing was changed.</div>
-      {% elif pw_status == 'conflict' %}
-        <div class="banner banner-err">That code is already the admin code. Pick a different one.</div>
-      {% endif %}
-      <p class="hint">
-        Change the access code users sign in with. The current code is
-        <span class="current">{{ current_user_password }}</span>. The admin code is unaffected.
-      </p>
-      <form method="post" action="/admin/user-password" autocomplete="off">
-        <div class="field">
-          <label for="new_password">New user code</label>
-          <input type="text" id="new_password" name="new_password" required autocomplete="off" />
-        </div>
-        <div class="field">
-          <label for="confirm_password">Confirm new code</label>
-          <input type="text" id="confirm_password" name="confirm_password" required autocomplete="off" />
-        </div>
-        <button type="submit" class="save-btn">Update user code</button>
-      </form>
-    </div>
 
     <div class="section-title" style="font-size:1rem;">Pro membership</div>
     <div class="settings-card">
@@ -865,32 +783,6 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 0.82rem
       </table>
       {% else %}
       <div class="empty">No assignments filled yet.</div>
-      {% endif %}
-    </div>
-
-    <div class="section-title">Sign-in log</div>
-    <div class="table-wrap">
-      {% if logs %}
-      <table>
-        <thead><tr><th>#</th><th>Timestamp</th><th>IP address</th><th>Result</th><th>User agent</th></tr></thead>
-        <tbody>
-          {% for entry in logs|reverse %}
-          <tr>
-            <td class="mono" style="color:var(--ink-soft);">{{ loop.index }}</td>
-            <td class="mono">{{ entry.timestamp }}</td>
-            <td class="mono">{{ entry.ip }}</td>
-            <td>
-              {% if entry.result == 'user' %}<span class="pill pill-user">User</span>
-              {% elif entry.result == 'admin' %}<span class="pill pill-admin">Admin</span>
-              {% else %}<span class="pill pill-fail">Failed</span>{% endif %}
-            </td>
-            <td style="color:var(--ink-soft);font-size:0.8rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ entry.ua }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <div class="empty">No sign-in attempts yet.</div>
       {% endif %}
     </div>
   </section>
@@ -1231,8 +1123,6 @@ lineChart('c-signups', [{ name: 'Signups', color: C.purple, points: A.signups }]
 donut('c-browser', S.clients.browsers, { centerLabel: 'sign-ins' });
 donut('c-os', S.clients.os, { centerLabel: 'sign-ins' });
 donut('c-kind', S.clients.kinds, { colors: [C.blue, C.accent], centerLabel: 'sign-ins' });
-
-lineChart('c-fails', [{ name: 'Failed', color: C.red, points: A.failed_signins }], { area: true });
 
 // ---- Nav highlighting ---------------------------------------------------
 const links = [...document.querySelectorAll('.subnav a')];

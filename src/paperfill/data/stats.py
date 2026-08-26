@@ -136,9 +136,6 @@ def activity(assignments, signins, users, devices_daily,
     fills = Counter(dt.date() for dt in _stamps(assignments, "ts", tz_offset))
     logins = Counter(dt.date() for dt in _stamps(signins, "ts", tz_offset)
                      if True)
-    fails = Counter(dt.date() for dt in
-                    _stamps([s for s in signins if s.get("result") == "failed"],
-                            "ts", tz_offset))
     signups = Counter(dt.date() for dt in _stamps(users, "created_at", tz_offset))
 
     dev = {}
@@ -151,7 +148,6 @@ def activity(assignments, signins, users, devices_daily,
     return {
         "fills": _fill_days(fills, days, today),
         "signins": _fill_days(logins, days, today),
-        "failed_signins": _fill_days(fails, days, today),
         "signups": _fill_days(signups, days, today),
         "devices": _fill_days(dev, days, today),
         "days": days,
@@ -436,23 +432,6 @@ def clients(signins) -> dict:
     }
 
 
-def security(signins) -> dict:
-    """Sign-in outcomes, and which IPs are failing repeatedly."""
-    total = len(signins or [])
-    by_result = Counter((s.get("result") or "?") for s in signins or [])
-    failed_ips = Counter((s.get("ip") or "?") for s in signins or []
-                         if s.get("result") == "failed")
-    return {
-        "total": total,
-        "user": by_result.get("user", 0),
-        "admin": by_result.get("admin", 0),
-        "failed": by_result.get("failed", 0),
-        "fail_pct": pct(by_result.get("failed", 0), total),
-        "top_failed_ips": failed_ips.most_common(6),
-        "unique_ips": len({(s.get("ip") or "?") for s in signins or []}),
-    }
-
-
 def devices_heatmap(rows) -> dict:
     """First-touch traffic by dow×hour, straight from the devices_hourly view.
 
@@ -485,7 +464,6 @@ def build(*, signins, assignments, users, ai_calls, payments,
         "accounts": accounts(users, assignments, payments),
         "product": product(assignments),
         "clients": clients(signins),
-        "security": security(signins),
         "device_heat": devices_heatmap(devices_hourly),
         "device_total": device_total,
         "tz_offset": tz_offset,
