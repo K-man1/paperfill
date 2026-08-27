@@ -233,10 +233,44 @@ def _ai_model(is_pro: bool) -> str:
     return normal
 
 
+# session["is_pro"] is written at login, so a revoke — from /admin or from
+# Stripe's subscription.deleted webhook — wouldn't reach the user until they
+# signed out. _is_pro re-reads the column instead, memoised per worker for this
+# long so it costs one query a minute rather than one per request. Anything
+# that writes is_pro drops the entry so the revoke lands immediately.
+_PRO_TTL_SECONDS = 60
+_pro_cache: dict[str, tuple[float, bool]] = {}
+
+
+def _forget_pro(email: str) -> None:
+    _pro_cache.pop((email or "").strip().lower(), None)
+
+
 def _is_pro() -> bool:
     """True if the signed-in user is on the Pro tier. Admins are always Pro so
-    the owner can use Pro features without paying themselves."""
-    return bool(session.get("is_pro")) or session.get("role") == "admin"
+    the owner can use Pro features without paying themselves.
+
+    Falls back to the login-time session copy when the DB is off or the lookup
+    fails: a Supabase hiccup shouldn't lock a paying user out of what they
+    bought."""
+    if session.get("role") == "admin":
+        return True
+    email = (session.get("user_email") or "").strip().lower()
+    if not email or not db.enabled():
+        return bool(session.get("is_pro"))
+    now = time.monotonic()
+    cached = _pro_cache.get(email)
+    if cached and now - cached[0] < _PRO_TTL_SECONDS:
+        return cached[1]
+    user = db.get_user_by_email(email)
+    if user is None:
+        return bool(session.get("is_pro"))
+    is_pro = bool(user.get("is_pro"))
+    if len(_pro_cache) > 1000:
+        _pro_cache.clear()
+    _pro_cache[email] = (now, is_pro)
+    session["is_pro"] = is_pro
+    return is_pro
 
 
 def _user_key() -> str:
@@ -286,38 +320,6 @@ STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 PRO_PRICE = os.environ.get("PRO_PRICE", "$5/yr")
 
 
-# session["is_pro"] is written once at login, so a revoke — from /admin or from
-# Stripe's subscription.deleted webhook — wouldn't reach the user until they
-# signed out. The Pro gate re-reads the column instead, memoised per worker for
-# this long so it costs one query a minute rather than one per request.
-_PRO_TTL_SECONDS = 60
-_pro_cache: dict[str, tuple[float, bool]] = {}
-
-
-def _is_pro_now() -> bool:
-    """_is_pro(), but from the database rather than the login-time session
-    copy. Falls back to the session when the DB is off or the lookup fails: a
-    Supabase hiccup shouldn't lock a paying user out of what they bought."""
-    if session.get("role") == "admin":
-        return True
-    email = session.get("user_email", "")
-    if not email or not db.enabled():
-        return _is_pro()
-    now = time.monotonic()
-    cached = _pro_cache.get(email)
-    if cached and now - cached[0] < _PRO_TTL_SECONDS:
-        return cached[1]
-    user = db.get_user_by_email(email)
-    if user is None:
-        return _is_pro()
-    is_pro = bool(user.get("is_pro"))
-    if len(_pro_cache) > 1000:
-        _pro_cache.clear()
-    _pro_cache[email] = (now, is_pro)
-    session["is_pro"] = is_pro
-    return is_pro
-
-
 def pro_required(f):
     """Gate an /api/* route behind the Pro tier. Returns 403 if not signed in,
     402 (Payment Required) with an upgrade URL if signed in but not Pro. This
@@ -327,7 +329,7 @@ def pro_required(f):
     def wrapper(*args, **kwargs):
         if not session.get("role"):
             return jsonify({"error": "authentication required"}), 403
-        if not _is_pro_now():
+        if not _is_pro():
             return jsonify({"error": "Pro required",
                             "upgrade_url": url_for("pricing")}), 402
         return f(*args, **kwargs)
@@ -1830,6 +1832,8 @@ def grant_pro():
     if not email:
         return redirect(url_for("admin", pro_status="empty"))
     ok = db.set_user_pro(email, grant)
+    if ok:
+        _forget_pro(email)
     status = ("granted" if grant else "revoked") if ok else "nouser"
     return redirect(url_for("admin", pro_status=status, pro_email=email))
 
@@ -1957,6 +1961,8 @@ def upgrade_success():
     user = db.get_user_by_email(email) if email else None
     if user:
         session["is_pro"] = bool(user.get("is_pro"))
+        # The webhook may have landed after this worker last memoised the tier.
+        _forget_pro(email)
     return render_template("pricing.html", upgraded=True)
 
 
@@ -2060,6 +2066,7 @@ def stripe_webhook():
             livemode=bool(event.get("livemode")),
         )
         if email and db.set_user_pro(email, True):
+            _forget_pro(email)
             print(f"[stripe] upgraded {email} to Pro")
             # Stash the customer/subscription IDs so /billing/cancel has
             # something to call later. Best-effort — a missing ID here just
@@ -2082,6 +2089,7 @@ def stripe_webhook():
         if user and user.get("email"):
             db.set_user_pro(user["email"], False)
             db.set_cancel_at_period_end(user["email"], False)
+            _forget_pro(user["email"])
             print(f"[stripe] {user['email']} subscription ended, downgraded to Free")
         else:
             print(f"[stripe] subscription.deleted for unknown customer '{customer_id}'")
