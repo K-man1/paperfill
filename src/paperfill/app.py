@@ -100,6 +100,11 @@ ALLOWED_EXT = {".pdf"}
 # /api/upload rasterises to a preview.
 MAX_PDF_PAGES = 50
 
+# Free accounts get a tighter ceiling than the global one. A worksheet is a
+# handful of pages; anything past this is someone feeding us a textbook on the
+# tier that pays nothing.
+FREE_MAX_PDF_PAGES = int(os.environ.get("FREE_MAX_PDF_PAGES", "15"))
+
 # Editor previews render at 110 dpi, derotated. Overlay bboxes come from
 # get_text(), which always reports the unrotated frame, so a /Rotate page
 # rendered normally gives the browser a 792x612 image to position 612x792
@@ -2170,6 +2175,14 @@ def upload():
     # fill isn't known until the tokens come back. This check just blocks
     # starting a new job once today's balance is already gone; the upgrade
     # card in the UI is only a hint.
+    #
+    # Deliberate consequence: a job that starts with credits left runs to
+    # completion even if it spends past zero partway through, because nothing
+    # re-checks mid-fill. A 15-page upload on a near-empty balance can overrun
+    # by a couple of credits. That is the intended behaviour, not a leak —
+    # FREE_MAX_PDF_PAGES bounds how far the overrun can go, and cutting a
+    # student off half way through their homework to save a fraction of a cent
+    # is a worse product. Don't "fix" this by metering inside the fill loop.
     limited = _credit_limit_hit()
     if limited:
         return limited
@@ -2190,6 +2203,16 @@ def upload():
     except (RuntimeError, ValueError) as e:
         pdf_path.unlink(missing_ok=True)
         return jsonify({"error": f"could not parse PDF: {e}"}), 400
+    # Free tier's ceiling is checked first: it's the binding one for that
+    # account, so quoting the global 50 to someone who can only do 15 would
+    # send them off to split a PDF that still won't go through.
+    if not _is_pro() and page_count > FREE_MAX_PDF_PAGES:
+        pdf_path.unlink(missing_ok=True)
+        return jsonify({"error": f"That PDF has {page_count} pages. Free "
+                                 f"accounts fill up to {FREE_MAX_PDF_PAGES} at "
+                                 "a time. Upgrade to Pro, or split it and "
+                                 "upload the part you need.",
+                        "upgrade_url": url_for("pricing")}), 400
     if page_count > MAX_PDF_PAGES:
         pdf_path.unlink(missing_ok=True)
         return jsonify({"error": f"That PDF has {page_count} pages. Paperfill "
@@ -2272,6 +2295,10 @@ def upload():
         # meaningful — it's the "detect all" case, not a missing value.
         "detector": detector_name,
         "formats": formats,
+        # This upload cleared the credit gate above, which buys it one fill
+        # that runs to completion regardless of the balance at that moment.
+        # Consumed by /api/fill so it can't be replayed for free re-fills.
+        "admitted": True,
     }
     save_job(job_id)
 
@@ -2344,15 +2371,23 @@ def context():
 
 @app.post("/api/fill")
 def fill():
-    limited = _credit_limit_hit()
-    if limited:
-        return limited
-
     data = request.get_json(silent=True) or {}
     job_id = data.get("job_id")
     job = load_job(job_id)
     if job is None:
         return jsonify({"error": "unknown job_id"}), 404
+
+    # The fill that follows an accepted upload always runs, even if the balance
+    # hit zero in between — /api/context is fetched in parallel with the upload
+    # and can drain it. Stranding a PDF the user already watched us accept, to
+    # save a fraction of a cent, is the worse trade. The upload gate and
+    # FREE_MAX_PDF_PAGES together bound how far this can overrun.
+    if job.pop("admitted", False):
+        save_job(job_id)
+    else:
+        limited = _credit_limit_hit()
+        if limited:
+            return limited
 
     instructions = str(data.get("instructions", ""))[:8000]
     context_text = str(data.get("context", ""))[:30000]

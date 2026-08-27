@@ -39,7 +39,7 @@ _PATH = REPO_ROOT / "usage.json"
 
 # Credits a Free account gets per day, and tokens per credit. Env-tunable so
 # the limit can be loosened for a promo without a code change.
-FREE_DAILY_CREDITS = int(os.environ.get("FREE_DAILY_CREDITS", "20"))
+FREE_DAILY_CREDITS = int(os.environ.get("FREE_DAILY_CREDITS", "10"))
 CREDIT_TOKENS = int(os.environ.get("CREDIT_TOKENS", "1000"))
 
 
