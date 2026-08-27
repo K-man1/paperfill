@@ -821,23 +821,28 @@ button {
   color: #000000;
   box-sizing: border-box;
   display: flex;
-  align-items: stretch;
-  transition: background 0.1s, border-color 0.1s;
+  /* Text that outgrows its slot spills past the bottom edge rather than being
+     shrunk to fit it (see _insert_answer in render.py). flex-start lets .ov-text
+     take its own content height, so the paper it paints on hover covers the
+     spill too — stretched to the slot it would mask the box and leave the
+     baked copy of the overflow showing through underneath. */
+  align-items: flex-start;
+  transition: border-color 0.1s;
 }
 .overlay .ov-text { color: transparent; caret-color: var(--ink); }
 /* Hiding the browser's copy only works while the page image underneath is in
    sync. After a save fails the image still shows the previous answer, so the
    overlay holds the only copy of what the user typed and has to paint it. */
-#editor-pages.stale-pages .overlay {
+#editor-pages.stale-pages .ov-text {
   background: rgba(255, 253, 250, 0.98);
+  color: #000000;
 }
-#editor-pages.stale-pages .overlay .ov-text { color: #000000; }
-.overlay:hover, .overlay.selected {
-  background: rgba(255, 253, 250, 0.98);
-  border-color: var(--accent);
-}
+.overlay:hover, .overlay.selected { border-color: var(--accent); }
 .overlay.selected { border-style: solid; }
-.overlay:hover .ov-text, .overlay.selected .ov-text { color: #000000; }
+.overlay:hover .ov-text, .overlay.selected .ov-text {
+  background: rgba(255, 253, 250, 0.98);
+  color: #000000;
+}
 /* Ink, circles and graphs keep their own inline transparent background, so
    they show selection with an outline instead of a fill. */
 .overlay.ov-ink.selected,
@@ -855,9 +860,16 @@ button {
   padding: 1px 3px;
   outline: none;
   white-space: pre-wrap;
-  overflow: hidden;
+  /* The slot fixes the wrap width, never the type size: a long answer runs off
+     the bottom and a word too long to wrap pushes the line out to the right.
+     min-content is the same widening _insert_answer does before it stamps, so
+     the two agree on where the lines break. */
+  overflow: visible;
+  min-width: min-content;
+  min-height: 100%;
   cursor: text;
   line-height: 1.15;
+  transition: background 0.1s;
 }
 .ov-drag, .ov-delete {
   position: absolute;

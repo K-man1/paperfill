@@ -6,6 +6,7 @@ from dataclasses import asdict
 
 import fitz
 
+from paperfill.data import models
 from paperfill.ai.preprocess import (
     Slot,
     Unit,
@@ -20,10 +21,6 @@ from paperfill.ai.preprocess import (
     PAGE_RIGHT_MARGIN,
 )
 
-
-MULTIMODAL_MODEL = os.environ.get(
-    "MULTIMODAL_MODEL", os.environ.get("VISION_MODEL", "openai/gpt-5.5")
-)
 
 # Width (PDF points) of a synthesized blank when an anchor has no literal
 # underscore run to size against — e.g. "definition of bob - ____(empty)".
@@ -199,7 +196,7 @@ def _default_detector(pdf_path: str, pages: list[dict], *,
     """
     if client is None:
         client = _build_client()
-    model = model or MULTIMODAL_MODEL
+    model = model or models.get("detect")
 
     text_context = "\n\n".join(
         f"--- PAGE {p['page']} TEXT ---\n{p['text']}" for p in pages

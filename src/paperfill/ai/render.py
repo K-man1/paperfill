@@ -160,6 +160,57 @@ def _overlay_to_html(ov: dict) -> str | None:
     return f'<p style="{css}">{_html_escape(text)}</p>'
 
 
+# Base-14 faces to measure with, indexed by bold + 2*italic.
+_BASE14 = {
+    "sans": ("helv", "hebo", "heit", "hebi"),
+    "serif": ("tiro", "tibo", "tiit", "tibi"),
+    "mono": ("cour", "cobo", "coit", "cobi"),
+}
+_WIDEN_STEP = 1.12
+_WIDEN_TRIES = 4
+
+
+def _widest_word(ov: dict) -> float:
+    """Width of the longest unbreakable run in an answer, at its own size."""
+    faces = _BASE14.get(ov.get("font", "sans"), _BASE14["sans"])
+    fontname = faces[bool(ov.get("bold")) + 2 * bool(ov.get("italic"))]
+    size = float(ov.get("size", 11))
+    return max((fitz.get_text_length(w, fontname=fontname, fontsize=size)
+                for w in (ov.get("text") or "").split()), default=0.0)
+
+
+def _insert_answer(page, ov: dict, html: str) -> None:
+    """Stamp an answer at the size it was actually given, spilling out of its slot.
+
+    insert_htmlbox's default is to shrink text until it fits, which meant a long
+    answer in a small blank came out at a size nobody chose and disagreed with
+    the box the editor draws around it. Slides spills instead, so we spill: the
+    slot fixes the top-left corner and the wrap width, and whatever doesn't fit
+    runs past the bottom edge. A word too long to wrap is the exception —
+    insert_htmlbox lays out nothing at all rather than let a line exceed its
+    rect, so the slot has to widen to that word first, the same widening
+    `min-width: min-content` does in the editor.
+
+    How wide is a guess and then a retry: the HTML engine picks its own faces
+    for "serif" and friends, and its serif runs about 15% wider than the Times
+    we measure with, so a width derived from the measurement alone gets refused.
+    A refused insert draws nothing, which is what makes retrying in place safe.
+    """
+    x0, y0, x1, _ = ov["bbox"]
+    width = max(x1 - x0, _widest_word(ov))
+    for _ in range(_WIDEN_TRIES):
+        rect = fitz.Rect(x0, y0, min(page.rect.x1, x0 + width), page.rect.y1)
+        if page.insert_htmlbox(rect, html, scale_low=1)[0] >= 0:
+            return
+        if rect.x1 >= page.rect.x1:
+            break          # nothing left of the page to widen into
+        width *= _WIDEN_STEP
+    # Out of room even spilling to the foot of the page. Shrinking is the thing
+    # we just stopped doing, but insert_htmlbox's own failure mode is to write
+    # nothing at all, and a missing answer is worse than a small one.
+    page.insert_htmlbox(rect, html)
+
+
 def _squash(s: str) -> str:
     return re.sub(r"\s+", "", s or "")
 
@@ -277,97 +328,108 @@ def _stamp_watermark(doc) -> None:
         page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
 
 
-def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
-                        images: dict[str, bytes] | None = None,
-                        pen_thickness_mm: float | None = None,
-                        watermark: bool = True) -> None:
+def stamp_overlays(doc, overlays: list[dict],
+                   images: dict[str, bytes] | None = None,
+                   pen_thickness_mm: float | None = None,
+                   watermark: bool = True) -> None:
     """
-    Render the flat overlay list onto a copy of the PDF. Each overlay carries
-    its own formatting (font, size, bold/italic/underline) which is applied
-    via PyMuPDF's HTML/Story renderer.
+    Draw the flat overlay list onto an open document. Each overlay carries its
+    own formatting (font, size, bold/italic/underline) which is applied via
+    PyMuPDF's HTML/Story renderer.
 
     If `images` maps an overlay id -> PNG bytes (rendered handwriting), that
     overlay is stamped as an image instead of typeset text. `pen_thickness_mm`,
     if given, recalibrates every stamped answer's ink to that physical stroke
     width (see `_insert_handwriting_image`). `watermark` gates the Goodnotes
     badge stamp, on by default — a user turns it off from the settings page.
+
+    Split out from render_overlays_pdf so the editor's preview images can be
+    rasterised from a document stamped with a different subset of the overlays,
+    without paying for a second full save of the PDF.
     """
     images = images or {}
-    doc = fitz.open(pdf_path)
-    try:
-        for ov in overlays:
-            page_idx = ov.get("page", 0)
-            if page_idx < 0 or page_idx >= len(doc):
-                continue
-            page = doc[page_idx]
+    for ov in overlays:
+        page_idx = ov.get("page", 0)
+        if page_idx < 0 or page_idx >= len(doc):
+            continue
+        page = doc[page_idx]
 
-            if ov.get("kind") == "circle":
-                x0, y0, x1, y1 = ov["bbox"]
-                rect = fitz.Rect(x0 - _CIRCLE_PAD, y0 - _CIRCLE_PAD,
-                                 x1 + _CIRCLE_PAD, y1 + _CIRCLE_PAD)
-                try:
-                    page.draw_oval(rect, color=_CIRCLE_COLOR, width=_CIRCLE_WIDTH)
-                except Exception:
-                    pass
-                continue
+        if ov.get("kind") == "circle":
+            x0, y0, x1, y1 = ov["bbox"]
+            rect = fitz.Rect(x0 - _CIRCLE_PAD, y0 - _CIRCLE_PAD,
+                             x1 + _CIRCLE_PAD, y1 + _CIRCLE_PAD)
+            try:
+                page.draw_oval(rect, color=_CIRCLE_COLOR, width=_CIRCLE_WIDTH)
+            except Exception:
+                pass
+            continue
 
-            if ov.get("kind") == "points":
-                plot = ov.get("plot", "points")
-                pts = [(float(x), float(y)) for x, y in (ov.get("points") or [])]
-                if plot == "none" or not pts:
-                    continue
+        if ov.get("kind") == "points":
+            plot = ov.get("plot", "points")
+            pts = [(float(x), float(y)) for x, y in (ov.get("points") or [])]
+            if plot == "none" or not pts:
+                continue
+            try:
+                shape = page.new_shape()
+                if plot == "curve":
+                    shape.draw_polyline([fitz.Point(x, y)
+                                         for x, y in curve_through(pts)])
+                    shape.finish(color=_POINT_COLOR, width=_CURVE_WIDTH,
+                                 closePath=False, lineCap=1, lineJoin=1)
+                else:
+                    for x, y in pts:
+                        shape.draw_circle(fitz.Point(x, y), _POINT_RADIUS)
+                    shape.finish(color=_POINT_COLOR, fill=_POINT_COLOR,
+                                 width=0.4)
+                shape.commit()
+            except Exception:
+                pass
+            continue
+
+        if ov.get("kind") == "ink":
+            points = ov.get("points") or []
+            if len(points) >= 2:
                 try:
                     shape = page.new_shape()
-                    if plot == "curve":
-                        shape.draw_polyline([fitz.Point(x, y)
-                                             for x, y in curve_through(pts)])
-                        shape.finish(color=_POINT_COLOR, width=_CURVE_WIDTH,
-                                     closePath=False, lineCap=1, lineJoin=1)
-                    else:
-                        for x, y in pts:
-                            shape.draw_circle(fitz.Point(x, y), _POINT_RADIUS)
-                        shape.finish(color=_POINT_COLOR, fill=_POINT_COLOR,
-                                     width=0.4)
+                    shape.draw_polyline([fitz.Point(x, y) for x, y in points])
+                    shape.finish(color=_hex_to_rgb(ov.get("color")),
+                                width=float(ov.get("width", 2.0)),
+                                closePath=False, lineCap=1, lineJoin=1)
                     shape.commit()
                 except Exception:
                     pass
-                continue
+            continue
 
-            if ov.get("kind") == "ink":
-                points = ov.get("points") or []
-                if len(points) >= 2:
-                    try:
-                        shape = page.new_shape()
-                        shape.draw_polyline([fitz.Point(x, y) for x, y in points])
-                        shape.finish(color=_hex_to_rgb(ov.get("color")),
-                                    width=float(ov.get("width", 2.0)),
-                                    closePath=False, lineCap=1, lineJoin=1)
-                        shape.commit()
-                    except Exception:
-                        pass
-                continue
-
-            png = images.get(ov.get("id"))
-            if png:
-                try:
-                    _insert_handwriting_image(page, ov["bbox"], png, pen_thickness_mm)
-                    continue
-                except Exception:
-                    pass  # fall through to text rendering on any image failure
-
-            html = _overlay_to_html(ov)
-            if not html:
-                continue
-            if _already_printed(page, ov["bbox"], ov.get("text") or ""):
-                continue
-            rect = fitz.Rect(*ov["bbox"])
+        png = images.get(ov.get("id"))
+        if png:
             try:
-                page.insert_htmlbox(rect, html)
+                _insert_handwriting_image(page, ov["bbox"], png, pen_thickness_mm)
+                continue
             except Exception:
-                # htmlbox failed (bad rect, unsupported font) — fall back to plain text
-                insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
-        if watermark:
-            _stamp_watermark(doc)
+                pass  # fall through to text rendering on any image failure
+
+        html = _overlay_to_html(ov)
+        if not html:
+            continue
+        if _already_printed(page, ov["bbox"], ov.get("text") or ""):
+            continue
+        try:
+            _insert_answer(page, ov, html)
+        except Exception:
+            # htmlbox failed (bad rect, unsupported font) — fall back to plain text
+            insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
+    if watermark:
+        _stamp_watermark(doc)
+
+
+def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
+                        images: dict[str, bytes] | None = None,
+                        pen_thickness_mm: float | None = None,
+                        watermark: bool = True) -> None:
+    """Stamp the overlays onto a copy of the PDF and write it to `out_path`."""
+    doc = fitz.open(pdf_path)
+    try:
+        stamp_overlays(doc, overlays, images, pen_thickness_mm, watermark)
         # Tag our own output so a re-upload of it is recognisable. Merged into the
         # existing Info dict rather than replacing it, because set_metadata writes
         # the whole dict and would otherwise drop the source document's author.

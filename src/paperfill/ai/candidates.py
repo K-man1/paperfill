@@ -26,6 +26,7 @@ from dataclasses import dataclass, asdict
 
 import fitz
 
+from paperfill.data import models
 from paperfill.ai.preprocess import (
     ALL_FORMATS,
     Slot,
@@ -315,9 +316,6 @@ def annotate(path: str, out_path: str) -> dict:
 # Selection call: the model picks which candidates are real answer spaces.
 # --------------------------------------------------------------------------
 
-SELECTION_MODEL = os.environ.get(
-    "REGION_MODEL", os.environ.get("VISION_MODEL", "openai/gpt-5.5")
-)
 SELECTION_DPI = int(os.environ.get("REGION_DPI", "150"))
 
 
@@ -397,7 +395,7 @@ def _default_selector(pngs: list[bytes], regions: list[dict],
     if client is None:
         from paperfill.ai.vision_preprocess import _build_client
         client = _build_client()
-    model = model or SELECTION_MODEL
+    model = model or models.get("regions")
 
     listing = "\n".join(
         f"{r['region_id']}: page {r['page']}, {r['kind']}"

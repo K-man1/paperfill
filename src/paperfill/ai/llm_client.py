@@ -6,7 +6,8 @@ AI proxy by default). If a call
 to the primary raises (auth failure, outage, unsupported model, …) it is
 retried once against a fallback provider — OpenRouter by default
 (OPENROUTER_API_KEY / OPENROUTER_BASE_URL). The fallback uses its own model id
-(OPENROUTER_MODEL) since the providers don't share model names.
+(the "fallback" slot in data/models.py) since the providers don't share model
+names.
 
 The wrapper mimics just the surface the app uses — `client.chat.completions
 .create(...)` and `client.files.create(...)` — so it drops in wherever a raw
@@ -235,17 +236,23 @@ class _Namespace:
 
 
 class FallbackClient:
-    def __init__(self, primary, fallback, fallback_model: str | None,
-                 fallback_label: str):
+    def __init__(self, primary, fallback, fallback_label: str):
         self.primary = primary
         self.fallback = fallback
-        self.fallback_model = fallback_model
         self.fallback_label = fallback_label
         # Expose the same attribute paths the OpenAI client does.
         self.chat = _Namespace(
             completions=_Namespace(create=_Method(self, "chat.completions.create"))
         )
         self.files = _Namespace(create=_Method(self, "files.create"))
+
+    @property
+    def fallback_model(self) -> str:
+        # Resolved per call, not captured at build time: the client is cached
+        # for the life of the worker, so a model changed from /admin would
+        # otherwise not reach the fallback until a restart.
+        from paperfill.data import models
+        return models.get("fallback")
 
 
 def build_client() -> FallbackClient:
@@ -266,12 +273,10 @@ def build_client() -> FallbackClient:
 
     fb_key = os.environ.get("OPENROUTER_API_KEY")
     fallback = None
-    fallback_model = None
     if fb_key:
         fallback = _make(
             fb_key,
             os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         )
-        fallback_model = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o")
 
-    return FallbackClient(primary, fallback, fallback_model, "OpenRouter")
+    return FallbackClient(primary, fallback, "OpenRouter")

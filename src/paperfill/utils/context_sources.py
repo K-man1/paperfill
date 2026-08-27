@@ -19,6 +19,8 @@ import re
 
 import fitz
 
+from paperfill.data import models
+
 # Per-source caps so one giant PDF or a 3-hour lecture transcript can't blow
 # out the prompt. Tuned to stay well under the model's context window when
 # several sources are attached at once.
@@ -28,8 +30,6 @@ MAX_TRANSCRIPT_CHARS = 8000
 TEXT_EXTS = {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".rtf"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 PDF_EXTS = {".pdf"}
-
-VISION_MODEL = os.environ.get("VISION_MODEL", "openai/gpt-5.5")
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -76,7 +76,7 @@ def _extract_image(data: bytes, mime: str, user_key: str = "",
     data_uri = f"data:{mime};base64," + base64.b64encode(data).decode()
     with call_context("context_image", is_pro=is_pro, user_key=user_key):
         resp = client.chat.completions.create(
-            model=VISION_MODEL,
+            model=models.get("vision"),
             messages=[{
                 "role": "user",
                 "content": [

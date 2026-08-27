@@ -21,27 +21,16 @@ because every provider charges more for output.
 from __future__ import annotations
 
 import json
-import os
 
 from paperfill.paths import REPO_ROOT
 
 _PATH = REPO_ROOT / "ai_rates.json"
 
 # Models the app can reach today, so the admin editor can pre-list them even
-# before any call has been made. Read from the same env vars app.py uses.
+# before any call has been made.
 def known_models() -> list[str]:
-    # Defaults mirror the ones the modules themselves fall back to, so a model
-    # that's reachable without any env var still shows up in the editor.
-    vision = os.environ.get("VISION_MODEL", "openai/gpt-5.5")
-    names = {
-        os.environ.get("AI_MODEL", "openai/gpt-5.5"),
-        os.environ.get("AI_MODEL_PRO", ""),
-        vision,
-        os.environ.get("VISION_MODEL_PRO", ""),
-        os.environ.get("MULTIMODAL_MODEL", vision),
-        os.environ.get("OPENROUTER_MODEL", ""),
-    }
-    return sorted(n for n in names if n)
+    from paperfill.data import models
+    return sorted(set(models.resolved().values()))
 
 
 # OpenRouter list prices, USD per 1M tokens. These are the fallback models the

@@ -24,7 +24,6 @@ from paperfill.utils.json_utils import json_from_response
 from paperfill.ai.preprocess import Slot, Unit
 
 
-VISION_MODEL = os.environ.get("VISION_MODEL", "openai/gpt-5.5")
 VISION_DPI = int(os.environ.get("VISION_DPI", "200"))
 
 _BLANK_TOKEN = "___"
@@ -114,13 +113,14 @@ def _page_is_transposed(blank_boxes: list[list[float]]) -> bool:
 
 def _call_vision(page, client) -> dict:
     from paperfill.ai.llm_client import call_context
+    from paperfill.data import models
     pix = page.get_pixmap(dpi=VISION_DPI)
     data_uri = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
     # Labelled "ocr": this is the automatic scanned-page path, which is worth
     # telling apart from the detector the user explicitly picked.
     with call_context("ocr"):
         resp = client.chat.completions.create(
-            model=VISION_MODEL,
+            model=models.get("vision"),
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {

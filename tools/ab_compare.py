@@ -190,7 +190,8 @@ def main():
     live = os.environ.get("MULTIMODAL_LIVE") == "1"
     det_struct = preprocess_pdf(synth)
     if live:
-        print(f"[ab] LIVE multimodal via {os.environ.get('MULTIMODAL_MODEL','(default)')}")
+        from paperfill.data import models
+        print(f"[ab] LIVE multimodal via {models.get('detect')}")
         mm_struct = multimodal_preprocess_pdf(synth)
     else:
         mm_struct = multimodal_preprocess_pdf(synth, detector=synth_recorded_detector)

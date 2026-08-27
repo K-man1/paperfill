@@ -12,6 +12,8 @@ user_password.txt
 usage.json
 # AI price list (see costs.py) — per-deployment config, edited from /admin
 ai_rates.json
+# Per-slot model overrides (see data/models.py) — edited from /admin
+ai_models.json
 # Ad config, edited from /admin (see get_ads_enabled / VAST_TAGS_PATH in app.py)
 ads_enabled.txt
 vast_tags.txt

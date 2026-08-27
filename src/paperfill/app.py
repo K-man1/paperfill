@@ -51,6 +51,7 @@ if _env_path.exists():
 
 from paperfill.data import costs
 from paperfill.data import db
+from paperfill.data import models
 from paperfill.data import prefs
 from paperfill.data import stats
 from paperfill.data import usage
@@ -59,9 +60,10 @@ from paperfill.utils.plain_math import plain_math
 from paperfill.ai.preprocess import preprocess_pdf, text_page_rect
 from paperfill.ai.multimodal_preprocess import multimodal_preprocess_pdf
 from paperfill.ai.candidates import region_preprocess_pdf
-from paperfill.ai.render import (render_overlays_pdf, build_overlays_from_structure,
+from paperfill.ai.render import (render_overlays_pdf, stamp_overlays,
+                                 build_overlays_from_structure,
                                  apply_name_date_fill, FILLED_MARKER)
-from paperfill.ai.vision_preprocess import VISION_MODEL, VISION_DPI
+from paperfill.ai.vision_preprocess import VISION_DPI
 from paperfill.ai.llm_client import call_context
 from paperfill.handwriting import font_store
 from paperfill.utils.context_sources import (extract_file_text, fetch_youtube_transcript,
@@ -221,16 +223,11 @@ def _role_for(email: str) -> str:
 
 
 def _vision_model(is_pro: bool) -> str:
-    if is_pro:
-        return os.environ.get("VISION_MODEL_PRO", VISION_MODEL)
-    return VISION_MODEL
+    return models.get("vision_pro" if is_pro else "vision")
 
 
 def _ai_model(is_pro: bool) -> str:
-    normal = os.environ.get("AI_MODEL", "openai/gpt-5.5")
-    if is_pro:
-        return os.environ.get("AI_MODEL_PRO", normal)
-    return normal
+    return models.get("text_fill_pro" if is_pro else "text_fill")
 
 
 # session["is_pro"] is written at login, so a revoke — from /admin or from
@@ -1715,6 +1712,7 @@ def admin():
     pdf_count = sum(1 for e in activity_log if e["has_pdf"])
     last_download = last_reports_download()
     rate_card = costs.load()
+    model_catalog = models.catalog()
     return render_template(
         "admin.html",
         activity=activity_log,
@@ -1742,6 +1740,14 @@ def admin():
                            | {r["name"] for r in s["money"]["by_model"]
                               if r["name"] != "—"}),
         rates_status=request.args.get("rates_status"),
+        model_slots=models.SLOTS,
+        model_overrides=models.overrides(),
+        model_resolved=models.resolved(),
+        model_catalog=model_catalog,
+        model_prices={m["id"]: m for m in model_catalog},
+        models_status=request.args.get("models_status"),
+        models_error=request.args.get("models_error", ""),
+        models_seeded=request.args.get("models_seeded", ""),
         db_enabled=db.enabled(),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         ads_enabled=get_ads_enabled(),
@@ -1857,17 +1863,50 @@ def change_ai_rates():
     """
     if session.get("role") != "admin":
         return redirect(url_for("login"))
-    models = {}
+    rates = {}
     # Fields arrive as rate_in[<model>] / rate_out[<model>].
     for key, val in request.form.items():
         if key.startswith("rate_in[") and key.endswith("]"):
             name = key[8:-1]
-            models.setdefault(name, {})["in"] = val
+            rates.setdefault(name, {})["in"] = val
         elif key.startswith("rate_out[") and key.endswith("]"):
             name = key[9:-1]
-            models.setdefault(name, {})["out"] = val
-    costs.save(models, request.form.get("primary_free") == "on")
+            rates.setdefault(name, {})["out"] = val
+    costs.save(rates, request.form.get("primary_free") == "on")
     return redirect(url_for("admin", rates_status="ok") + "#money")
+
+
+@app.post("/admin/models")
+def change_models():
+    """Point any AI call at a different model, without a redeploy.
+
+    Takes effect on the next call in every worker — nothing here is cached past
+    the file read. A slot left blank falls back to its environment variable.
+    """
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+    try:
+        chosen = models.save({s: request.form.get(f"model[{s}]")
+                              for s in models.SLOTS})
+    except ValueError as e:
+        return redirect(url_for("admin", models_status="bad",
+                                models_error=str(e)) + "#models")
+    # A model with no rate is reported as "uncosted" and silently drops out of
+    # the spend and Hack Club budget numbers, so seed one from the provider's
+    # published price rather than letting a model switch quietly break them.
+    card = costs.load()
+    published = {m["id"]: m for m in models.catalog()}
+    seeded = {}
+    for name in set(chosen.values()):
+        if name in card["models"] or name not in published:
+            continue
+        entry = published[name]
+        seeded[name] = {"in": entry["price_in"], "out": entry["price_out"]}
+    if seeded:
+        costs.save({**card["models"], **seeded},
+                   card.get("_provider_primary_is_free", True))
+    return redirect(url_for("admin", models_status="ok",
+                            models_seeded=",".join(sorted(seeded))) + "#models")
 
 
 @app.post("/admin/ads")
@@ -2575,13 +2614,22 @@ def _rerender_job(job_id: str) -> None:
     job = JOBS[job_id]
     font_id = _font_id_from_style(job.get("style_id"))
     pen_thickness = font_store.get_settings(font_id)["pen_thickness"] if font_id else None
+    images = _load_hw_images(job_id)
+    watermark = prefs.get(_user_key())["watermark"]
     filled_path = OUTPUTS / f"{job_id}-filled.pdf"
     render_overlays_pdf(job["pdf_path"], job["overlays"], str(filled_path),
-                        images=_load_hw_images(job_id),
-                        pen_thickness_mm=pen_thickness,
-                        watermark=prefs.get(_user_key())["watermark"])
-    doc = fitz.open(str(filled_path))
+                        images=images, pen_thickness_mm=pen_thickness,
+                        watermark=watermark)
+    # Previews leave the pen strokes out: the editor draws those itself, as SVG
+    # over the image. Baking them in as well painted every stroke twice and left
+    # an erased one on screen until the next save came back — gone from the DOM,
+    # still sitting in the PNG. Typeset answers stay baked, because the browser
+    # can't reproduce their metrics and the image has to be the copy of record.
+    doc = fitz.open(job["pdf_path"])
     try:
+        stamp_overlays(doc, [o for o in job["overlays"] if o.get("kind") != "ink"],
+                       images=images, pen_thickness_mm=pen_thickness,
+                       watermark=watermark)
         preview_dir = OUTPUTS / job_id
         for i, page in enumerate(doc):
             pix = page.get_pixmap(matrix=PREVIEW_MATRIX * page.derotation_matrix)

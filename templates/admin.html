@@ -203,6 +203,15 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
 .banner-ok { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
 .banner-err { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
 .banner-info { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.model-row { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; padding: 14px 0; border-top: 1px solid var(--rule); }
+.model-row:first-of-type { border-top: 0; }
+.model-row .slot { font-size: 0.88rem; font-weight: 600; }
+.model-row .slot .note { display: block; font-weight: 400; font-size: 0.78rem; color: var(--ink-soft); margin-top: 4px; line-height: 1.45; }
+.model-row input { width: 100%; padding: 8px 11px; border: 1px solid var(--rule); border-radius: 7px; font-family: var(--mono); font-size: 0.85rem; background: var(--paper); color: var(--ink); }
+.model-row input:focus { outline: none; border-color: var(--accent); }
+.model-row .now { font-size: 0.76rem; color: var(--ink-soft); margin-top: 6px; }
+.model-row .now .m { font-family: var(--mono); color: var(--ink); }
+.model-row .tag { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid var(--rule); border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
 .rate-row { display: grid; grid-template-columns: 1fr 130px 130px; gap: 10px; align-items: center; margin-bottom: 8px; }
 .rate-row .m { font-family: var(--mono); font-size: 0.82rem; word-break: break-all; }
 .rate-row input { padding: 7px 10px; }
@@ -227,6 +236,7 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
   <a href="#usage">Usage</a>
   <a href="#product">Product</a>
   <a href="#accounts">Accounts</a>
+  <a href="#models">Models</a>
   <a href="#reliability">AI health</a>
   <a href="#audience">Audience</a>
   <a href="#settings">Settings</a>
@@ -538,6 +548,84 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
       <p class="cap">{{ window_label }}.</p>
       <div id="c-signups"></div>
     </div>
+  </section>
+
+  <!-- ============ MODELS ============ -->
+  <section id="models">
+    <div class="section-title">Models</div>
+    <p class="section-note">
+      Which model runs each kind of AI call. Saved here, a change reaches every worker on the
+      next call — no redeploy, no restart. Leave a slot empty to fall back to its environment
+      variable, and then to the slot it inherits from.
+    </p>
+    <div class="settings-card wide">
+      {% if models_status == 'ok' %}
+        <div class="banner banner-ok">
+          Models saved.
+          {% if models_seeded %}
+            Rate card seeded from the provider's published price for
+            <b>{{ models_seeded.replace(',', ', ') }}</b> — check it under Money.
+          {% endif %}
+        </div>
+      {% elif models_status == 'bad' %}
+        <div class="banner banner-err">Not saved — {{ models_error }}</div>
+      {% endif %}
+      <p class="hint">
+        The slots fail in different ways, so a model that suits one need not suit the next.
+        Detection needs verbatim transcription (a paraphrased anchor never resolves and the
+        blank is silently dropped); region selection is multiple choice over boxes code
+        already drew; only the vision slot emits coordinates itself, on scanned pages.
+        Change one slot at a time and watch the reported-job rate before moving the rest.
+        {% if not model_catalog %}
+          <br /><b>Provider catalog unavailable</b> — the picker below is plain text, so check
+          the model id against your provider's list before saving.
+        {% endif %}
+      </p>
+      <form method="post" action="/admin/models" autocomplete="off">
+        {% for slot, spec in model_slots.items() %}
+        <div class="model-row">
+          <div class="slot">
+            {{ spec.label }}
+            <span class="note">{{ spec.note }}</span>
+          </div>
+          <div>
+            <input type="text" name="model[{{ slot }}]"
+                   value="{{ model_overrides[slot] }}"
+                   list="{{ 'model-ids-vision' if spec.needs_vision else 'model-ids-all' }}"
+                   placeholder="{{ model_resolved[slot] }}" />
+            <div class="now">
+              {% set live = model_resolved[slot] %}
+              {% set priced = model_prices.get(live) %}
+              Running <span class="m">{{ live }}</span>
+              {% if not model_overrides[slot] %}
+                <span class="tag">inherited</span>
+              {% endif %}
+              {% if priced %}
+                — ${{ '%.3f'|format(priced.price_in) }} in / ${{ '%.3f'|format(priced.price_out) }} out per 1M
+                {% if spec.needs_vision and not priced.vision %}
+                  <span class="tag" style="color:var(--red);border-color:var(--red-border);">no image input</span>
+                {% endif %}
+              {% elif model_catalog %}
+                <span class="tag" style="color:var(--red);border-color:var(--red-border);">not in provider catalog</span>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+        <button type="submit" class="save-btn" style="margin-top:16px;">Save models</button>
+      </form>
+    </div>
+
+    <datalist id="model-ids-all">
+      {% for m in model_catalog %}
+      <option value="{{ m.id }}" label="${{ '%.3f'|format(m.price_in) }} / ${{ '%.3f'|format(m.price_out) }}{% if m.vision %} · vision{% endif %}"></option>
+      {% endfor %}
+    </datalist>
+    <datalist id="model-ids-vision">
+      {% for m in model_catalog if m.vision %}
+      <option value="{{ m.id }}" label="${{ '%.3f'|format(m.price_in) }} / ${{ '%.3f'|format(m.price_out) }}"></option>
+      {% endfor %}
+    </datalist>
   </section>
 
   <!-- ============ RELIABILITY ============ -->
