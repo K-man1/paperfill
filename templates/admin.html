@@ -544,6 +544,15 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
       </div>
     </div>
     <div class="card" style="margin-top:18px;">
+      <h3>Acquisition funnel</h3>
+      <p class="cap">Visit → signup → fill → paid, split by where the visitor came
+         from. Ad means the landing URL carried a click id or a paid
+         <code>utm_medium</code>, so untagged campaigns count as organic. Every
+         visit from before attribution shipped is <b>unknown</b>, not organic.
+         Bars are √-scaled between stages; the split within a bar is to scale.</p>
+      <div id="c-source-funnel"></div>
+    </div>
+    <div class="card" style="margin-top:18px;">
       <h3>Signups per day</h3>
       <p class="cap">{{ window_label }}.</p>
       <div id="c-signups"></div>
@@ -1162,6 +1171,66 @@ function funnel(id, stages) {
   });
 }
 
+// `unknown` is deliberately muted but not invisible: right now it's every row
+// in the table, and against the empty-bar track a lighter grey reads as "no
+// data" rather than "data we can't attribute".
+const SOURCE_COLORS = { ad: C.accent, organic: C.blue, unknown: C.rule };
+const SOURCE_LABELS = { ad: 'Ad', organic: 'Organic', unknown: 'Unknown' };
+
+/** Funnel split by traffic source: stages narrow top to bottom, each bar
+ *  segmented by where those people came from.
+ *
+ *  Row-to-row widths are √-scaled for the same reason as `funnel` above: the
+ *  drop from six figures of devices to single-digit accounts flattens every
+ *  later stage to a sliver on a linear scale. Segments *within* a row are
+ *  plain linear shares of that row's own total, so the ad/organic split a
+ *  reader is actually here to judge is never distorted.
+ */
+function sourceFunnel(id, f) {
+  const rows = (f && f.stages) || [];
+  if (!rows.length || !rows[0].total) return empty(id, 'No traffic recorded yet.');
+  const W = 300, rowH = 46, legendH = 20, H = rows.length * rowH + legendH;
+  const svg = mount(id, W, H); if (!svg) return;
+  const max = Math.sqrt(rows[0].total);
+  const barTop = 18, barH = 15;
+
+  rows.forEach((r, i) => {
+    const y = i * rowH + 4;
+    const t = el('text', { x: 0, y: y + 11, fill: C.ink, 'font-size': 11.5,
+                           'font-weight': 600 }, svg);
+    t.textContent = `${r.name} · ${fmt(r.total)}`;
+    const prev = i > 0 ? rows[i - 1].total : 0;
+    if (prev) {
+      const p = el('text', { x: W, y: y + 11, 'text-anchor': 'end', fill: C.soft,
+                             'font-size': 10, 'font-family': 'IBM Plex Mono, monospace' }, svg);
+      const v = (r.total / prev) * 100;
+      p.textContent = (v > 0 && v < 0.1 ? Number(v.toPrecision(2)) : v.toFixed(1)) + '% of prev';
+    }
+    el('rect', { x: 0, y: y + barTop, width: W, height: barH, fill: C.paper, rx: 2 }, svg);
+    const w = r.total > 0 ? Math.max((Math.sqrt(r.total) / max) * W, 3) : 0;
+    let x = 0;
+    f.sources.forEach(src => {
+      const v = r.values[src] || 0;
+      if (!v) return;
+      const segW = (v / r.total) * w;
+      const seg = el('rect', { x, y: y + barTop, width: segW, height: barH,
+                               fill: SOURCE_COLORS[src], opacity: 0.9 }, svg);
+      tip(seg, `${r.name} · ${SOURCE_LABELS[src]}: ${fmt(v)}`);
+      x += segW;
+    });
+  });
+
+  let lx = 0;
+  const ly = rows.length * rowH + 6;
+  f.sources.forEach(src => {
+    el('rect', { x: lx, y: ly, width: 9, height: 9, rx: 2,
+                 fill: SOURCE_COLORS[src] }, svg);
+    const label = el('text', { x: lx + 13, y: ly + 8, fill: C.soft, 'font-size': 10 }, svg);
+    label.textContent = SOURCE_LABELS[src];
+    lx += 22 + SOURCE_LABELS[src].length * 5.6;
+  });
+}
+
 // ---- Render -------------------------------------------------------------
 const M = S.money, A = S.activity, T = S.time_of_day;
 
@@ -1216,6 +1285,7 @@ funnel('c-funnel', [
   { name: 'Pro', value: S.accounts.pro },
   { name: 'Paid', value: S.accounts.paid },
 ]);
+sourceFunnel('c-source-funnel', S.funnel);
 lineChart('c-signups', [{ name: 'Signups', color: C.purple, points: A.signups }], { area: true });
 
 donut('c-browser', S.clients.browsers, { centerLabel: 'sign-ins' });

@@ -498,7 +498,8 @@ def _record_signin(result: str):
     db.record_signin(_client_ip(), _client_ua(), result)
 
 def _record_fill(job_id: str, name: str, style: str | None = None):
-    db.record_fill(job_id, name, _client_ip(), style)
+    db.record_fill(job_id, name, _client_ip(), style,
+                   user_email=session.get("user_email", ""))
 
 def _font_id_from_style(style_id: str | None) -> str | None:
     """If a style id names a user-built font (``font:<id>``) that exists on
@@ -594,6 +595,37 @@ def _require_pro_for_ww2explained():
 _UNTRACKED_PREFIXES = ("/api/", "/static/", "/stripe/", "/whop/", "/auth/")
 
 
+# Ad clicks arrive tagged. Google, Meta, TikTok, Bing and X each append their
+# own click id, and any campaign built with UTM parameters carries a medium.
+# Both are set by whoever creates the campaign, which means an ad whose
+# destination URL is untagged is indistinguishable from someone typing the
+# domain in — it will be counted organic. Tag the destination URL on every
+# campaign or the split is worthless.
+_AD_CLICK_IDS = ("gclid", "fbclid", "ttclid", "msclkid", "twclid")
+_AD_MEDIUMS = frozenset({"cpc", "ppc", "paid", "paidsearch", "paid_search",
+                         "cpm", "cpv", "display", "banner", "affiliate"})
+
+
+def _traffic_source() -> str:
+    """Classify the visit that is creating a device as `ad` or `organic`."""
+    args = request.args
+    if any(key in args for key in _AD_CLICK_IDS):
+        return "ad"
+    medium = (args.get("utm_medium") or "").strip().lower()
+    if medium:
+        return "ad" if medium in _AD_MEDIUMS else "organic"
+    return "organic"
+
+
+def _signup_source() -> str | None:
+    """The traffic source to stamp on an account being created now.
+
+    Read from the device row rather than the session: the visit that brought
+    someone here and the moment they sign up can be days and several sessions
+    apart, and the device cookie is the only thing that spans that."""
+    return db.device_source(request.cookies.get(DEVICE_COOKIE, ""))
+
+
 @app.before_request
 def _track_device():
     g.new_device_id = None
@@ -603,7 +635,7 @@ def _track_device():
         return
     did = secrets.token_urlsafe(16)
     g.new_device_id = did
-    db.record_device(did, _client_ip(), _client_ua())
+    db.record_device(did, _client_ip(), _client_ua(), _traffic_source())
 
 @app.after_request
 def _set_device_cookie(resp):
@@ -1474,6 +1506,7 @@ def signup():
         name=name,
         token=token,
         token_expires=expires,
+        source=_signup_source(),
         is_pro=get_auto_pro(),
     )
     if user is None:
@@ -1543,6 +1576,7 @@ def auth_google_callback():
         name=userinfo.get("name", ""),
         picture=userinfo.get("picture", ""),
         is_pro=get_auto_pro(),
+        source=_signup_source(),
     )
     if user is None:
         return render_template("login.html", error="Could not create account. Please try again.")
@@ -1694,6 +1728,7 @@ def admin():
         "devices_daily": db.fetch_devices_daily,
         "devices_hourly": db.fetch_devices_hourly,
         "device_total": db.device_count,
+        "device_counts": db.device_counts_by_source,
     }
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
         futures = {k: ex.submit(fn) for k, fn in jobs.items()}
@@ -1706,7 +1741,7 @@ def admin():
         devices_hourly=data["devices_hourly"], device_total=data["device_total"],
         hack_club_calls=data["hack_club_calls"],
         rate_card=costs.load(), hack_club_cap_usd=HACK_CLUB_BUDGET_USD,
-        window=window,
+        window=window, device_counts=data["device_counts"],
     )
 
     # Read from the shared database so every worker shows the same numbers.

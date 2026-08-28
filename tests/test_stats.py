@@ -287,3 +287,90 @@ def test_credits_ignore_yesterdays_row(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "CREDIT_TOKENS", 1000)
     assert usage.tokens_used_today("u1") == 0
     assert usage.remaining_credits("u1") == 20
+
+
+# ---- Acquisition funnel --------------------------------------------------
+# The funnel is the one chart that mixes three tables, and the first version of
+# it keyed fills on IP and reported more fillers than accounts. These pin the
+# properties that made that version wrong.
+
+def _users(*pairs):
+    return [{"email": e, "source": s} for e, s in pairs]
+
+
+def test_a_person_who_filled_ten_times_is_one_filler():
+    f = stats.funnel(
+        users=_users(("a@x.com", "ad")),
+        assignments=[{"user_email": "a@x.com"} for _ in range(10)],
+        payments=[], device_counts={},
+    )
+    assert f["stages"][2]["values"]["ad"] == 1
+
+
+def test_repeat_charges_to_one_payer_are_one_paying_account():
+    """`payments` holds a row per charge, so a renewing subscriber would
+    otherwise inflate the bottom of the funnel every year."""
+    f = stats.funnel(
+        users=_users(("a@x.com", "organic")),
+        assignments=[],
+        payments=[{"email": "a@x.com"}, {"email": "a@x.com"}],
+        device_counts={},
+    )
+    assert f["stages"][3]["total"] == 1
+
+
+def test_the_account_stages_can_only_narrow():
+    """Filling and paying are both subsets of signing up, because every stage
+    below the first is keyed on the account. A funnel that widens is the bug
+    this replaced."""
+    f = stats.funnel(
+        users=_users(("a@x.com", "ad"), ("b@x.com", "organic"), ("c@x.com", None)),
+        assignments=[{"user_email": "a@x.com"}, {"user_email": "b@x.com"}],
+        payments=[{"email": "a@x.com"}],
+        device_counts={"ad": 10, "organic": 5, "unknown": 900},
+    )
+    totals = [s["total"] for s in f["stages"]]
+    assert totals[1] >= totals[2] >= totals[3]
+    assert totals == [915, 3, 2, 1]
+
+
+def test_an_unattributed_row_is_unknown_and_never_organic():
+    """Every row written before attribution shipped has a NULL source. Folding
+    those into organic would silently credit organic with the whole back
+    catalogue and make any ad comparison meaningless."""
+    f = stats.funnel(users=_users(("a@x.com", None), ("b@x.com", "")),
+                     assignments=[], payments=[], device_counts={})
+    assert f["stages"][1]["values"] == {"ad": 0, "organic": 0, "unknown": 2}
+
+
+def test_a_fill_attributes_to_its_accounts_source_not_its_own():
+    f = stats.funnel(
+        users=_users(("a@x.com", "ad")),
+        assignments=[{"user_email": "A@X.com"}],   # casing varies at the boundary
+        payments=[], device_counts={},
+    )
+    assert f["stages"][2]["values"]["ad"] == 1
+
+
+def test_fills_with_no_account_are_dropped_not_counted_unknown():
+    """Rows from before user_email existed carry NULL. They're real fills but
+    unattributable to a person, and counting them would re-create the
+    over-count the IP version had."""
+    f = stats.funnel(users=_users(("a@x.com", "ad")),
+                     assignments=[{"user_email": None}, {"user_email": ""}],
+                     payments=[], device_counts={})
+    assert f["stages"][2]["total"] == 0
+
+
+def test_devices_come_from_the_counts_not_the_account_rows():
+    """Devices are counted before anyone identifies themselves, so that stage
+    is a separate population handed in from Postgres rather than derived."""
+    f = stats.funnel(users=[], assignments=[], payments=[],
+                     device_counts={"ad": 7, "organic": 3, "unknown": 1})
+    assert f["stages"][0]["values"] == {"ad": 7, "organic": 3, "unknown": 1}
+    assert f["stages"][0]["total"] == 11
+
+
+def test_missing_device_counts_do_not_explode():
+    f = stats.funnel(users=[], assignments=[], payments=[], device_counts=None)
+    assert f["stages"][0]["total"] == 0

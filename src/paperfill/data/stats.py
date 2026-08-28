@@ -440,6 +440,60 @@ def accounts(users, assignments, payments) -> dict:
     }
 
 
+FUNNEL_SOURCES = ("ad", "organic", "unknown")
+
+
+def _source_bucket(value) -> str:
+    """Fold a stored source into one of the funnel's three columns. Anything
+    unrecognised, including the NULL on every row written before attribution
+    existed, lands in `unknown` rather than being assumed organic."""
+    source = (value or "").strip().lower()
+    return source if source in ("ad", "organic") else "unknown"
+
+
+def funnel(users, assignments, payments, device_counts) -> dict:
+    """Visit, signup, fill, pay, split by where the visitor came from.
+
+    Every stage after the first is keyed on the account, so one person is
+    counted in the same column at each stage they reach and the funnel can
+    only ever narrow. Devices are the exception: they're counted before anyone
+    identifies themselves, so that row is a different population and the drop
+    from it into signups is a rate, not a cohort.
+
+    Fills and payments both attribute through the account rather than
+    themselves: a fill has no source of its own, and it's the traffic that
+    brought the *account* in that a funnel is asking about."""
+    source_by_email = {}
+    for user in users or []:
+        email = (user.get("email") or "").strip().lower()
+        if email:
+            source_by_email[email] = _source_bucket(user.get("source"))
+
+    def by_source(emails) -> Counter:
+        return Counter(source_by_email.get(e, "unknown") for e in emails)
+
+    # Sets, not row counts: someone who filled nine PDFs is still one person in
+    # a funnel, and the payments table holds one row per charge.
+    filled = {(a.get("user_email") or "").strip().lower() for a in assignments or []}
+    paid = {(p.get("email") or "").strip().lower() for p in payments or []}
+    filled.discard("")
+    paid.discard("")
+
+    counts = [
+        ("Visited", {s: (device_counts or {}).get(s, 0) for s in FUNNEL_SOURCES}),
+        ("Signed up", by_source(source_by_email)),
+        ("Filled a PDF", by_source(filled)),
+        ("Paid", by_source(paid)),
+    ]
+    return {
+        "sources": list(FUNNEL_SOURCES),
+        "stages": [{"name": name,
+                    "values": {s: values.get(s, 0) for s in FUNNEL_SOURCES},
+                    "total": sum(values.get(s, 0) for s in FUNNEL_SOURCES)}
+                   for name, values in counts],
+    }
+
+
 # `style` on an assignment is a human-readable label, not a flag — a typed fill
 # is stored as the string "Typed text", not as empty. So "did they use
 # handwriting?" is "is the label anything other than the typed one", and an
@@ -532,7 +586,8 @@ def devices_heatmap(rows) -> dict:
 def build(*, signins, assignments, users, ai_calls, payments,
           devices_daily, devices_hourly, device_total,
           window: Window, hack_club_calls: list[dict] | None = None,
-          rate_card: dict | None = None, hack_club_cap_usd: float = 3.0) -> dict:
+          rate_card: dict | None = None, hack_club_cap_usd: float = 3.0,
+          device_counts: dict | None = None) -> dict:
     """Everything the dashboard needs, in one dict.
 
     The window is applied here, once, so every section is slicing the same
@@ -558,6 +613,10 @@ def build(*, signins, assignments, users, ai_calls, payments,
             rate_card or {}, hack_club_cap_usd),
         "reliability": reliability(win_calls),
         "accounts": accounts(users, assignments, payments),
+        # All-time, like `accounts`: attribution is a property of how an
+        # account arrived, and windowing it would drop the signup that a
+        # campaign is being judged on.
+        "funnel": funnel(users, assignments, payments, device_counts),
         "product": product(win_assignments),
         "clients": clients(win_signins),
         "device_heat": devices_heatmap(devices_hourly),

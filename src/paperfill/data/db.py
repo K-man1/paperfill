@@ -78,7 +78,8 @@ def record_signin(ip: str, ua: str, result: str) -> None:
         print(f"[db] record_signin failed: {e}")
 
 
-def record_fill(job_id: str, name: str, ip: str, style: str | None = None) -> None:
+def record_fill(job_id: str, name: str, ip: str, style: str | None = None,
+                user_email: str | None = None) -> None:
     """Upsert one row per job. Omitting `feedback` from the payload means an
     existing report is preserved on re-fill (PostgREST only updates the
     columns present in the body)."""
@@ -87,6 +88,8 @@ def record_fill(job_id: str, name: str, ip: str, style: str | None = None) -> No
     body = {"job_id": job_id, "name": name or "Untitled", "ip": ip}
     if style is not None:
         body["style"] = style
+    if user_email:
+        body["user_email"] = user_email.strip().lower()
     try:
         requests.post(
             _rest("assignments"),
@@ -153,15 +156,19 @@ def record_payment(email: str, amount_cents: int, currency: str,
         print(f"[db] record_payment failed: {e}")
 
 
-def record_device(device_id: str, ip: str, ua: str) -> None:
+def record_device(device_id: str, ip: str, ua: str,
+                  source: str | None = None) -> None:
     """Insert a newly-seen device, ignoring the row if it somehow already exists."""
     if not enabled():
         return
+    body = {"device_id": device_id, "ip": ip, "ua": ua}
+    if source:
+        body["source"] = source
     try:
         requests.post(
             _rest("devices"),
             headers=_headers({"Prefer": "resolution=ignore-duplicates"}),
-            json={"device_id": device_id, "ip": ip, "ua": ua},
+            json=body,
             timeout=_TIMEOUT,
         )
     except requests.RequestException as e:
@@ -191,7 +198,8 @@ def fetch_signins() -> list[dict]:
 
 
 def fetch_assignments() -> list[dict]:
-    return _get("assignments?select=job_id,name,ts,ip,style,feedback&order=ts.asc")
+    return _get("assignments?select=job_id,name,ts,ip,style,feedback,user_email"
+                "&order=ts.asc")
 
 
 def fetch_ai_calls(start=None, end=None, limit: int = 20000) -> list[dict]:
@@ -220,7 +228,7 @@ def fetch_users() -> list[dict]:
     """Accounts, for signup-over-time and Free/Pro split. No secrets: password
     hashes and verification tokens are deliberately not selected."""
     return _get("users?select=email,name,is_pro,email_verified,created_at,"
-                "google_sub&order=created_at.asc")
+                "google_sub,source&order=created_at.asc")
 
 
 def fetch_devices_daily() -> list[dict]:
@@ -257,10 +265,50 @@ def device_count() -> int:
     return count_rows("devices")
 
 
+def device_counts_by_source() -> dict[str, int]:
+    """How many devices arrived from each traffic source, counted in Postgres.
+
+    Three header-only count queries rather than one download: the table is at
+    six figures and the admin page already refuses to pull it. `unknown` is
+    every device recorded before attribution existed, kept separate from
+    `organic` so the funnel never claims a visit was organic when the truth is
+    that nobody was looking."""
+    if not enabled():
+        return {"ad": 0, "organic": 0, "unknown": 0}
+    counts = {}
+    for label, clause in (("ad", "source=eq.ad"),
+                          ("organic", "source=eq.organic"),
+                          ("unknown", "source=is.null")):
+        try:
+            r = requests.get(
+                _rest(f"devices?select=device_id&limit=0&{clause}"),
+                headers=_headers({"Prefer": "count=exact"}),
+                timeout=_TIMEOUT,
+            )
+            total = r.headers.get("Content-Range", "").split("/")[-1]
+            counts[label] = int(total) if total.isdigit() else 0
+        except (requests.RequestException, ValueError) as e:
+            print(f"[db] device_counts_by_source({label}) failed: {e}")
+            counts[label] = 0
+    return counts
+
+
+def device_source(device_id: str) -> str | None:
+    """The traffic source recorded for a device, for stamping onto an account
+    at signup. Read from the row rather than the session so it survives the
+    gap between a first visit and signing up days later."""
+    if not enabled() or not device_id:
+        return None
+    rows = _get(f"devices?select=source"
+                f"&device_id=eq.{requests.utils.quote(device_id, safe='')}")
+    return (rows[0].get("source") if rows else None) or None
+
+
 # ---- User accounts -------------------------------------------------------
 
 def get_or_create_user(google_sub: str, email: str, name: str, picture: str,
-                       is_pro: bool = False) -> dict | None:
+                       is_pro: bool = False,
+                       source: str | None = None) -> dict | None:
     """Look up a user by their Google subject ID; create if missing.
     Returns the user row dict, or None on error."""
     # Lookups by email are exact matches, so the stored address has to be
@@ -285,11 +333,17 @@ def get_or_create_user(google_sub: str, email: str, name: str, picture: str,
         # is_pro comes from the admin console's "auto-Pro on signup" toggle. It
         # is sent explicitly either way so the tier never depends on whatever
         # the column default happens to be.
+        # `source` is only set on the insert, never on the lookup above: the
+        # account keeps whatever traffic first brought it, so a Pro user who
+        # later arrives via an ad doesn't get re-attributed to that campaign.
+        body = {"google_sub": google_sub, "email": email, "name": name,
+                "picture": picture, "email_verified": True, "is_pro": bool(is_pro)}
+        if source:
+            body["source"] = source
         r = requests.post(
             _rest("users"),
             headers=_headers({"Prefer": "return=representation"}),
-            json={"google_sub": google_sub, "email": email, "name": name,
-                  "picture": picture, "email_verified": True, "is_pro": bool(is_pro)},
+            json=body,
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:
@@ -314,7 +368,8 @@ def get_user_by_email(email: str) -> dict | None:
 
 def create_email_user(email: str, password_hash: str, name: str,
                       token: str, token_expires: str,
-                      is_pro: bool = False) -> dict | None:
+                      is_pro: bool = False,
+                      source: str | None = None) -> dict | None:
     """Create an email/password account, unverified, carrying a verification
     token and its expiry. Returns the new row, or None on error (including the
     unique-email collision Postgres raises if the address is already taken).
@@ -325,12 +380,15 @@ def create_email_user(email: str, password_hash: str, name: str,
     if not enabled():
         return None
     try:
+        body = {"email": email, "password_hash": password_hash, "name": name,
+                "email_verified": False, "verification_token": token,
+                "token_expires": token_expires, "is_pro": bool(is_pro)}
+        if source:
+            body["source"] = source
         r = requests.post(
             _rest("users"),
             headers=_headers({"Prefer": "return=representation"}),
-            json={"email": email, "password_hash": password_hash, "name": name,
-                  "email_verified": False, "verification_token": token,
-                  "token_expires": token_expires, "is_pro": bool(is_pro)},
+            json=body,
             timeout=_TIMEOUT,
         )
         if r.status_code < 400:
