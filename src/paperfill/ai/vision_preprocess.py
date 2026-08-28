@@ -120,7 +120,7 @@ def _call_vision(page, client) -> dict:
     # telling apart from the detector the user explicitly picked.
     with call_context("ocr"):
         resp = client.chat.completions.create(
-            model=models.get("vision"),
+            model=models.get("ocr"),
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {

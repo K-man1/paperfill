@@ -33,9 +33,9 @@ def known_models() -> list[str]:
     return sorted(set(models.resolved().values()))
 
 
-# OpenRouter list prices, USD per 1M tokens. These are the fallback models the
-# app actually routes to, so shipping them means a fresh deploy costs its calls
-# correctly with an empty ai_rates.json. A saved rate for the same model wins.
+# OpenRouter list prices, USD per 1M tokens. Seed rates so a fresh deploy costs
+# its calls correctly with an empty ai_rates.json; add a row for whatever the
+# slots actually run. A saved rate for the same model wins.
 BUILTIN_RATES = {
     "google/gemini-3-flash-preview": {"in": 0.50, "out": 3.00},
     "google/gemini-3.5-flash": {"in": 1.50, "out": 9.00},

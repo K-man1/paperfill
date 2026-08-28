@@ -5,9 +5,10 @@ Primary is whatever provider AI_API_KEY / AI_BASE_URL point at (the Hack Club
 AI proxy by default). If a call
 to the primary raises (auth failure, outage, unsupported model, …) it is
 retried once against a fallback provider — OpenRouter by default
-(OPENROUTER_API_KEY / OPENROUTER_BASE_URL). The fallback uses its own model id
-(the "fallback" slot in data/models.py) since the providers don't share model
-names.
+(OPENROUTER_API_KEY / OPENROUTER_BASE_URL) — on the same model. The proxy is
+itself an OpenRouter front end, so the two share one id namespace and the
+retry is a change of route, not of model: a Pro call fails over to the Pro
+model, a Free call to the Free one.
 
 The wrapper mimics just the surface the app uses — `client.chat.completions
 .create(...)` and `client.files.create(...)` — so it drops in wherever a raw
@@ -177,10 +178,6 @@ class _Method:
                 self._record(kwargs.get("model", ""), "primary", t0, None,
                              primary_err)
             fb_kwargs = dict(kwargs)
-            # Swap in the fallback's model id when one is configured — the
-            # primary's model name usually doesn't exist on the fallback.
-            if self._parent.fallback_model and "model" in fb_kwargs:
-                fb_kwargs["model"] = self._parent.fallback_model
             t1 = time.monotonic()
             try:
                 resp = self._resolve(fb)(**fb_kwargs)
@@ -245,14 +242,6 @@ class FallbackClient:
             completions=_Namespace(create=_Method(self, "chat.completions.create"))
         )
         self.files = _Namespace(create=_Method(self, "files.create"))
-
-    @property
-    def fallback_model(self) -> str:
-        # Resolved per call, not captured at build time: the client is cached
-        # for the life of the worker, so a model changed from /admin would
-        # otherwise not reach the fallback until a restart.
-        from paperfill.data import models
-        return models.get("fallback")
 
 
 def build_client() -> FallbackClient:

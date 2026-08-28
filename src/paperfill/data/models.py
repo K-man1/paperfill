@@ -10,8 +10,9 @@ restart.
 
 The slots are separate because they are different jobs. Detection needs
 bounding-box grounding and gets a strict JSON schema; the text fill needs
-neither. The fallback runs on a different provider whose model ids don't match
-the primary's, which is why it can't just reuse one of the others.
+neither. Which provider serves a call is not one of those jobs: the primary
+proxy and the OpenRouter fallback share one model-id namespace, so a call that
+fails over is retried on the same model rather than a separate one.
 """
 
 from __future__ import annotations
@@ -45,12 +46,17 @@ class ModelSlot(NamedTuple):
 SLOTS: dict[str, ModelSlot] = {
     "vision": ModelSlot(
         "VISION_MODEL", "Vision — Free tier", None, True,
-        "Answers from the page image, and on scanned pages emits the blank "
-        "boxes directly as normalized coordinates. The only slot that has to "
-        "ground coordinates. The default every other vision slot inherits."),
+        "Answers the worksheet from the page image. Reading and reasoning, no "
+        "coordinates. The default every other vision slot inherits."),
     "vision_pro": ModelSlot(
         "VISION_MODEL_PRO", "Vision — Pro", "vision", True,
         "What Pro accounts get for the same work."),
+    "ocr": ModelSlot(
+        "OCR_MODEL", "Scanned-page OCR", "vision", True,
+        "Fires automatically on image-only pages. The ONLY slot that emits "
+        "coordinates itself: normalized [x0,y0,x1,y1], top-left origin. A model "
+        "that answers well but grounds badly puts answers in the wrong place, "
+        "and nothing catches it."),
     "detect": ModelSlot(
         "MULTIMODAL_MODEL", "Blank detection", "vision", True,
         "Names each blank by the printed text beside it, transcribed verbatim; "
@@ -66,10 +72,6 @@ SLOTS: dict[str, ModelSlot] = {
     "text_fill_pro": ModelSlot(
         "AI_MODEL_PRO", "Text fill — Pro", "text_fill", False,
         "What Pro accounts get for the same work."),
-    "fallback": ModelSlot(
-        "OPENROUTER_MODEL", "OpenRouter fallback", None, False,
-        "Runs on the paid provider when the free proxy fails. This is the only "
-        "slot that spends real money, so its price matters more than the rest."),
 }
 
 
