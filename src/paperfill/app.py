@@ -202,6 +202,7 @@ def _inject_auth_flags():
         "acct_email": session.get("user_email", ""),
         "acct_picture": session.get("user_picture", ""),
         "stripe_payment_link": STRIPE_PAYMENT_LINK,
+        "whop_checkout_link": WHOP_CHECKOUT_LINK,
         "pro_price": PRO_PRICE,
         "cancel_at_period_end": bool(session.get("cancel_at_period_end")),
         # Free-tier meter. Pro is unmetered, so credits_left is None there and
@@ -317,9 +318,18 @@ STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 # used to cancel a subscription from /billing/cancel. Optional: without it,
 # cancellation just tells the user to email support instead of erroring.
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+# Pro is also sold through Whop, which is the path that's actually live —
+# Stripe was wired up but never configured. WHOP_CHECKOUT_LINK is the plan's
+# purchase_url (`whop plans list`); setting it lights up the upgrade button.
+# WHOP_WEBHOOK_SECRET is the `ws_...` signing secret printed once when the
+# webhook is created (`whop webhooks create`). Same rule as Stripe: without the
+# secret the endpoint rejects everything, so an unauthenticated POST can never
+# grant Pro.
+WHOP_CHECKOUT_LINK = os.environ.get("WHOP_CHECKOUT_LINK", "")
+WHOP_WEBHOOK_SECRET = os.environ.get("WHOP_WEBHOOK_SECRET", "")
 # Display price for the pricing page. Kept here (not hardcoded in the template)
 # so it can be bumped without touching markup.
-PRO_PRICE = os.environ.get("PRO_PRICE", "$5/yr")
+PRO_PRICE = os.environ.get("PRO_PRICE", "$10/yr")
 
 
 def pro_required(f):
@@ -439,8 +449,9 @@ def set_ads_enabled(enabled: bool) -> None:
     ADS_ENABLED_PATH.write_text("1" if enabled else "0")
 
 
-# Whether a brand-new account is created on Pro. Defaults to on (the behaviour
-# every existing deployment has) until an admin turns it off from the console.
+# Whether a brand-new account is created on Pro. Off unless an admin turns it
+# on from the console — the file is gitignored, so defaulting to on would mean
+# a fresh deploy (or a lost file) silently hands Pro to every signup.
 AUTO_PRO_PATH = BASE_DIR / "auto_pro.txt"
 
 
@@ -448,7 +459,7 @@ def get_auto_pro() -> bool:
     try:
         return AUTO_PRO_PATH.read_text().strip() == "1"
     except OSError:
-        return True
+        return False
 
 
 def set_auto_pro(enabled: bool) -> None:
@@ -553,7 +564,7 @@ _WW2_HOSTS = frozenset({"ww2explained.com", "www.ww2explained.com"})
 _WW2_OPEN_PATHS = frozenset({
     "/pricing", "/login", "/signup", "/logout",
     "/auth/google", "/auth/google/callback", "/upgrade/success",
-    "/stripe/webhook",
+    "/stripe/webhook", "/whop/webhook",
     "/2d7883f358a775fc1a8f.txt", "/0efb70ed5ecb5409945db6f7bb100589.html",
 })
 
@@ -580,7 +591,7 @@ def _require_pro_for_ww2explained():
 # webhook — and each one would pay for a blocking Supabase insert. With two sync
 # workers, one cookie-less page load's worth of parallel asset requests is
 # enough to stall the site.
-_UNTRACKED_PREFIXES = ("/api/", "/static/", "/stripe/", "/auth/")
+_UNTRACKED_PREFIXES = ("/api/", "/static/", "/stripe/", "/whop/", "/auth/")
 
 
 @app.before_request
@@ -2137,6 +2148,168 @@ def stripe_webhook():
             print(f"[stripe] {user['email']} subscription ended, downgraded to Free")
         else:
             print(f"[stripe] subscription.deleted for unknown customer '{customer_id}'")
+    return jsonify({"received": True}), 200
+
+
+def _whop_sig_keys() -> list[tuple[str, bytes]]:
+    """Candidate HMAC keys for a Whop `ws_...` secret, as (label, key).
+
+    Whop's own docs contradict themselves here: the webhooks guide says "the
+    key is your ws_ secret" and, on the same page, that the helper "derives the
+    key" from it. The headers are Standard Webhooks (webhook-id /
+    webhook-timestamp / webhook-signature, `v1,<base64>`), where the key is
+    normally the base64 body of the secret after its prefix — but a real Whop
+    secret is `ws_` followed by 64 lowercase hex characters, so there is no
+    base64 body to decode and that derivation is out.
+
+    That leaves the whole string used directly, which is both what the docs say
+    and what the previous SDK did (@whop/api 0.0.51 does
+    `textEncoder.encode(webhookSecret)` over the full secret, though on an
+    older scheme: `x-whop-signature`, hex digest, signed over
+    `{timestamp}.{body}`), or the hex decoded to its 32 raw bytes. Trying both
+    costs nothing in security, since either way an attacker needs the secret,
+    and it beats a coin-flip in the one path that grants paid access. Whichever
+    matches gets logged; pin it and delete the other once a real delivery has
+    confirmed it."""
+    if not WHOP_WEBHOOK_SECRET:
+        return []
+    keys = [("raw", WHOP_WEBHOOK_SECRET.encode())]
+    _, _, tail = WHOP_WEBHOOK_SECRET.partition("_")
+    if tail:
+        try:
+            keys.append(("hex", bytes.fromhex(tail)))
+        except ValueError:
+            pass
+    return keys
+
+
+def _verify_whop_sig(payload: bytes, headers) -> bool:
+    """Verify a Whop webhook signature. Whop signs
+    `"{webhook-id}.{webhook-timestamp}.{body}"` with HMAC-SHA256 and sends it
+    base64-encoded as `webhook-signature: v1,<sig>`. The header can carry
+    several space-separated signatures during a secret rollover, so any match
+    is enough. No secret configured ⇒ reject, so a misconfigured deployment
+    fails closed instead of minting Pro accounts."""
+    keys = _whop_sig_keys()
+    webhook_id = headers.get("webhook-id", "")
+    timestamp = headers.get("webhook-timestamp", "")
+    header = headers.get("webhook-signature", "")
+    if not keys or not webhook_id or not timestamp or not header:
+        return False
+    try:
+        if abs(time.time() - int(timestamp)) > 300:  # drop replays over 5 min
+            return False
+    except ValueError:
+        return False
+    sent = [p.split(",", 1)[1] for p in header.split() if p.startswith("v1,")]
+    if not sent:
+        return False
+    signed = f"{webhook_id}.{timestamp}.".encode() + payload
+    for label, key in keys:
+        digest = hmac.new(key, signed, hashlib.sha256).digest()
+        expected = base64.b64encode(digest).decode()
+        if any(hmac.compare_digest(expected, s) for s in sent):
+            print(f"[whop] signature ok ({label} key derivation)")
+            return True
+    return False
+
+
+# The three lookups below are written against a payload shape that hasn't been
+# confirmed against a live delivery yet — creating the webhook needs an API-key
+# login, so no real event has arrived. Each tries the field names Whop is
+# documented or known to use and logs the payload's actual keys when none hit,
+# so the first real event names the shape instead of failing silently.
+def _whop_email(obj: dict) -> str:
+    """The buyer's email out of a Whop webhook payload."""
+    for path in (("user_email",), ("email",), ("user", "email"),
+                 ("member", "email"), ("customer", "email")):
+        cur = obj
+        for key in path:
+            cur = cur.get(key) if isinstance(cur, dict) else None
+            if cur is None:
+                break
+        if isinstance(cur, str) and cur.strip():
+            return cur.strip().lower()
+    return ""
+
+
+def _whop_amount_cents(obj: dict) -> int:
+    """Whop reports money as a decimal in the currency's major unit, where
+    Stripe uses integer minor units, so scale to the cents record_payment
+    stores. (A plan priced at $10.00/yr comes back as `renewal_price: 10`.)
+
+    `amount` is what the buyer was charged; `net_amount` is that minus Whop's
+    cut. Booking the gross keeps this column meaning the same thing it does for
+    the Stripe rows already in the table."""
+    value = obj.get("amount")
+    if isinstance(value, (int, float)):
+        return int(round(float(value) * 100))
+    return 0
+
+
+@app.post("/whop/webhook")
+def whop_webhook():
+    """Whop calls this when a membership starts or ends, and when a payment
+    succeeds. Public (Whop is unauthenticated) but signature-gated, and outside
+    /api/ so the login guard doesn't intercept it.
+
+    One purchase fires both payment.succeeded and membership.went_valid, so the
+    two jobs are split by event: money is booked on the payment, access is
+    granted or revoked on the membership. Booking revenue on both would
+    double-count every sale."""
+    payload = request.get_data()
+    if not _verify_whop_sig(payload, request.headers):
+        return jsonify({"error": "bad signature"}), 400
+    try:
+        event = json.loads(payload or b"{}")
+    except ValueError:
+        return jsonify({"error": "bad payload"}), 400
+
+    action = str(event.get("action") or event.get("type") or "")
+    obj = event.get("data") or {}
+    email = _whop_email(obj)
+    if not email:
+        print(f"[whop] {action or 'event'} carried no email; payload keys: "
+              f"{sorted(obj)}")
+
+    if action in ("payment.succeeded", "payment_succeeded"):
+        # Book the revenue whether or not the email matches an account, for the
+        # same reason the Stripe path does: the money arrived either way. Keyed
+        # on the payment's own id so a Whop retry can't book it twice, falling
+        # back to the delivery id (stable across retries by the Standard
+        # Webhooks spec) when the payload has no id of its own.
+        amount_cents = _whop_amount_cents(obj)
+        if not amount_cents:
+            print(f"[whop] payment with no recognisable amount; keys: {sorted(obj)}")
+        db.record_payment(
+            email=email,
+            amount_cents=amount_cents,
+            currency=str(obj.get("currency") or "usd"),
+            event_id=str(obj.get("id") or request.headers.get("webhook-id") or ""),
+            livemode=True,
+        )
+    # `membership.activated` / `.deactivated` are what the current dated API
+    # emits; the went_valid/went_invalid spellings are legacy aliases the API
+    # still lists but refuses to subscribe to. Accept both so a webhook created
+    # against either generation keeps working.
+    elif action in ("membership.activated", "membership.went_valid",
+                    "membership_went_valid"):
+        if email and db.set_user_pro(email, True):
+            _forget_pro(email)
+            print(f"[whop] upgraded {email} to Pro")
+        else:
+            print(f"[whop] membership went valid but no matching user for "
+                  f"'{email}' — grant Pro manually from /admin")
+    elif action in ("membership.deactivated", "membership.went_invalid",
+                    "membership_went_invalid"):
+        # The membership actually ended (cancelled period ran out, payment
+        # failed, refunded). Whop owns the billing lifecycle, so unlike the
+        # Stripe path there's no local cancel_at_period_end to clear.
+        if email and db.set_user_pro(email, False):
+            _forget_pro(email)
+            print(f"[whop] {email} membership ended, downgraded to Free")
+        else:
+            print(f"[whop] membership went invalid for unknown user '{email}'")
     return jsonify({"received": True}), 200
 
 

@@ -6,6 +6,13 @@
 <title>Paperfill — Pricing</title>
 <link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+{% if whop_checkout_link %}
+{# Whop's checkout is a ~940KB SPA that takes seconds to become interactive, and
+   it sends no Supports-Loading-Mode header, so we can't prerender it. All we
+   can do from here is have DNS/TCP/TLS already warm when the button is clicked,
+   which is worth well under a tenth of a second. #}
+<link rel="preconnect" href="https://whop.com" crossorigin>
+{% endif %}
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{--paper:#f7f4ee;--ink:#1f1d1a;--ink-soft:#5c564c;--rule:#d5cec1;--accent:#ff5a1f;--accent-deep:#c93f10;--serif:"Fraunces",serif;--sans:"IBM Plex Sans",system-ui,sans-serif;}
@@ -94,6 +101,9 @@ li.no::before{content:"\00d7";position:absolute;left:0;color:var(--rule);font-we
       {% elif not is_authed %}
         <a class="btn accent" href="{{ url_for('login') }}">Sign in to upgrade</a>
         <div class="note">You'll need an account so we can unlock Pro for it.</div>
+      {% elif whop_checkout_link %}
+        <a class="btn accent" href="{{ whop_checkout_link }}?email={{ acct_email|urlencode }}">Upgrade to Pro, {{ pro_price }}</a>
+        <div class="note">Secure checkout via Whop. Use <b>{{ acct_email }}</b> at checkout so Pro unlocks automatically.</div>
       {% elif stripe_payment_link %}
         <a class="btn accent" href="{{ stripe_payment_link }}?prefilled_email={{ acct_email|urlencode }}&client_reference_id={{ acct_email|urlencode }}">Upgrade to Pro, {{ pro_price }}</a>
         <div class="note">Secure checkout via Stripe. Use <b>{{ acct_email }}</b> at checkout so Pro unlocks automatically.</div>
