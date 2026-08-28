@@ -2,11 +2,11 @@
 Tests for the one invariant the money depends on: an account is Pro because it
 paid or because an admin said so, and for no other reason.
 
-test_webhook.py and test_whop_webhook.py cover each processor's endpoint in
-isolation — signatures, dedupe, payload shapes. This file is the other half:
-that a verified payment actually lands as Pro on the *live session* (the cache
-in front of the DB is what breaks this in practice), and that nothing outside
-the two webhooks and the admin console can flip the flag.
+test_whop_webhook.py covers the webhook endpoint in isolation — signatures,
+dedupe, payload shapes. This file is the other half: that a verified payment
+actually lands as Pro on the *live session* (the cache in front of the DB is
+what breaks this in practice), and that nothing outside the webhook and the
+admin console can flip the flag.
 
 `db` is faked with an in-memory dict throughout, so nothing here can touch
 Supabase.
@@ -23,7 +23,6 @@ import pytest
 from paperfill import app as A
 
 
-STRIPE_SECRET = "whsec_test_not_a_real_secret"
 WHOP_SECRET = "ws_" + "e1" * 32
 
 BUYER = "buyer@example.com"
@@ -48,7 +47,6 @@ def users(monkeypatch):
                         lambda email: rows.get((email or "").strip().lower()))
     monkeypatch.setattr(A.db, "set_user_pro", set_user_pro)
     monkeypatch.setattr(A.db, "record_payment", lambda **kw: None)
-    monkeypatch.setattr(A.db, "set_stripe_ids", lambda *a, **kw: True)
     A._pro_cache.clear()
     return rows
 
@@ -56,7 +54,6 @@ def users(monkeypatch):
 @pytest.fixture
 def client(monkeypatch):
     A.app.config["TESTING"] = True
-    monkeypatch.setattr(A, "STRIPE_WEBHOOK_SECRET", STRIPE_SECRET)
     monkeypatch.setattr(A, "WHOP_WEBHOOK_SECRET", WHOP_SECRET)
     return A.app.test_client()
 
@@ -73,21 +70,6 @@ def is_pro_now(client) -> bool:
     """Ask the app itself, through a Pro-gated endpoint, rather than reading
     the flag we're trying to test."""
     return client.get("/api/fonts").status_code == 200
-
-
-def pay_stripe(client, email=BUYER, amount=1000):
-    body = json.dumps({
-        "id": f"evt_{email}", "type": "checkout.session.completed",
-        "livemode": True,
-        "data": {"object": {"amount_total": amount, "currency": "usd",
-                            "customer_details": {"email": email}}},
-    }).encode()
-    ts = int(time.time())
-    mac = hmac.new(STRIPE_SECRET.encode(), f"{ts}".encode() + b"." + body,
-                   hashlib.sha256).hexdigest()
-    return client.post("/stripe/webhook", data=body,
-                       headers={"Stripe-Signature": f"t={ts},v1={mac}",
-                                "Content-Type": "application/json"})
 
 
 def whop_event(client, action, email=BUYER, **data):
@@ -113,16 +95,6 @@ def test_whop_purchase_makes_a_live_free_session_pro(client, users):
     assert not is_pro_now(client)          # primes the cache as Free
 
     assert whop_event(client, "membership.activated").status_code == 200
-    assert users[BUYER]["is_pro"] is True
-    assert is_pro_now(client)
-
-
-def test_stripe_purchase_makes_a_live_free_session_pro(client, users):
-    users[BUYER] = {"email": BUYER, "is_pro": False}
-    sign_in(client, BUYER)
-    assert not is_pro_now(client)
-
-    assert pay_stripe(client).status_code == 200
     assert users[BUYER]["is_pro"] is True
     assert is_pro_now(client)
 
@@ -229,12 +201,11 @@ def test_visiting_the_success_page_does_not_grant_pro(client, users):
     assert not is_pro_now(client)
 
 
-def test_an_unsigned_webhook_grants_nothing_on_either_processor(client, users):
+def test_an_unsigned_webhook_grants_nothing(client, users):
     users[BUYER] = {"email": BUYER, "is_pro": False}
     body = json.dumps({"action": "membership.activated",
                        "data": {"user_email": BUYER}}).encode()
     assert client.post("/whop/webhook", data=body).status_code == 400
-    assert client.post("/stripe/webhook", data=body).status_code == 400
     assert users[BUYER]["is_pro"] is False
 
 

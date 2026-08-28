@@ -32,7 +32,6 @@ import smtplib
 from email.message import EmailMessage
 
 from openai import OpenAI
-import requests
 from authlib.integrations.flask_client import OAuth
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -201,10 +200,8 @@ def _inject_auth_flags():
         "acct_name": session.get("user_name", ""),
         "acct_email": session.get("user_email", ""),
         "acct_picture": session.get("user_picture", ""),
-        "stripe_payment_link": STRIPE_PAYMENT_LINK,
         "whop_checkout_link": WHOP_CHECKOUT_LINK,
         "pro_price": PRO_PRICE,
-        "cancel_at_period_end": bool(session.get("cancel_at_period_end")),
         # Free-tier meter. Pro is unmetered, so credits_left is None there and
         # templates should check is_pro before showing a count.
         "free_daily_credits": usage.FREE_DAILY_CREDITS,
@@ -237,7 +234,7 @@ def _ai_model(is_pro: bool) -> str:
 
 
 # session["is_pro"] is written at login, so a revoke — from /admin or from
-# Stripe's subscription.deleted webhook — wouldn't reach the user until they
+# Whop's membership.deactivated webhook — wouldn't reach the user until they
 # signed out. _is_pro re-reads the column instead, memoised per worker for this
 # long so it costs one query a minute rather than one per request. Anything
 # that writes is_pro drops the entry so the revoke lands immediately.
@@ -306,25 +303,13 @@ def _inject_pro_benefits():
 
 
 # ---- Pro tier / billing --------------------------------------------------
-# Pro is sold via a Stripe Payment Link — paste the link from the Stripe
-# dashboard into STRIPE_PAYMENT_LINK and the upgrade buttons light up. Stripe
-# collects the buyer's email at checkout; the webhook below matches it to the
-# account and flips is_pro. STRIPE_WEBHOOK_SECRET is the signing secret for
-# that endpoint (Stripe dashboard → Webhooks). Without the secret the webhook
-# rejects everything, so an unauthenticated POST can never grant Pro.
-STRIPE_PAYMENT_LINK = os.environ.get("STRIPE_PAYMENT_LINK", "")
-STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-# Secret key (sk_...) for calling Stripe's API server-side — currently only
-# used to cancel a subscription from /billing/cancel. Optional: without it,
-# cancellation just tells the user to email support instead of erroring.
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
-# Pro is also sold through Whop, which is the path that's actually live —
-# Stripe was wired up but never configured. WHOP_CHECKOUT_LINK is the plan's
-# purchase_url (`whop plans list`); setting it lights up the upgrade button.
-# WHOP_WEBHOOK_SECRET is the `ws_...` signing secret printed once when the
-# webhook is created (`whop webhooks create`). Same rule as Stripe: without the
-# secret the endpoint rejects everything, so an unauthenticated POST can never
-# grant Pro.
+# Pro is sold through Whop. WHOP_CHECKOUT_LINK is the plan's purchase_url
+# (`whop plans list`); setting it lights up the upgrade button. Whop collects
+# the buyer's email at checkout; the webhook below matches it to the account
+# and flips is_pro. WHOP_WEBHOOK_SECRET is the `ws_...` signing secret printed
+# once when the webhook is created (`whop webhooks create`). Without the secret
+# the endpoint rejects everything, so an unauthenticated POST can never grant
+# Pro.
 WHOP_CHECKOUT_LINK = os.environ.get("WHOP_CHECKOUT_LINK", "")
 WHOP_WEBHOOK_SECRET = os.environ.get("WHOP_WEBHOOK_SECRET", "")
 # Display price for the pricing page. Kept here (not hardcoded in the template)
@@ -565,7 +550,7 @@ _WW2_HOSTS = frozenset({"ww2explained.com", "www.ww2explained.com"})
 _WW2_OPEN_PATHS = frozenset({
     "/pricing", "/login", "/signup", "/logout",
     "/auth/google", "/auth/google/callback", "/upgrade/success",
-    "/stripe/webhook", "/whop/webhook",
+    "/whop/webhook",
     "/2d7883f358a775fc1a8f.txt", "/0efb70ed5ecb5409945db6f7bb100589.html",
 })
 
@@ -588,11 +573,11 @@ def _require_pro_for_ww2explained():
 
 
 # A device is a browser that loaded a page. Everything else arrives without the
-# cookie too — every /static/ asset on a cold visit, every XHR, Stripe's
+# cookie too — every /static/ asset on a cold visit, every XHR, Whop's
 # webhook — and each one would pay for a blocking Supabase insert. With two sync
 # workers, one cookie-less page load's worth of parallel asset requests is
 # enough to stall the site.
-_UNTRACKED_PREFIXES = ("/api/", "/static/", "/stripe/", "/whop/", "/auth/")
+_UNTRACKED_PREFIXES = ("/api/", "/static/", "/whop/", "/auth/")
 
 
 # Ad clicks arrive tagged. Google, Meta, TikTok, Bing and X each append their
@@ -1450,7 +1435,6 @@ def _start_user_session(user: dict) -> None:
     email = user.get("email", "")
     session["role"] = _role_for(email)        # "admin" for the allowlist, else "user"
     session["is_pro"] = bool(user.get("is_pro"))  # the pro tier, independent of admin
-    session["cancel_at_period_end"] = bool(user.get("cancel_at_period_end"))
     session["user_sub"] = user.get("google_sub") or f"email:{email}"
     session["user_email"] = email
     session["user_name"] = user.get("name", "")
@@ -1879,7 +1863,7 @@ def _mark_reports_downloaded(ts: float) -> None:
 
 @app.post("/admin/grant-pro")
 def grant_pro():
-    """Manually grant or revoke Pro for an account by email. The Stripe webhook
+    """Manually grant or revoke Pro for an account by email. The Whop webhook
     does this automatically on payment; this is the fallback (comps, refunds,
     or buyers whose checkout email didn't match their login)."""
     if session.get("role") != "admin":
@@ -2042,7 +2026,7 @@ def pricing():
 
 @app.route("/upgrade/success")
 def upgrade_success():
-    """Stripe's post-payment redirect lands here. The webhook is what actually
+    """Whop's post-checkout redirect lands here. The webhook is what actually
     sets is_pro in the database; this route just re-reads the user's row so the
     *current session* reflects Pro without making them log out and back in."""
     if not session.get("role"):
@@ -2054,136 +2038,6 @@ def upgrade_success():
         # The webhook may have landed after this worker last memoised the tier.
         _forget_pro(email)
     return render_template("pricing.html", upgraded=True)
-
-
-@app.post("/billing/cancel")
-def billing_cancel():
-    """Cancel the signed-in user's Pro subscription. Sets cancel_at_period_end
-    on the Stripe subscription (they keep Pro until the period they already
-    paid for runs out; the subscription.deleted webhook downgrades is_pro when
-    it actually ends) rather than yanking access immediately.
-
-    Needs both STRIPE_SECRET_KEY and a stripe_subscription_id on the account
-    (stored from the checkout webhook) to actually call Stripe. Either being
-    missing — Pro granted manually from /admin, or paid before this was wired
-    up — falls back to telling the user to email support instead of silently
-    downgrading them or claiming a cancellation that didn't happen."""
-    if not session.get("role"):
-        return jsonify({"error": "authentication required"}), 403
-    if not _is_pro():
-        return jsonify({"error": "You're not on Pro."}), 400
-    email = session.get("user_email", "")
-    user = db.get_user_by_email(email) if email else None
-    subscription_id = (user or {}).get("stripe_subscription_id")
-    if not STRIPE_SECRET_KEY or not subscription_id:
-        support_email = sorted(ADMIN_EMAILS)[0] if ADMIN_EMAILS else "support"
-        return jsonify({
-            "error": f"We don't have a billing record on file to cancel automatically. "
-                     f"Email {support_email} and we'll cancel it for you.",
-        }), 400
-    try:
-        r = requests.post(
-            f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
-            auth=(STRIPE_SECRET_KEY, ""),
-            data={"cancel_at_period_end": "true"},
-            timeout=10,
-        )
-    except requests.RequestException as e:
-        print(f"[stripe] cancel request failed for {email}: {e}")
-        return jsonify({"error": "Couldn't reach Stripe. Please try again."}), 502
-    if r.status_code >= 400:
-        print(f"[stripe] cancel HTTP {r.status_code} for {email}: {r.text[:200]}")
-        return jsonify({"error": "Stripe couldn't cancel that subscription. Please try again."}), 502
-    db.set_cancel_at_period_end(email, True)
-    session["cancel_at_period_end"] = True
-    return jsonify({"ok": True,
-                     "message": "Your subscription won't renew. You'll keep Pro until the "
-                                "current period ends."})
-
-
-def _verify_stripe_sig(payload: bytes, sig_header: str) -> bool:
-    """Verify a Stripe webhook signature without the Stripe SDK. Stripe signs
-    `"{timestamp}.{body}"` with HMAC-SHA256 keyed by the endpoint secret and
-    sends it as `Stripe-Signature: t=...,v1=...`. No secret configured ⇒ reject,
-    so a missing/misconfigured secret never silently trusts callers."""
-    if not STRIPE_WEBHOOK_SECRET or not sig_header:
-        return False
-    try:
-        parts = [p.split("=", 1) for p in sig_header.split(",") if "=" in p]
-        ts = next((v.strip() for k, v in parts if k.strip() == "t"), "")
-        # During a secret rollover Stripe signs the same event with every
-        # active secret and sends one v1 per secret. Keeping only the last one
-        # (dict(parts)) rejects half the traffic for the length of the roll.
-        sigs = [v.strip() for k, v in parts if k.strip() == "v1"]
-        if not ts or not sigs:
-            return False
-        if abs(time.time() - int(ts)) > 300:  # drop replays older than 5 min
-            return False
-        signed = ts.encode() + b"." + payload
-        expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode(), signed,
-                            hashlib.sha256).hexdigest()
-        return any(hmac.compare_digest(expected, s) for s in sigs)
-    except (ValueError, TypeError):
-        return False
-
-
-@app.post("/stripe/webhook")
-def stripe_webhook():
-    """Stripe calls this when a checkout completes. We verify the signature,
-    then flip the buyer's account to Pro by the email Stripe collected. Public
-    (Stripe is unauthenticated) but signature-gated, and outside /api/ so the
-    login guard doesn't intercept it."""
-    payload = request.get_data()
-    if not _verify_stripe_sig(payload, request.headers.get("Stripe-Signature", "")):
-        return jsonify({"error": "bad signature"}), 400
-    try:
-        event = json.loads(payload or b"{}")
-    except ValueError:
-        return jsonify({"error": "bad payload"}), 400
-    if event.get("type") == "checkout.session.completed":
-        obj = event.get("data", {}).get("object", {}) or {}
-        email = ((obj.get("customer_details") or {}).get("email")
-                 or obj.get("customer_email") or "").strip().lower()
-        # Book the revenue regardless of whether we can match the email to an
-        # account: the money arrived either way, and a P&L that silently drops
-        # unmatched sales is worse than useless. Keyed on the Stripe event id,
-        # which is unique, so Stripe's retries can't double-count it.
-        db.record_payment(
-            email=email,
-            amount_cents=obj.get("amount_total") or 0,
-            currency=obj.get("currency") or "usd",
-            event_id=str(event.get("id") or ""),
-            livemode=bool(event.get("livemode")),
-        )
-        if email and db.set_user_pro(email, True):
-            _forget_pro(email)
-            print(f"[stripe] upgraded {email} to Pro")
-            # Stash the customer/subscription IDs so /billing/cancel has
-            # something to call later. Best-effort — a missing ID here just
-            # means cancellation falls back to "email support".
-            customer_id = obj.get("customer") or ""
-            subscription_id = obj.get("subscription") or ""
-            if customer_id or subscription_id:
-                db.set_stripe_ids(email, customer_id, subscription_id)
-        else:
-            print(f"[stripe] checkout completed but no matching user for "
-                  f"'{email}' — grant Pro manually from /admin")
-    elif event.get("type") == "customer.subscription.deleted":
-        # Fires when a subscription actually ends (period ran out after a
-        # cancel-at-period-end, or Stripe cancelled it directly). This is the
-        # real end of billing, so downgrade the account here rather than at
-        # the moment the user clicked Cancel.
-        obj = event.get("data", {}).get("object", {}) or {}
-        customer_id = obj.get("customer") or ""
-        user = db.get_user_by_stripe_customer(customer_id) if customer_id else None
-        if user and user.get("email"):
-            db.set_user_pro(user["email"], False)
-            db.set_cancel_at_period_end(user["email"], False)
-            _forget_pro(user["email"])
-            print(f"[stripe] {user['email']} subscription ended, downgraded to Free")
-        else:
-            print(f"[stripe] subscription.deleted for unknown customer '{customer_id}'")
-    return jsonify({"received": True}), 200
 
 
 def _whop_sig_keys() -> list[tuple[str, bytes]]:
@@ -2269,13 +2123,12 @@ def _whop_email(obj: dict) -> str:
 
 
 def _whop_amount_cents(obj: dict) -> int:
-    """Whop reports money as a decimal in the currency's major unit, where
-    Stripe uses integer minor units, so scale to the cents record_payment
-    stores. (A plan priced at $10.00/yr comes back as `renewal_price: 10`.)
+    """Whop reports money as a decimal in the currency's major unit, but the
+    payments table stores integer cents, so scale it. (A plan priced at
+    $10.00/yr comes back as `renewal_price: 10`.)
 
     `amount` is what the buyer was charged; `net_amount` is that minus Whop's
-    cut. Booking the gross keeps this column meaning the same thing it does for
-    the Stripe rows already in the table."""
+    cut. Book the gross, so the column means revenue rather than takehome."""
     value = obj.get("amount")
     if isinstance(value, (int, float)):
         return int(round(float(value) * 100))
@@ -2308,8 +2161,9 @@ def whop_webhook():
               f"{sorted(obj)}")
 
     if action in ("payment.succeeded", "payment_succeeded"):
-        # Book the revenue whether or not the email matches an account, for the
-        # same reason the Stripe path does: the money arrived either way. Keyed
+        # Book the revenue whether or not the email matches an account: the
+        # money arrived either way, and a P&L that silently drops unmatched
+        # sales is worse than useless. Keyed
         # on the payment's own id so a Whop retry can't book it twice, falling
         # back to the delivery id (stable across retries by the Standard
         # Webhooks spec) when the payload has no id of its own.
@@ -2338,8 +2192,8 @@ def whop_webhook():
     elif action in ("membership.deactivated", "membership.went_invalid",
                     "membership_went_invalid"):
         # The membership actually ended (cancelled period ran out, payment
-        # failed, refunded). Whop owns the billing lifecycle, so unlike the
-        # Stripe path there's no local cancel_at_period_end to clear.
+        # failed, refunded). Whop owns the billing lifecycle, so there is no
+        # local subscription state to clear alongside the tier.
         if email and db.set_user_pro(email, False):
             _forget_pro(email)
             print(f"[whop] {email} membership ended, downgraded to Free")

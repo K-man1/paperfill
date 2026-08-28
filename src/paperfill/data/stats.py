@@ -259,7 +259,7 @@ def money(ai_calls, payments, window: Window) -> dict:
     * **uncosted** — calls whose model has no configured rate. Reported as a
       count, never folded into the totals as zero.
     """
-    # Stripe test-mode events use the same webhook and shape as real ones —
+    # Test-mode events hit the same webhook and look identical to real ones —
     # only `livemode` tells them apart. Counting test checkouts as revenue
     # would make the P&L confidently wrong, so they're dropped here rather
     # than at the fetch layer (the raw rows may still be useful elsewhere).

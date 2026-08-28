@@ -1168,11 +1168,7 @@ button {
             <a href="{{ url_for('settings_page') }}">Fill settings</a>
             {% if is_pro %}
             <a href="{{ url_for('handwriting_page') }}">Your handwriting</a>
-            {% if cancel_at_period_end %}
-            <span class="settings-note">Pro cancels at renewal</span>
-            {% else %}
-            <button type="button" class="settings-item danger" id="cancel-sub-btn">Cancel subscription</button>
-            {% endif %}
+            <span class="settings-note">Manage your subscription on Whop</span>
             {% endif %}
             <a href="{{ url_for('logout') }}">Log out</a>
           </div>
@@ -1499,25 +1495,6 @@ function clearError() {
     if (e.key === "Escape") closeMenu();
   });
 
-  const cancelBtn = $("cancel-sub-btn");
-  if (cancelBtn) {
-    cancelBtn.addEventListener("click", async () => {
-      closeMenu();
-      if (!confirm("Cancel your Pro subscription? You'll keep Pro until your " +
-                    "current billing period ends, then drop to Free.")) return;
-      cancelBtn.disabled = true;
-      try {
-        const r = await fetch("/billing/cancel", { method: "POST" });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || "Couldn't cancel your subscription.");
-        toast(data.message || "Your subscription won't renew.");
-        cancelBtn.outerHTML = '<span class="settings-note">Pro cancels at renewal</span>';
-      } catch (err) {
-        toast(err.message, true);
-        cancelBtn.disabled = false;
-      }
-    });
-  }
 })();
 function setStatus(msg) { const el = $("status-line"); if (el) el.textContent = msg; }
 

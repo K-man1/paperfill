@@ -137,9 +137,12 @@ def record_ai_call(row: dict) -> None:
 
 def record_payment(email: str, amount_cents: int, currency: str,
                    event_id: str, livemode: bool) -> None:
-    """Record one completed checkout. `stripe_event_id` is UNIQUE and we ignore
-    duplicates, which is what makes this safe against Stripe's retries — a
-    webhook redelivery must not book the same revenue twice."""
+    """Record one completed checkout. The event-id column is UNIQUE and we
+    ignore duplicates, which is what makes this safe against Whop's retries — a
+    webhook redelivery must not book the same revenue twice.
+
+    That column is still named `stripe_event_id` from when Stripe was the
+    processor; renaming it needs a migration, so the name outlived the code."""
     if not enabled():
         return
     try:
@@ -433,7 +436,7 @@ def mark_email_verified(token: str) -> dict | None:
 def set_user_pro(email: str, is_pro: bool) -> bool:
     """Flip a user's Pro flag by its (already lowercased) email. Returns True only if
     a matching row was actually updated (so callers can tell 'no such user'
-    apart from success). Used by the Stripe webhook and the admin grant form."""
+    apart from success). Used by the Whop webhook and the admin grant form."""
     if not enabled():
         return False
     try:
@@ -449,62 +452,3 @@ def set_user_pro(email: str, is_pro: bool) -> bool:
     except (requests.RequestException, ValueError) as e:
         print(f"[db] set_user_pro failed: {e}")
     return False
-
-
-def set_stripe_ids(email: str, customer_id: str, subscription_id: str) -> bool:
-    """Attach the Stripe customer/subscription IDs from a completed checkout so
-    a later cancel request has something to call. Blank IDs are skipped rather
-    than overwriting an existing value with nothing."""
-    if not enabled() or not email:
-        return False
-    patch = {}
-    if customer_id:
-        patch["stripe_customer_id"] = customer_id
-    if subscription_id:
-        patch["stripe_subscription_id"] = subscription_id
-    if not patch:
-        return False
-    try:
-        r = requests.patch(
-            _rest(f"users?email=eq.{requests.utils.quote(email, safe='')}"),
-            headers=_headers({"Prefer": "return=representation"}),
-            json=patch,
-            timeout=_TIMEOUT,
-        )
-        if r.status_code < 400:
-            return bool(r.json())
-        print(f"[db] set_stripe_ids HTTP {r.status_code}: {r.text[:200]}")
-    except (requests.RequestException, ValueError) as e:
-        print(f"[db] set_stripe_ids failed: {e}")
-    return False
-
-
-def set_cancel_at_period_end(email: str, flag: bool) -> bool:
-    """Mark whether a user's subscription is set to lapse at the end of the
-    period they already paid for. Used by /billing/cancel and cleared when
-    Stripe's subscription.deleted webhook confirms the period actually ended."""
-    if not enabled() or not email:
-        return False
-    try:
-        r = requests.patch(
-            _rest(f"users?email=eq.{requests.utils.quote(email, safe='')}"),
-            headers=_headers({"Prefer": "return=representation"}),
-            json={"cancel_at_period_end": bool(flag)},
-            timeout=_TIMEOUT,
-        )
-        if r.status_code < 400:
-            return bool(r.json())
-        print(f"[db] set_cancel_at_period_end HTTP {r.status_code}: {r.text[:200]}")
-    except (requests.RequestException, ValueError) as e:
-        print(f"[db] set_cancel_at_period_end failed: {e}")
-    return False
-
-
-def get_user_by_stripe_customer(customer_id: str) -> dict | None:
-    """Fetch the account tied to a Stripe customer ID. Used by the
-    subscription.deleted webhook, whose payload carries the customer id but not
-    the account email."""
-    if not enabled() or not customer_id:
-        return None
-    rows = _get(f"users?stripe_customer_id=eq.{requests.utils.quote(customer_id, safe='')}")
-    return rows[0] if rows else None

@@ -1,15 +1,13 @@
 """
 Tests for the Whop webhook — the path that actually turns a sale into Pro.
 
-Same reasoning as test_webhook.py: this can't be exercised by hand until a real
-purchase happens, and by then a bug means silently losing sales or handing out
+This can't be exercised by hand until a real purchase happens, and by then a bug means silently losing sales or handing out
 Pro for free. So it's driven by synthetic, correctly-signed deliveries instead,
 with `db` patched throughout so a test can never write a fake payment into the
 real database.
 
-Whop signs on a different scheme to Stripe: HMAC-SHA256 over
-"{webhook-id}.{webhook-timestamp}.{body}", base64, sent as
-`webhook-signature: v1,<sig>`.
+Whop signs HMAC-SHA256 over "{webhook-id}.{webhook-timestamp}.{body}",
+base64, sent as `webhook-signature: v1,<sig>`.
 """
 
 import base64
@@ -106,9 +104,8 @@ def test_payment_succeeded_books_revenue(client, recorded):
 
 
 def test_revenue_is_booked_even_when_the_email_matches_no_account(client, monkeypatch, recorded):
-    """Same stance as the Stripe path: the money arrived whether or not we can
-    tie it to a user, and a P&L that drops unmatched sales is worse than
-    useless."""
+    """The money arrived whether or not we can tie it to a user, and a P&L
+    that drops unmatched sales is worse than useless."""
     monkeypatch.setattr(A.db, "set_user_pro", lambda email, flag: False)
     r = post(client, event(action="payment.succeeded", email="stranger@example.com",
                            id="pay_2", amount=10))

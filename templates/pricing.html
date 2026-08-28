@@ -104,9 +104,6 @@ li.no::before{content:"\00d7";position:absolute;left:0;color:var(--rule);font-we
       {% elif whop_checkout_link %}
         <a class="btn accent" href="{{ whop_checkout_link }}?email={{ acct_email|urlencode }}">Upgrade to Pro, {{ pro_price }}</a>
         <div class="note">Secure checkout via Whop. Use <b>{{ acct_email }}</b> at checkout so Pro unlocks automatically.</div>
-      {% elif stripe_payment_link %}
-        <a class="btn accent" href="{{ stripe_payment_link }}?prefilled_email={{ acct_email|urlencode }}&client_reference_id={{ acct_email|urlencode }}">Upgrade to Pro, {{ pro_price }}</a>
-        <div class="note">Secure checkout via Stripe. Use <b>{{ acct_email }}</b> at checkout so Pro unlocks automatically.</div>
       {% else %}
         <button class="btn accent disabled" disabled>Checkout coming soon</button>
         <div class="note">Payments aren't live yet, hang tight.</div>

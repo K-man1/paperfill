@@ -93,8 +93,8 @@ def test_profit_and_margin():
 
 
 def test_test_mode_payments_are_excluded_from_revenue():
-    """Stripe test-mode checkouts hit the same webhook and look identical
-    apart from `livemode` — they must not inflate the real P&L."""
+    """Test-mode checkouts hit the same webhook and look identical apart from
+    `livemode` — they must not inflate the real P&L."""
     payments = [{"ts": ts(6, 3), "amount_cents": 500, "livemode": True},
                 {"ts": ts(6, 4), "amount_cents": 99999, "livemode": False}]
     out = stats.money([], payments, win())
