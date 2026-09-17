@@ -1946,13 +1946,21 @@ async function handleUpload(file) {
         fetch("/api/upload", { method: "POST", body: form }),
         gatherContext(),
       ]);
-      const data = await readJson(r);
+      let data = await readJson(r);
       if (!r.ok) {
         // A 402 means the free daily credit budget is spent. Carry the flag on
         // the error so the catch below can update the meter, not just the banner.
         const e = new Error(data.error || "Upload failed");
         e.creditsLeft = data.credits_left;
         throw e;
+      }
+      // Detection runs in the background on the server; a long request here
+      // would outlive the proxy's timeout and come back as a 502.
+      while (data.status === "detecting") {
+        await new Promise(res => setTimeout(res, 2000));
+        const poll = await fetch("/api/upload/" + encodeURIComponent(data.job_id));
+        data = await readJson(poll);
+        if (!poll.ok) throw new Error(data.error || "Upload failed");
       }
       setCreditsLeft(data.credits_left);
       currentJob = data;

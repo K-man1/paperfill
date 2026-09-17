@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 import zipfile
 from datetime import date, datetime, timedelta, timezone
@@ -2257,8 +2258,8 @@ def upload():
     f.save(pdf_path)
 
     # MAX_CONTENT_LENGTH bounds the bytes, not the pages, and a mostly-blank
-    # 10 MB PDF holds thousands. Both the detector below and the preview render
-    # after it walk every page, so this has to come before either of them.
+    # 10 MB PDF holds thousands. Both the detector and the preview render in
+    # _detect_job walk every page, so this has to come before either of them.
     try:
         with fitz.open(str(pdf_path)) as doc:
             page_count = len(doc)
@@ -2310,46 +2311,10 @@ def upload():
     else:
         detector_name = "deterministic"
 
-    # Quick sanity check + preprocess
-    try:
-        if detector_name == "regions":
-            structure = region_preprocess_pdf(str(pdf_path), formats=formats)
-        elif detector_name == "multimodal":
-            structure = multimodal_preprocess_pdf(str(pdf_path), formats=formats)
-        else:
-            structure = preprocess_pdf(str(pdf_path), formats=formats)
-    except Exception as e:
-        pdf_path.unlink(missing_ok=True)
-        return jsonify({"error": f"could not parse PDF: {e}"}), 400
-
-    # Render preview images of each page so the frontend can show
-    # what was uploaded.
-    doc = fitz.open(str(pdf_path))
-    try:
-        # A worksheet we filled once, downloaded and handed back. Its blanks are
-        # still blank-looking, so it fills again — the answers just land on top of
-        # the ones already there. The renderer refuses to restamp text that's
-        # already in the slot; this is what lets the UI say why.
-        already_filled = FILLED_MARKER in ((doc.metadata or {}).get("keywords") or "")
-        preview_dir = OUTPUTS / job_id
-        preview_dir.mkdir(exist_ok=True)
-        page_sizes = []
-        for i, page in enumerate(doc):
-            pix = page.get_pixmap(matrix=PREVIEW_MATRIX * page.derotation_matrix)
-            pix.save(str(preview_dir / f"page-{i}.png"))
-            rect = text_page_rect(page)
-            page_sizes.append({"width": rect.width, "height": rect.height})
-    finally:
-        doc.close()
-
     JOBS[job_id] = {
         "pdf_path": str(pdf_path),
         "original_name": Path(f.filename).name,  # for the download filename
-        "structure": structure,
         "page_count": page_count,
-        "page_sizes": page_sizes,
-        "overlays": None,
-        "filled_path": None,
         # Kept so a problem report can say which settings actually produced the
         # fill. Recorded server-side rather than sent by the client with the
         # report: by then the user may have re-toggled the picker, and we want
@@ -2357,24 +2322,119 @@ def upload():
         # meaningful — it's the "detect all" case, not a missing value.
         "detector": detector_name,
         "formats": formats,
-        # This upload cleared the credit gate above, which buys it one fill
-        # that runs to completion regardless of the balance at that moment.
-        # Consumed by /api/fill so it can't be replayed for free re-fills.
-        "admitted": True,
+        "status": "detecting",
+        "detect_started": time.time(),
     }
     save_job(job_id)
+    # Detection runs past the Nest gateway's proxy timeout on multi-page PDFs
+    # (a single Regions vision call over 11 pages took ~90s), which hands the
+    # browser a 502 while the work finishes unseen. So it runs off the request
+    # and the client polls GET /api/upload/<job_id>. Not a daemon thread: a
+    # worker recycled by max_requests then waits for it instead of killing it.
+    threading.Thread(target=_detect_job, args=(job_id, JOBS[job_id]),
+                     name=f"detect-{job_id}").start()
+    return jsonify({"job_id": job_id, "status": "detecting"}), 202
 
+
+# A detection whose thread died with its worker (restart, OOM) never records a
+# result, so past this age a still-"detecting" job is reported as failed rather
+# than leaving the client polling forever.
+DETECT_STALE_SECONDS = 600
+
+
+def _detect_job(job_id: str, job: dict) -> None:
+    """Run the chosen detector and render previews for an accepted upload.
+
+    Updates `job` in place rather than replacing JOBS[job_id]: a poll landing on
+    this worker holds the same dict through load_job, and swapping the object
+    before save_job stamps its mtime would make load_job reload the stale
+    "detecting" copy from disk over the finished one."""
+    pdf_path = Path(job["pdf_path"])
+    detector_name, formats = job["detector"], job["formats"]
+    try:
+        try:
+            if detector_name == "regions":
+                structure = region_preprocess_pdf(str(pdf_path), formats=formats)
+            elif detector_name == "multimodal":
+                structure = multimodal_preprocess_pdf(str(pdf_path), formats=formats)
+            else:
+                structure = preprocess_pdf(str(pdf_path), formats=formats)
+        except Exception as e:
+            raise ValueError(f"could not parse PDF: {e}") from e
+
+        # Render preview images of each page so the frontend can show
+        # what was uploaded.
+        doc = fitz.open(str(pdf_path))
+        try:
+            # A worksheet we filled once, downloaded and handed back. Its blanks are
+            # still blank-looking, so it fills again — the answers just land on top of
+            # the ones already there. The renderer refuses to restamp text that's
+            # already in the slot; this is what lets the UI say why.
+            already_filled = FILLED_MARKER in ((doc.metadata or {}).get("keywords") or "")
+            preview_dir = OUTPUTS / job_id
+            preview_dir.mkdir(exist_ok=True)
+            page_sizes = []
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(matrix=PREVIEW_MATRIX * page.derotation_matrix)
+                pix.save(str(preview_dir / f"page-{i}.png"))
+                rect = text_page_rect(page)
+                page_sizes.append({"width": rect.width, "height": rect.height})
+        finally:
+            doc.close()
+    # The thread is the boundary: anything it doesn't record here leaves the
+    # job "detecting" until DETECT_STALE_SECONDS, so every failure is stored.
+    except Exception as e:
+        print(f"[upload] detection failed for {job_id}: {e!r}")
+        pdf_path.unlink(missing_ok=True)
+        job.update({"status": "failed", "error": str(e)})
+        save_job(job_id)
+        return
+
+    job.update({
+        "structure": structure,
+        "page_sizes": page_sizes,
+        "already_filled": already_filled,
+        "overlays": None,
+        "filled_path": None,
+        # This upload cleared the credit gate in upload(), which buys it one
+        # fill that runs to completion regardless of the balance at that
+        # moment. Consumed by /api/fill so it can't be replayed for free
+        # re-fills.
+        "admitted": True,
+        "status": "ready",
+    })
+    save_job(job_id)
+
+
+@app.get("/api/upload/<job_id>")
+def upload_status(job_id):
+    job = load_job(job_id)
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+    # Jobs saved before detection moved off the request have no status and
+    # were always complete.
+    status = job.get("status", "ready")
+    if status == "detecting":
+        if time.time() - job["detect_started"] > DETECT_STALE_SECONDS:
+            return jsonify({"error": "Reading the PDF stopped partway through. "
+                                     "Try uploading it again."}), 500
+        return jsonify({"job_id": job_id, "status": "detecting"})
+    if status == "failed":
+        return jsonify({"error": job["error"]}), 400
+
+    structure = job["structure"]
     # Build a frontend-safe summary (no bboxes; they're huge and useless
     # to the UI).
     summary = {
         "job_id": job_id,
-        "page_count": page_count,
+        "status": "ready",
+        "page_count": job["page_count"],
         "unit_count": structure["unit_count"],
         "slot_count": structure["slot_count"],
-        "already_filled": already_filled,
+        "already_filled": job.get("already_filled", False),
         # None for Pro (unmetered); the UI only shows a count on Free. Most of
         # the actual spend happens during /api/fill, not here, so this is
-        # mainly accurate when the AI Vision detector ran above.
+        # mainly accurate when the AI Vision detector ran.
         "credits_left": None if _is_pro() else usage.remaining_credits(_user_key()),
         "units": [
             {
@@ -2438,6 +2498,8 @@ def fill():
     job = load_job(job_id)
     if job is None:
         return jsonify({"error": "unknown job_id"}), 404
+    if job.get("status", "ready") != "ready":
+        return jsonify({"error": "that upload hasn't finished processing"}), 409
 
     # The fill that follows an accepted upload always runs, even if the balance
     # hit zero in between — /api/context is fetched in parallel with the upload
