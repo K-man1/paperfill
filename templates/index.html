@@ -1975,13 +1975,16 @@ async function handleUpload(file) {
           context: contextText,
         }),
       });
-      let fillData;
-      try {
-        fillData = await r2.json();
-      } catch (_) {
-        throw new Error("Server timed out or returned an unreadable response. Try again.");
-      }
+      let fillData = await readJson(r2);
       if (!r2.ok) throw new Error(fillData.error || "Fill failed");
+      // Filling runs in the background for the same proxy-timeout reason as
+      // the upload.
+      while (fillData.status === "filling") {
+        await new Promise(res => setTimeout(res, 2000));
+        const poll = await fetch("/api/fill/" + encodeURIComponent(fillData.job_id));
+        fillData = await readJson(poll);
+        if (!poll.ok) throw new Error(fillData.error || "Fill failed");
+      }
       // The fill is where most of a job's tokens actually get spent, so this
       // is the meter's most accurate update.
       setCreditsLeft(fillData.credits_left);

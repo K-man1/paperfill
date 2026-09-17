@@ -28,7 +28,8 @@ from functools import wraps
 from pathlib import Path
 import fitz
 from flask import (Flask, jsonify, request, send_file, render_template,
-                   abort, redirect, url_for, session, g)
+                   abort, redirect, url_for, session, g,
+                   copy_current_request_context)
 import smtplib
 from email.message import EmailMessage
 
@@ -2500,6 +2501,9 @@ def fill():
         return jsonify({"error": "unknown job_id"}), 404
     if job.get("status", "ready") != "ready":
         return jsonify({"error": "that upload hasn't finished processing"}), 409
+    if (job.get("fill_status") == "filling"
+            and time.time() - job["fill_started"] <= FILL_STALE_SECONDS):
+        return jsonify({"error": "that job is already being filled"}), 409
 
     # The fill that follows an accepted upload always runs, even if the balance
     # hit zero in between — /api/context is fetched in parallel with the upload
@@ -2520,59 +2524,110 @@ def fill():
             f"{instructions}\n\nReference material the user attached "
             f"(use it as authoritative source material):\n{context_text}"
         ).strip()
-    structure_for_llm = strip_bboxes_for_llm(job["structure"])
-    answers: dict[str, str] = {}
-    # Primary path: answer-then-anchor — let the model see the page so it can use
-    # answer banks, matching options and layout. Falls back to the text-only fill
-    # if the vision call errors or comes back empty.
-    if VISION_FILL:
-        try:
-            page_pngs = _render_page_pngs(job["pdf_path"])
-            answers = call_vision_to_fill(job["structure"], page_pngs, instructions,
-                                          _is_pro(), _user_key())
-        except Exception as e:
-            print(f"[fill] vision fill failed ({e}); falling back to text-only")
-    used_vision = bool(answers)
-    if not answers:
-        try:
-            answers = call_openai_to_fill(structure_for_llm, instructions,
-                                          _is_pro(), _user_key())
-        except Exception as e:
-            return jsonify({"error": f"LLM call failed: {e}"}), 502
 
-    user_prefs = prefs.get(_user_key())
-    if user_prefs["fill_name_date"]:
-        apply_name_date_fill(job["structure"], answers, user_prefs["name"])
-    overlays = build_overlays_from_structure(job["structure"], answers,
-                                             default_plot=user_prefs["graph_plot"])
-    # Which of the two fill paths above actually produced these answers. The
-    # vision path can silently fall back to text-only, so the detector the user
-    # picked doesn't tell you this on its own.
-    job["fill_path"] = "vision" if used_vision else "text"
-    job["answers"] = answers
-    job["overlays"] = overlays
-    # Keep the answer key / reference text around so a hand-snipped question
-    # (see /api/snip) is answered from the same source material.
-    job["fill_instructions"] = instructions[:SNIP_REF_MAX]
-
-    _generate_hw_for_job(job_id)          # no-op unless a style is attached
-
-    try:
-        _rerender_job(job_id)
-    except Exception as e:
-        return jsonify({"error": f"render failed: {e}"}), 500
+    job.update({"fill_status": "filling", "fill_started": time.time()})
+    job.pop("fill_error", None)
     save_job(job_id)
+    # Same reason as upload(): a fill runs past the gateway's proxy timeout, so
+    # it runs off the request and the client polls GET /api/fill/<job_id>. The
+    # copied request context keeps the session-backed helpers (_is_pro,
+    # _user_key, _record_fill, and prefs inside _rerender_job) working there.
+    work = copy_current_request_context(_fill_job)
+    threading.Thread(target=work, args=(job_id, job, instructions),
+                     name=f"fill-{job_id}").start()
+    return jsonify({"job_id": job_id, "status": "filling"}), 202
 
-    _record_fill(job_id, job.get("original_name"), _style_label(job.get("style_id")))
+
+FILL_STALE_SECONDS = 600
+
+
+def _fill_job(job_id: str, job: dict, instructions: str) -> None:
+    """Answer and render a fill in the background. Mutates `job` in place and
+    flips fill_status last, for the same load_job reason as _detect_job."""
+    def fail(message: str, code: int) -> None:
+        print(f"[fill] {job_id} failed: {message}")
+        job.update({"fill_status": "failed",
+                    "fill_error": {"message": message, "code": code}})
+        save_job(job_id)
+
+    # The thread is the boundary: a failure not recorded here leaves the job
+    # "filling" until FILL_STALE_SECONDS.
+    try:
+        structure_for_llm = strip_bboxes_for_llm(job["structure"])
+        answers: dict[str, str] = {}
+        # Primary path: answer-then-anchor — let the model see the page so it can use
+        # answer banks, matching options and layout. Falls back to the text-only fill
+        # if the vision call errors or comes back empty.
+        if VISION_FILL:
+            try:
+                page_pngs = _render_page_pngs(job["pdf_path"])
+                answers = call_vision_to_fill(job["structure"], page_pngs, instructions,
+                                              _is_pro(), _user_key())
+            except Exception as e:
+                print(f"[fill] vision fill failed ({e}); falling back to text-only")
+        used_vision = bool(answers)
+        if not answers:
+            try:
+                answers = call_openai_to_fill(structure_for_llm, instructions,
+                                              _is_pro(), _user_key())
+            except Exception as e:
+                return fail(f"LLM call failed: {e}", 502)
+
+        user_prefs = prefs.get(_user_key())
+        if user_prefs["fill_name_date"]:
+            apply_name_date_fill(job["structure"], answers, user_prefs["name"])
+        overlays = build_overlays_from_structure(job["structure"], answers,
+                                                 default_plot=user_prefs["graph_plot"])
+        # Which of the two fill paths above actually produced these answers. The
+        # vision path can silently fall back to text-only, so the detector the user
+        # picked doesn't tell you this on its own.
+        job["fill_path"] = "vision" if used_vision else "text"
+        job["answers"] = answers
+        job["overlays"] = overlays
+        # Keep the answer key / reference text around so a hand-snipped question
+        # (see /api/snip) is answered from the same source material.
+        job["fill_instructions"] = instructions[:SNIP_REF_MAX]
+
+        _generate_hw_for_job(job_id)          # no-op unless a style is attached
+
+        try:
+            _rerender_job(job_id)
+        except Exception as e:
+            return fail(f"render failed: {e}", 500)
+        job["fill_status"] = "done"
+        save_job(job_id)
+
+        _record_fill(job_id, job.get("original_name"), _style_label(job.get("style_id")))
+    except Exception as e:
+        fail(f"fill failed: {e!r}", 500)
+
+
+@app.get("/api/fill/<job_id>")
+def fill_status(job_id):
+    job = load_job(job_id)
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+    status = job.get("fill_status")
+    if status is None:
+        return jsonify({"error": "that job hasn't been filled"}), 404
+    if status == "filling":
+        if time.time() - job["fill_started"] > FILL_STALE_SECONDS:
+            return jsonify({"error": "Filling stopped partway through. "
+                                     "Try again."}), 500
+        return jsonify({"job_id": job_id, "status": "filling"})
+    if status == "failed":
+        err = job["fill_error"]
+        return jsonify({"error": err["message"]}), err["code"]
 
     return jsonify({
         "job_id": job_id,
-        "answers": answers,
-        "overlays": overlays,
+        "status": "done",
+        "answers": job["answers"],
+        "overlays": job["overlays"],
         "page_count": job["page_count"],
         "page_sizes": job["page_sizes"],
         # None for Pro (unmetered); the UI only shows a meter on Free. Read
-        # fresh here since the fill above just spent some of it.
+        # fresh here since the fill just spent some of it.
         "credits_left": None if _is_pro() else usage.remaining_credits(_user_key()),
     })
 
