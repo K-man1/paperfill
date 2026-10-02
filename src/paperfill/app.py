@@ -60,7 +60,7 @@ from paperfill.utils.json_utils import extract_json_object
 from paperfill.utils.plain_math import plain_math
 from paperfill.ai.preprocess import preprocess_pdf, text_page_rect
 from paperfill.ai.multimodal_preprocess import multimodal_preprocess_pdf
-from paperfill.ai.candidates import region_preprocess_pdf
+from paperfill.ai.regions import region_preprocess_pdf
 from paperfill.ai.render import (render_overlays_pdf, stamp_overlays,
                                  build_overlays_from_structure,
                                  apply_name_date_fill, FILLED_MARKER)
@@ -2296,9 +2296,10 @@ def upload():
             formats = None
 
     # Detector selection: deterministic ("Standard", preprocess.py, default),
-    # the "AI Vision" path (multimodal_preprocess.py), or "Regions"
-    # (candidates.py), which proposes answer spaces geometrically and has a
-    # model pick from them. Note all three are separate from the OCR path
+    # "Regions" (regions.py, the home screen's "AI Vision" card), where a model
+    # boxes every answer space and code snaps the boxes to the page, or the
+    # older anchor-quoting path (multimodal_preprocess.py). Note all three are
+    # separate from the OCR path
     # (vision_preprocess.py), which fires automatically on scanned pages. Chosen
     # per-request via the `detector` form field or globally via the
     # PAPERFILL_DETECTOR env var.

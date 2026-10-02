@@ -94,19 +94,20 @@ labelled by `call_context` ([llm_client.py:38-68](../src/paperfill/ai/llm_client
 |---|---|---|---|
 | `ocr` | `vision` | [vision_preprocess.py:114-136](../src/paperfill/ai/vision_preprocess.py) | [preprocess.py:1068-1075](../src/paperfill/ai/preprocess.py) |
 | `detect` | `detect` | [multimodal_preprocess.py:189-246](../src/paperfill/ai/multimodal_preprocess.py) | [app.py:2256](../src/paperfill/app.py) |
-| `detect` (same label, different slot) | `regions` | [candidates.py:391-432](../src/paperfill/ai/candidates.py) | [app.py:2254](../src/paperfill/app.py) |
+| `detect` (same label, different slot) | `regions` | [regions.py `_default_detector`](../src/paperfill/ai/regions.py) | [app.py:2254](../src/paperfill/app.py) |
 | `vision_fill` | `vision_pro` / `vision` | [app.py:1131-1172](../src/paperfill/app.py) | [app.py:2407](../src/paperfill/app.py) |
 | `text_fill` | `text_fill_pro` / `text_fill` | [app.py:1001-1077](../src/paperfill/app.py) | [app.py:2414](../src/paperfill/app.py) |
 | `ask_ai` | `vision_pro` / `vision` | [app.py:1290-1341](../src/paperfill/app.py) | [app.py:2846](../src/paperfill/app.py) |
 | `refine` | `text_fill_pro` / `text_fill` | [app.py:1344-1399](../src/paperfill/app.py) | [app.py:2883](../src/paperfill/app.py) |
 | `context_image` | `vision` | [context_sources.py:62-92](../src/paperfill/utils/context_sources.py) | [app.py:2352](../src/paperfill/app.py) |
+| `web_search` | `text_fill_pro` (always) | [context_sources.py:279-313](../src/paperfill/utils/context_sources.py) | [app.py:2916](../src/paperfill/app.py) |
 
 Pro/free selection: `_vision_model` ([app.py:230-231](../src/paperfill/app.py)),
 `_ai_model` ([app.py:234-235](../src/paperfill/app.py)). Note `context_image`
 hardcodes `models.get("vision")` and never uses `vision_pro`
 ([context_sources.py:79](../src/paperfill/utils/context_sources.py)).
 
-There are therefore **eight distinct prompt/parser contracts** across
+There are therefore **nine distinct prompt/parser contracts** across
 **seven configurable slots**; `vision`/`vision_pro` serve three of them
 (`ocr`, `vision_fill`, `ask_ai`) with three different output contracts.
 
@@ -378,122 +379,44 @@ fan-out. Multiple-choice units are added deterministically with no model call
 
 ---
 
-### 2.3 `regions` — code-proposes / model-selects
+### 2.3 `regions` — model boxes, code snaps (the "AI Vision" card)
 
-**Purpose.** Geometry enumerates every place a student *could* write, draws
-numbered boxes onto a copy of the PDF, and the model returns the ids of the boxes
-that are real answer spaces plus a short prompt naming each item. The model never
-supplies a location, only picks from a list. Selected by `detector=regions|region`
-([app.py:2244-2245, 2254](../src/paperfill/app.py)).
+**Purpose.** The model draws a box round every answer space on a page image and
+names the item each one answers. Code then moves each box edge to the nearest
+real feature on the page (drawn rule, cell border, underscore run) within 6pt;
+an edge with nothing nearby keeps the model's value. Selected by
+`detector=regions|region`. Implemented in
+[regions.py](../src/paperfill/ai/regions.py) (`_default_detector`, `_snap`,
+`region_preprocess_pdf`). This replaced the propose-and-pick design, whose
+recall was capped by what the geometric proposer could recognize.
 
-**Input.**
-- Image: yes, **all annotated pages in one message**. `_annotated_doc`
-  ([candidates.py:285-303](../src/paperfill/ai/candidates.py)) draws each candidate
-  rect plus a filled label box with the `rN` id at 8 pt; rendered
-  `get_pixmap(dpi=SELECTION_DPI)` → PNG
-  ([candidates.py:477](../src/paperfill/ai/candidates.py)).
-  `SELECTION_DPI = int(os.environ.get("REGION_DPI", "150"))`
-  ([candidates.py:319](../src/paperfill/ai/candidates.py)); not set in `.env` →
-  **150 DPI**, US Letter → **1275 × 1650 px/page**.
-- Text: a plain listing of every region id, its page, kind and nearest printed
-  label ([candidates.py:400-407](../src/paperfill/ai/candidates.py)). Measured
-  sizes: 6 regions / 391 chars on a 1-page vocab sheet; 16 regions / 716 chars on
-  an 8-page packet.
-- No page `get_text()` dump, no prior model output, no user data.
-- `temperature=0` ([candidates.py:417](../src/paperfill/ai/candidates.py)).
+**Input.** One page PNG at `REGION_DPI` (default 150) per call, no text. System
+prompt `_DETECT_SYSTEM`.
 
-**System prompt** (verbatim, `_SELECT_SYSTEM`, [candidates.py:362-388](../src/paperfill/ai/candidates.py)):
+**Output contract.** `json_schema`, `strict: true`, `DETECT_SCHEMA`:
+`{"spaces": [{"box_2d": [ymin, xmin, ymax, xmax], "prompt": str, "axis_range": [..]}]}`,
+`box_2d` normalized 0-1000 (Gemini's native convention). `max_tokens=8192`: the
+HC proxy checks its budget against `max_tokens`, so the model default gets a
+parallel page batch refused.
 
-```
-Each worksheet page image has numbered boxes drawn on it. Every box is a place a student COULD write. Your job is to say which ones a student actually SHOULD write in, and what question each one answers.
+**Post-processing.**
+- Malformed or inverted boxes → dropped as `bad_box`. **Caught.**
+- A box over a coordinate-grid image with a valid `axis_range` → graph unit;
+  without one → dropped as `graph_without_axis_range`. **Caught.**
+- Snapped boxes up to 36pt tall → `inline_blanks`, taller → `open_response`.
+  Duplicates (IoU > 0.7) dropped.
+- Underscore runs the model missed are added, unless printed text sits on them
+  (a worked example).
+- MC units added deterministically without a model call.
+- Raw model boxes are kept in `structure["model_boxes"]` for report bundles.
 
-The boxes were placed by geometry, not by understanding, so many of them are wrong. Reject any box that is a margin, a gap between sections, whitespace under a heading, empty space on an answer-key or instructions page, or a stray sliver. Keep a box only if a student writes an answer there.
+**Failure modes.** A space the model never boxes is never filled. **Silent**,
+but visible per page in a report's `diagnostics.json` (`model_boxes`).
 
-For each box you keep, return its id exactly as printed and a short prompt naming the item it belongs to (the question number and what is being asked, or the label beside the blank). The prompt is what a later step uses to work out the answer, so it must identify the item, but it does not have to restate the whole question.
+**Volume.** **One call per page**, 8 in parallel.
 
-A box drawn round a coordinate grid is where a graph gets drawn. Keep it if the question asks the student to graph something, and read the axis tick labels to fill in axis_range as [xmin, xmax, ymin, ymax]. Every other box leaves axis_range empty.
-
-Do NOT solve anything. Do not invent ids that are not drawn on the page. If two boxes cover the same answer space, keep the one that fits it better and drop the other. A question answered in the space below it gets the box under it, not the box beside it.
-```
-
-**User prompt** (verbatim template, [candidates.py:405-411](../src/paperfill/ai/candidates.py)):
-
-```
-Pick the boxes that are real answer spaces.
-
-Boxes drawn on the pages:
-r1: page 0, blank, near 'Nombre'
-r2: page 0, area, near '1. La capital de España es'
-…
-```
-
-then, per page: `--- PAGE i ---` + image part.
-
-**Output contract.** Provider-enforced strict JSON schema
-([candidates.py:421-426](../src/paperfill/ai/candidates.py)), name `selections`,
-`strict: true`. Schema verbatim ([lines 322-359](../src/paperfill/ai/candidates.py)):
-
-```json
-{
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "selections": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "region_id":  {"type": "string"},
-          "prompt":     {"type": "string"},
-          "axis_range": {"type": "array", "items": {"type": "number"}}
-        },
-        "required": ["region_id", "prompt", "axis_range"]
-      }
-    }
-  },
-  "required": ["selections"]
-}
-```
-
-Coordinate convention: **none for location** — `region_id` is a verbatim string
-matched exactly against `by_id`
-([candidates.py:484, 493-495](../src/paperfill/ai/candidates.py)), whitespace
-stripped, no normalization. The one numeric array is `axis_range` =
-**`[xmin, xmax, ymin, ymax]`** in the graph's own data units, read off tick labels
-— *not* a bbox, not normalized, not pixel-space
-([candidates.py:344-352](../src/paperfill/ai/candidates.py)).
-
-**Parser.** `json_from_response` ([candidates.py:430](../src/paperfill/ai/candidates.py))
-→ `region_preprocess_pdf` ([candidates.py:450-575](../src/paperfill/ai/candidates.py)).
-- Unknown `region_id` → dropped with reason `unknown_region`, logged
-  ([lines 496-498](../src/paperfill/ai/candidates.py)).
-- Duplicate ids ignored after the first ([lines 499-501](../src/paperfill/ai/candidates.py)).
-- Empty `prompt` falls back to the geometric label
-  ([line 503](../src/paperfill/ai/candidates.py)).
-- `axis_range` validated by `_axis_range`
-  ([lines 435-447](../src/paperfill/ai/candidates.py)): must be a 4-element numeric
-  array with `x_max > x_min` and `y_max > y_min`, else the graph unit is dropped
-  (`graph_without_axis_range`, [lines 508-512](../src/paperfill/ai/candidates.py)).
-
-**Failure mode.**
-- Over-selecting margins → answers stamped in whitespace. **Silent.**
-- Under-selecting → blanks never filled. **Silent** (a region not picked is not a
-  drop; it just vanishes).
-- Invented ids and bad axis ranges → dropped, logged, counted in
-  `dropped_count`. **Caught.**
-- Parse failure → raises → HTTP 400 at [app.py:2259-2261](../src/paperfill/app.py).
-
-**Volume.** **One call per document.** MC units added deterministically without a
-model call ([candidates.py:545-563](../src/paperfill/ai/candidates.py)).
-
-**Token estimate.**
-- Input: system 1,329 chars ≈ **332 tok**; region listing ≈ **100 tok**
-  (measured 391 chars, 1 page) to **180 tok** (716 chars, 8 pages); images ≈
-  **1,550 tok/page** (Gemini). 1 page ≈ **2.0k in**; 8 pages ≈ **12.9k in**.
-- Output: ~60 chars per selection. 15 selections ≈ **230 tok out**.
-
----
+**Tokens (measured, `gemini-3.7-flash`).** About 1.2k in per page. Output is
+~1.4k per page, roughly three quarters of it reasoning.
 
 ### 2.4 `vision_fill` — answer the page (slots `vision_pro` / `vision`)
 
@@ -659,7 +582,7 @@ Without instructions the user message is **just** `<structure_json>`.
 [app.py:1070](../src/paperfill/app.py), no schema), **except** there is no image,
 so `graph` units are answered purely from the axis range that
 `region_preprocess_pdf` baked into `prompt_text`
-([candidates.py:519-521](../src/paperfill/ai/candidates.py), noted at
+([regions.py](../src/paperfill/ai/regions.py), noted at
 [app.py:993-996](../src/paperfill/app.py)).
 
 **Parser.** `extract_json_object` → `_flatten_answers`
@@ -864,6 +787,69 @@ credit budget ([llm_client.py:203-213](../src/paperfill/ai/llm_client.py),
 
 ---
 
+### 2.9 `web_search` — plan the searches a worksheet needs (slot `text_fill_pro`, always Pro)
+
+**Purpose.** Pro only. Decide which web searches, if any, would help answer this
+sheet; the queries then go to Exa and the results are appended to `instructions`
+as one more labelled reference block
+([context_sources.py:279-313](../src/paperfill/utils/context_sources.py), driven
+from [app.py:2914-2923](../src/paperfill/app.py)).
+
+**Input.**
+- Image: no.
+- Every unit's `prompt_text` joined with newlines, truncated to
+  `MAX_PLAN_CHARS = 4000`, plus the already-assembled `instructions` (the user's
+  own text and any attached reference material) under its own heading when
+  non-empty.
+- `response_format={"type": "json_object"}`, `max_tokens=PLAN_MAX_TOKENS = 600`.
+  The cap is not a style choice: with `max_tokens` unset the proxy reserves the
+  model's full 65,536-token output window against the day's remaining allowance
+  and returns **402 "requires more credits, or fewer max_tokens"** once the
+  budget is low, which silently routes the call to the paid OpenRouter fallback.
+  Every other call site in this document has the same exposure and no cap.
+
+**Output contract.** `{"queries": ["...", ...]}`. An **empty list is the common
+case** and the one the prompt pushes for: a sheet the model can already answer
+must not spend a search.
+
+**Parser.** `json_from_response` (not a bare `extract_json_object`), so a reply
+the model truncated at the cap raises instead of parsing to zero queries — a
+reasoning model that spends the whole budget thinking would otherwise be
+indistinguishable from "this sheet needs no searching". Each query is then
+stringified, trimmed to 200 chars, deduped, and the list cut to
+`MAX_QUERIES = 3`. A reply whose `queries` is not a list yields `[]`.
+
+**Failure mode.** Any exception out of the planner is caught in
+`web_search_context` and logged as `[search] could not plan queries: …`; the fill
+then runs with no web material rather than failing
+([context_sources.py:326-330](../src/paperfill/utils/context_sources.py)). Same for
+a search that errors — logged per query and skipped.
+
+**Volume.** **One planner call per fill with the box ticked**, then **0-3 Exa
+searches**. Nothing runs when the box is unticked, and a free account asking for
+it is refused with a 402 before the fill starts
+([app.py:2870-2876](../src/paperfill/app.py)).
+
+**Billing note:** the planner call is metered like any other
+(`call_context("web_search", is_pro=True)`), so it lands on the spend dashboard.
+**The Exa searches do not** — that table is keyed on token counts and a search has
+none. Exa charged **$0.007 per search** at the shape used here (`type: "auto"`,
+`numResults: 4`, 1200-char text), and it comes off the same Hack Club daily
+allowance as the chat calls, so three searches is roughly $0.02 of that budget per
+fill. The per-search cost is printed to the log
+([context_sources.py:266-272](../src/paperfill/utils/context_sources.py)); the log
+is the only place it appears.
+
+**Token estimate.**
+- Planner input: system prompt ≈ **240 tok** + up to 4,000 chars of worksheet
+  ≈ **1,000 tok** + up to 4,000 chars of attached material ≈ **1,000 tok**.
+- Planner output: three short queries ≈ **40 tok**.
+- The results themselves are **not** a model call — they enter the next fill
+  prompt as text, capped at `MAX_SEARCH_CHARS = 9000` ≈ **2,250 tok** added to
+  whichever fill path runs.
+
+---
+
 ## 3. Global questions
 
 ### 3.1 Which slots need provider-side structured output?
@@ -871,7 +857,7 @@ credit budget ([llm_client.py:203-213](../src/paperfill/ai/llm_client.py),
 | Slot / purpose | Enforcement used | Survives a model that cannot enforce JSON? |
 |---|---|---|
 | `detect` | `json_schema`, `strict: true` ([multimodal_preprocess.py:232-239](../src/paperfill/ai/multimodal_preprocess.py)) | **Partly.** `extract_json_object` would still recover a well-formed object from fenced/prosey output, but `additionalProperties:false` + enums are the only thing keeping `blank_position` and `kind` in-domain. A stray value silently defaults (`position not in ("after","before") → "after"`, [line 884](../src/paperfill/ai/multimodal_preprocess.py)). |
-| `regions` | `json_schema`, `strict: true` ([candidates.py:421-426](../src/paperfill/ai/candidates.py)) | **Yes, mostly.** Unknown ids and bad `axis_range` are validated in code ([lines 493-498, 435-447](../src/paperfill/ai/candidates.py)), so a loose model degrades to dropped items rather than corruption. |
+| `regions` | `json_schema`, `strict: true` ([regions.py](../src/paperfill/ai/regions.py)) | **Yes, mostly.** Malformed boxes and bad `axis_range` are validated in code (`_box_to_points`, `_axis_range`), so a loose model degrades to dropped items rather than corruption. Without strict mode, `gemini-3.7-flash` was seen wrapping boxes in objects and emitting broken JSON. |
 | `ocr` | `json_object` only ([vision_preprocess.py:134](../src/paperfill/ai/vision_preprocess.py)) | **Yes** — already free-text-tolerant. |
 | `vision_fill`, `text_fill`, `ask_ai`, `refine` | `json_object` only ([app.py:1165, 1070, 1338, 1393](../src/paperfill/app.py)) | **Yes.** `extract_json_object` strips fences, `<think>` blocks and surrounding prose, and `_flatten_answers` normalizes key shapes. |
 | `context_image` | none | **Yes** — free text is the contract. |
@@ -882,26 +868,27 @@ ability to be coaxed into a bare object by prompt alone.
 
 ### 3.2 Which slots need native bounding-box grounding?
 
-**Exactly one: `ocr`** ([vision_preprocess.py:36-46](../src/paperfill/ai/vision_preprocess.py)).
-It is the only slot that asks the model to emit coordinates, and those coordinates
-are used directly as page geometry.
+**Two: `ocr` and `regions`.** `ocr`
+([vision_preprocess.py:36-46](../src/paperfill/ai/vision_preprocess.py)) uses the
+model's coordinates directly as page geometry. `regions` asks for Gemini-style
+`box_2d` and then snaps each edge to the page's rules and underscores, so it
+needs grounding that is roughly right, not exact.
 
 Everything else:
 - `detect` — reading + verbatim transcription. Localization is done by string
   search in code ([multimodal_preprocess.py:527-552](../src/paperfill/ai/multimodal_preprocess.py)).
-- `regions` — multiple choice over boxes already drawn on the image; the model
-  reads a printed id ([candidates.py:285-303](../src/paperfill/ai/candidates.py)).
-  Needs OCR-quality small-text reading (8 pt labels,
-  [candidates.py:301](../src/paperfill/ai/candidates.py)), not grounding.
 - `vision_fill`, `ask_ai`, `context_image` — reading and answering.
 - `text_fill`, `refine` — no image at all.
 
 `regions` also needs one numeric reading skill that is not grounding: reading axis
-tick labels off a plotted grid ([candidates.py:379-382](../src/paperfill/ai/candidates.py)).
+tick labels off a plotted grid.
 
 ### 3.3 Is the coordinate convention hardcoded to one model family?
 
-**Yes, in the `ocr` slot only.** The prompt demands
+**Yes, in the `ocr` and `regions` slots.** `regions` asks for Gemini's native
+`[ymin, xmin, ymax, xmax]` normalized 0-1000, so a model outside that family
+needs checking before it goes in `REGION_MODEL`. The rest of this section is
+about `ocr`. The prompt demands
 `[x0, y0, x1, y1]`, top-left origin, floats in `[0,1]`
 ([vision_preprocess.py:44-46](../src/paperfill/ai/vision_preprocess.py)). That is
 the OpenAI-ish convention. A Gemini-family model that answers in its native
@@ -917,7 +904,7 @@ Functions that would have to change to switch families:
 | `_norm_box_to_points` | [vision_preprocess.py:79-91](../src/paperfill/ai/vision_preprocess.py) | Multiplies index 0/2 by width and 1/3 by height. |
 | `_page_is_transposed` | [vision_preprocess.py:101-111](../src/paperfill/ai/vision_preprocess.py) | Exists only to paper over this exact mismatch. With a real adapter it becomes wrong — it would flip correctly-ordered boxes on a page whose blanks genuinely are tall. |
 
-No other slot is affected. `_axis_range` ([candidates.py:435-447](../src/paperfill/ai/candidates.py))
+No other slot is affected. `_axis_range` ([regions.py](../src/paperfill/ai/regions.py))
 parses `[xmin,xmax,ymin,ymax]` but that is graph data units, not image space, and is
 family-independent.
 
@@ -944,10 +931,10 @@ Wasted image tokens:
 2. **`ask_ai` also uses 200 DPI** ([app.py:2839](../src/paperfill/app.py)) on a
    crop. Here the higher DPI is defensible — small crops are where resolution
    actually matters.
-3. **`detect` and `regions` send every page in one request**
-   ([multimodal_preprocess.py:218](../src/paperfill/ai/multimodal_preprocess.py),
-   [candidates.py:408-411](../src/paperfill/ai/candidates.py)) with no page cap
-   below `MAX_PDF_PAGES = 50` ([app.py:101](../src/paperfill/app.py)).
+3. **`detect` sends every page in one request**
+   ([multimodal_preprocess.py:218](../src/paperfill/ai/multimodal_preprocess.py))
+   with no page cap below `MAX_PDF_PAGES = 50` ([app.py:101](../src/paperfill/app.py)).
+   `regions` sends one page per request.
 4. **`detect` sends both the full page image and the full page text**
    ([multimodal_preprocess.py:201-209](../src/paperfill/ai/multimodal_preprocess.py)),
    uncapped. Deliberate — the text is a transcription aid — but it roughly
@@ -1100,7 +1087,7 @@ Each of these replaces rows above; they do not stack.
 |---|---|---|---|---|
 | Scanned page (auto) | `ocr` | 1/page | **2,650** (313 sys + 10 user + 2,322 img @200 DPI) | **600** (20 blanks) |
 | `detector=multimodal` | `detect` | 1/**document** | **2,600/page** (566 sys ÷ pages + 500 text + 1,548 img) | **450/page** |
-| `detector=regions` | `regions` | 1/**document** | **2,000/page** (332 sys ÷ pages + 100 listing + 1,548 img) | **230/page** |
+| `detector=regions` | `regions` | 1/**page** | **~1,200/page** (measured) | **~1,400/page** (measured, ~75% reasoning) |
 | Vision fill failed | `text_fill` | 1/**document** | **1,200/page** (493 sys ÷ pages + 670 unit JSON) | **170/page** |
 | Reference image attached | `context_image` | 1/image | **unknown** (user-supplied resolution) + 44 | ≤**1,500** |
 | User snips an item | `ask_ai` | 1/snip | **720** (218 sys + 500 crop img) | **60** |

@@ -63,9 +63,10 @@ SLOTS: dict[str, ModelSlot] = {
         "code resolves that back to a box. Fails on paraphrase, not on bad "
         "coordinates."),
     "regions": ModelSlot(
-        "REGION_MODEL", "Region selection", "vision", True,
-        "Picks region ids off a numbered overlay code already drew. Multiple "
-        "choice over boxes that exist, so it cannot invent a location."),
+        "REGION_MODEL", "Answer-space boxes", "vision", True,
+        "Draws a box round every answer space on a page image, one call per "
+        "page. Needs a model trained on 0-1000 box_2d output (Gemini); code "
+        "then snaps each edge to the page's real rules and underscores."),
     "text_fill": ModelSlot(
         "AI_MODEL", "Text fill — Free tier", None, False,
         "Answers from the transcribed text alone, when the vision fill is off."),
