@@ -814,14 +814,14 @@ def _generate_hw_for_job(job_id: str) -> None:
     variants = font_store.font_variant_paths(font_id)
     settings = font_store.get_settings(font_id)
     # Keep each overlay's bbox so handwriting wraps to the slot width.
-    items = {ov["id"]: (ov.get("text", ""), ov.get("bbox"))
+    items = {ov["id"]: (ov.get("text", ""), ov.get("bbox"), float(ov.get("size", 11)))
              for ov in job.get("overlays", [])}
     try:
         images = {
             ov_id: render_text_png(text, variants,
-                                   max_width_px=hw_wrap_width(bbox),
+                                   max_width_px=hw_wrap_width(bbox, size),
                                    settings=settings)
-            for ov_id, (text, bbox) in items.items()
+            for ov_id, (text, bbox, size) in items.items()
             if str(text).strip() and bbox
         }
     except Exception as e:
@@ -3025,6 +3025,27 @@ def font_sample(font_id: str):
     return send_file(io.BytesIO(png), mimetype="image/png")
 
 
+@app.get("/api/fonts/<font_id>/font.otf")
+@pro_required
+def font_file(font_id: str):
+    """The primary OTF, so the editor can type in the user's handwriting. Own
+    font only."""
+    path = font_store.font_path(font_id) if font_id == _current_font_id() else None
+    if path is None:
+        abort(404)
+    # Fonts built before font_build dropped the space still carry "Paperfill
+    # Hand" as their CFF name, which browsers reject outright. Rename on the way
+    # out instead of asking everyone to rebuild.
+    from fontTools.ttLib import TTFont
+    font = TTFont(str(path))
+    cff = font["CFF "].cff
+    cff.fontNames = [n.replace(" ", "") for n in cff.fontNames]
+    buf = io.BytesIO()
+    font.save(buf)
+    buf.seek(0)
+    return send_file(buf, mimetype="font/otf")
+
+
 @app.get("/api/fonts/<font_id>/settings")
 @pro_required
 def get_font_settings(font_id: str):
@@ -3176,9 +3197,13 @@ def _rerender_job(job_id: str) -> None:
     # an erased one on screen until the next save came back — gone from the DOM,
     # still sitting in the PNG. Typeset answers stay baked, because the browser
     # can't reproduce their metrics and the image has to be the copy of record.
+    # Handwritten answers are left out for the same reason as the strokes: the
+    # editor types them live in the user's own font, so the box you click into
+    # is the writing itself rather than a stand-in laid over a picture of it.
     doc = fitz.open(job["pdf_path"])
     try:
-        stamp_overlays(doc, [o for o in job["overlays"] if o.get("kind") != "ink"],
+        stamp_overlays(doc, [o for o in job["overlays"]
+                             if o.get("kind") != "ink" and o.get("id") not in images],
                        images=images, pen_thickness_mm=pen_thickness,
                        watermark=watermark)
         preview_dir = OUTPUTS / job_id
@@ -3188,6 +3213,7 @@ def _rerender_job(job_id: str) -> None:
     finally:
         doc.close()
     job["filled_path"] = str(filled_path)
+    job["hw_live_previews"] = True
 
 
 @app.post("/api/update")
@@ -3272,6 +3298,9 @@ def update():
             except (TypeError, ValueError):
                 size = 11
             size = max(6.0, min(48.0, size))
+            color = str(ov.get("color", "")).lower()
+            if not re.fullmatch(r"#[0-9a-f]{6}", color):
+                color = "#000000"
             entry = {
                 "id": str(ov.get("id", "")),
                 "page": page,
@@ -3280,6 +3309,7 @@ def update():
                 "mode": ov.get("mode", "region"),
                 "font": font,
                 "size": size,
+                "color": color,
                 "bold": bool(ov.get("bold", False)),
                 "italic": bool(ov.get("italic", False)),
                 "underline": bool(ov.get("underline", False)),
@@ -3294,6 +3324,9 @@ def update():
             continue
 
     job["overlays"] = cleaned
+    # The handwriting PNGs are laid out from each box's text and size, so an
+    # edit to either has to redraw them or the page keeps the old writing.
+    _generate_hw_for_job(job_id)
     try:
         _rerender_job(job_id)
     except Exception as e:
@@ -3431,6 +3464,12 @@ def get_job(job_id):
     job = load_job(job_id)
     if job is None:
         return jsonify({"error": "unknown job_id"}), 404
+    # Previews rendered before handwriting went live in the editor still have
+    # it baked in, and the editor's own copy on top of that reads as doubled
+    # writing. Redraw them once.
+    if job.get("style_id") and job.get("filled_path") and not job.get("hw_live_previews"):
+        _rerender_job(job_id)
+        save_job(job_id)
     return jsonify({
         "job_id": job_id,
         "overlays": job.get("overlays", []),

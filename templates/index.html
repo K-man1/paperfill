@@ -464,6 +464,7 @@ button {
   border-color: var(--rule);
 }
 .donate-btn:hover { color: var(--ink); border-color: var(--ink-soft); }
+.editor-toolbar #select-btn.active,
 .editor-toolbar #add-box-btn.active,
 .editor-toolbar #snip-btn.active,
 .editor-toolbar #draw-btn.active,
@@ -493,6 +494,133 @@ button {
   cursor: pointer;
 }
 .fmt-group select:disabled { opacity: 0.45; cursor: not-allowed; }
+.size-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  height: 34px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fff;
+  overflow: hidden;
+}
+.size-stepper:focus-within { border-color: var(--ink-soft); }
+#fmt-size-dec, #fmt-size-inc {
+  width: 28px;
+  padding: 0;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  background: #fff;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+#fmt-size-dec:hover, #fmt-size-inc:hover { background: var(--paper-deep); }
+#fmt-size {
+  width: 44px;
+  border: none;
+  border-left: 1px solid var(--rule-soft);
+  border-right: 1px solid var(--rule-soft);
+  text-align: center;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink);
+  background: #fff;
+  outline: none;
+  padding: 0;
+}
+.color-picker-wrap { position: relative; }
+#fmt-color-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+#fmt-color-btn:hover { border-color: var(--ink-soft); }
+.color-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15);
+}
+#color-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  background: #fff;
+  border: 1px solid var(--rule-soft);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: 12px;
+  width: 232px;
+}
+#color-dropdown[hidden] { display: none; }
+.color-dropdown-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+#fmt-color-custom {
+  padding: 2px 4px;
+  min-width: 0;
+  border: none;
+  background: none;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-decoration: underline;
+  cursor: pointer;
+}
+#fmt-color-custom:hover { color: var(--ink); }
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+.color-grid .color-swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  min-width: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px var(--rule);
+  cursor: pointer;
+}
+.color-grid .color-swatch.active { border-color: var(--accent); }
+#fmt-color {
+  position: absolute;
+  left: 12px;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+}
+.lasso-rect {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(255,90,31,0.08);
+  pointer-events: none;
+  z-index: 20;
+}
 
 /* ---- Handwriting control in the editor toolbar ---- */
 .hw-group { gap: 8px; }
@@ -824,8 +952,10 @@ span.hw-cta { cursor: default; }
    every answer rendered twice — the PDF's glyphs showing through 8% of the
    overlay's paper, with the browser's copy of the same string at different
    metrics on top. A hairline is all that marks a slot until you reach for it.
-   Hover/edit flips it: now the box covers the baked text and shows the
-   editable copy, which is the only moment that copy is worth looking at. */
+   Hover only lights the border: swapping the page's text for the browser's
+   copy under a passing cursor read as the answer changing font. Editing flips
+   it: now the box covers the baked text and shows the editable copy, set in
+   the user's handwriting when that's what the page is written in. */
 .overlay {
   position: absolute;
   border: 1px dashed rgba(31,29,26,0.16);
@@ -849,13 +979,26 @@ span.hw-cta { cursor: default; }
    overlay holds the only copy of what the user typed and has to paint it. */
 #editor-pages.stale-pages .ov-text {
   background: rgba(255, 253, 250, 0.98);
-  color: #000000;
+  color: var(--ov-ink, #000000);
 }
 .overlay:hover, .overlay.selected { border-color: var(--accent); }
 .overlay.selected { border-style: solid; }
-.overlay:hover .ov-text, .overlay.selected .ov-text {
+.overlay.selected .ov-text {
   background: rgba(255, 253, 250, 0.98);
-  color: #000000;
+  color: var(--ov-ink, #000000);
+}
+/* Handwriting isn't baked into the preview (see _rerender_job), so the box's
+   own text is the only copy on screen: always painted, never papered over,
+   and laid out by fitHwText to land where the stamp will put it. */
+#editor-pages.hw-live .overlay .ov-text {
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ov-ink, #000000);
+  caret-color: var(--ov-ink, #000000);
+  transform-origin: 0 0;
 }
 /* Ink, circles and graphs keep their own inline transparent background, so
    they show selection with an outline instead of a fill. */
@@ -1326,6 +1469,8 @@ span.hw-cta { cursor: default; }
       <div class="fmt-group">
         <button id="undo-btn" type="button" title="Undo (⌘Z)" disabled>↶</button>
         <button id="redo-btn" type="button" title="Redo (⇧⌘Z)" disabled>↷</button>
+        <button class="btn-ghost active" id="select-btn" type="button"
+                title="Select: drag across the page to select several boxes (V)">⬚ Select</button>
       </div>
       <div class="fmt-group">
         <!-- The scope chip is the whole point of this group: font and size have
@@ -1338,12 +1483,29 @@ span.hw-cta { cursor: default; }
           <option value="serif">Georgia</option>
           <option value="mono">Courier</option>
         </select>
-        <select id="fmt-size">
-          <option>8</option><option>9</option><option>10</option>
-          <option>11</option><option>12</option><option>14</option>
-          <option>16</option><option>18</option><option>20</option>
-          <option>24</option><option>28</option><option>32</option>
-        </select>
+        <div class="size-stepper">
+          <button type="button" id="fmt-size-dec" title="Smaller">−</button>
+          <input type="text" id="fmt-size" inputmode="decimal" autocomplete="off"
+                 value="11" title="Font size" aria-label="Font size">
+          <button type="button" id="fmt-size-inc" title="Larger">+</button>
+        </div>
+        <div class="color-picker-wrap">
+          <button type="button" id="fmt-color-btn" title="Text color"
+                  aria-haspopup="true" aria-expanded="false">
+            <span class="color-dot" id="fmt-color-dot" style="background:#000000"></span>
+          </button>
+          <div class="color-dropdown" id="color-dropdown" hidden>
+            <div class="color-dropdown-head">
+              <span>Default colors</span>
+              <button type="button" id="fmt-color-custom">Custom</button>
+            </div>
+            <div class="color-grid" id="color-grid"></div>
+            <!-- Stays in the layout (not display:none) so the native picker
+                 has somewhere to anchor when Custom opens it. -->
+            <input type="color" id="fmt-color" value="#000000" tabindex="-1" aria-hidden="true">
+          </div>
+        </div>
+
         <button class="fmt-apply-all" id="fmt-apply-all" type="button" hidden
                 title="Give every text box this font and size">Apply to all</button>
       </div>
@@ -1402,7 +1564,7 @@ span.hw-cta { cursor: default; }
       {% if donate_url %}<a class="btn-ghost donate-btn" href="{{ donate_url }}" target="_blank" rel="noopener">♥ Donate</a>{% endif %}
     </div>
     <p class="editor-help">
-      Click any answer to edit it. <kbd>⌘Z</kbd> undo · <kbd>⌘C</kbd>/<kbd>⌘V</kbd> copy a box ·
+      Click any answer to edit it. Drag across the page to select several. <kbd>⌘Z</kbd> undo · <kbd>⌘C</kbd>/<kbd>⌘V</kbd> copy a box ·
       <kbd>D</kbd> draw · <kbd>E</kbd> erase · <kbd>Esc</kbd> deselect
     </p>
     <div class="editor-pages" id="editor-pages"></div>
@@ -2092,7 +2254,7 @@ let activeOverlayId = null;  // currently focused overlay (drives the format too
 
 function newOvId() { return "ov_n" + (nextOvId++) + "_" + Math.random().toString(36).slice(2,6); }
 function ovDefaults() {
-  return { mode: "region", font: "sans", size: 11, bold: false, italic: false, underline: false };
+  return { mode: "region", font: "sans", size: 11, color: "#000000", bold: false, italic: false, underline: false };
 }
 function findOv(id) { return overlays.find(o => o.id === id); }
 function findOvEl(id) { return document.querySelector(`.overlay[data-id="${CSS.escape(id)}"]`); }
@@ -2194,18 +2356,92 @@ function redo() {
 // One selection concept for every kind of overlay: text boxes select by taking
 // focus, everything else by being clicked. Whatever is selected is what the
 // format controls, ⌘C and Delete act on.
+// A lasso that catches more than one overlay is a group selection: no single
+// active box, but the format controls, Delete and the drag handles act on
+// every member at once.
+let lassoIds = [];
+
 function clearSelection() {
+  lassoIds = [];
   document.querySelectorAll(".overlay.selected").forEach(el => el.classList.remove("selected"));
   setActiveOverlay(null);
   hideRefineBar();
 }
 
 function selectOverlay(el, ov) {
+  lassoIds = [];
   document.querySelectorAll(".overlay.selected").forEach(o => {
     if (o !== el) o.classList.remove("selected");
   });
   el.classList.add("selected");
   setActiveOverlay(ov.id);
+}
+
+function selectLasso(ids) {
+  if (ids.length === 1) {
+    const el = findOvEl(ids[0]);
+    if (el) selectOverlay(el, findOv(ids[0]));
+    return;
+  }
+  clearSelection();
+  if (!ids.length) return;
+  lassoIds = ids;
+  markLassoEls();
+  setActiveOverlay(null);
+}
+
+function markLassoEls() {
+  lassoIds.forEach(id => findOvEl(id)?.classList.add("selected"));
+}
+
+function overlayBounds(ov) {
+  return ov.kind === "ink" ? inkBBox(ov.points) : ov.bbox;
+}
+
+function deleteLasso() {
+  pushHistory();
+  const gone = new Set(lassoIds);
+  const pages = new Set(overlays.filter(o => gone.has(o.id)).map(o => o.page));
+  overlays = overlays.filter(o => !gone.has(o.id));
+  clearSelection();
+  pages.forEach(positionOverlaysOnPage);
+  markDirty();
+}
+
+// Group move: members slide together as CSS transforms while the pointer is
+// down, then the offset is written into the model once, as one undo step.
+// Returns false when `ov` isn't part of a group, so the caller does a solo drag.
+function startLassoDrag(e, handle, ov) {
+  if (lassoIds.length < 2 || !lassoIds.includes(ov.id)) return false;
+  e.preventDefault();
+  e.stopPropagation();
+  handle.setPointerCapture?.(e.pointerId);
+  const scale = pageScales[ov.page] || 1;
+  const startX = e.clientX, startY = e.clientY;
+  const els = lassoIds.map(findOvEl).filter(Boolean);
+  let dx = 0, dy = 0;
+  function onMove(ev) {
+    dx = ev.clientX - startX;
+    dy = ev.clientY - startY;
+    els.forEach(el => { el.style.transform = `translate(${dx}px, ${dy}px)`; });
+  }
+  function onUp() {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onUp);
+    els.forEach(el => { el.style.transform = ""; });
+    if (!dx && !dy) return;
+    pushHistory();
+    const members = lassoIds.map(findOv).filter(Boolean);
+    members.forEach(m => offsetOverlay(m, dx / scale, dy / scale));
+    new Set(members.map(m => m.page)).forEach(positionOverlaysOnPage);
+    markLassoEls();
+    markDirty();
+  }
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onUp);
+  return true;
 }
 
 function deleteOverlay(id) {
@@ -2251,7 +2487,14 @@ function renderResult(data) {
       const pt = pageSizes[i];
       const w = img.clientWidth;
       if (!pt || !w) { requestAnimationFrame(onReady); return; }
-      pageScales[i] = w / pt.width;
+      // Every autosave swaps this image's src, so this fires again after each
+      // save. Rebuilding the boxes then would throw the caret out of whichever
+      // one is being typed in; only do it when there's nothing placed yet or
+      // the page has changed size under them.
+      const scale = w / pt.width;
+      if (wrap.dataset.placed && scale === pageScales[i]) return;
+      pageScales[i] = scale;
+      wrap.dataset.placed = "1";
       positionOverlaysOnPage(i);
     };
     img.addEventListener("load", onReady);
@@ -2304,6 +2547,7 @@ function createOverlayEl(ov, scale) {
   txt.addEventListener("input", () => {
     pushHistory("text:" + ov.id);   // still holds the pre-keystroke text
     ov.text = txt.innerText;
+    fitHwText(txt, ov, pageScales[ov.page] || 1);
     markDirty(AUTOSAVE_TYPING_MS);
   });
   // A contenteditable pastes rich HTML by default, which drops styled markup
@@ -2314,6 +2558,7 @@ function createOverlayEl(ov, scale) {
     document.execCommand("insertText", false, plain);
   });
   txt.addEventListener("focus", () => {
+    if (lassoIds.length) clearSelection();
     el.classList.add("selected");
     setActiveOverlay(ov.id);
     showRefineBar();
@@ -2607,6 +2852,7 @@ function createInkOverlayEl(ov, scale) {
 
 function attachInkDragMove(handle, overlayEl, ov) {
   handle.addEventListener("pointerdown", e => {
+    if (startLassoDrag(e, handle, ov)) return;
     e.preventDefault();
     e.stopPropagation();
     handle.setPointerCapture?.(e.pointerId);
@@ -2633,7 +2879,47 @@ function attachInkDragMove(handle, overlayEl, ov) {
   });
 }
 
+// Mirrors the handwriting stamp (render._insert_handwriting_image and
+// font_render.render_text_png) so the text being edited is laid out where the
+// PDF will put it. Change these together with their Python counterparts.
+const HW_EM_INLINE = 16, HW_EM_REGION = 12, HW_THIN_H = 24, HW_BASE_SIZE = 11;
+const HW_BASELINE_RAISE = 0.30;
+const RENDER_PX = 110, LINE_BAND_PX = 150, BASELINE_FRAC = 0.74;
+const SPACE_FRAC = 0.32, TRACK_FRAC = 0.28, CROP_MARGIN_PX = 32;
+
+// Page-point geometry of one box's handwriting before any shrink-to-fit.
+function hwMetrics(ov) {
+  const thin = ov.bbox[3] - ov.bbox[1] < HW_THIN_H;
+  const sizeK = ov.size / HW_BASE_SIZE;
+  const unit = (thin ? HW_EM_INLINE : HW_EM_REGION) * sizeK / RENDER_PX;  // pt per render px
+  const fs = hwSettings.font_size / 100;
+  return { thin, sizeK, unit, em: RENDER_PX * fs * unit, band: LINE_BAND_PX * fs * unit };
+}
+
 function applyOverlayTextStyle(txt, ov, scale) {
+  txt.style.setProperty("--ov-ink", ov.color || "#000000");
+  if (hwOn) {
+    const m = hwMetrics(ov);
+    txt.style.fontFamily = '"PaperfillHand", cursive';
+    txt.style.fontSize = m.em * scale + "px";
+    txt.style.lineHeight = m.band * scale + "px";
+    // The stamper lays each word down tight and joins them with a fixed gap,
+    // so the font's own space advance is taken back out of word-spacing.
+    txt.style.wordSpacing = (SPACE_FRAC * hwSettings.word_spacing / 100 - hwFontSpace) + "em";
+    txt.style.letterSpacing = (hwSettings.letter_spacing / 100 - 1) * TRACK_FRAC + "em";
+    txt.style.whiteSpace = m.thin ? "pre" : "pre-wrap";
+    txt.style.width = m.thin ? "auto" : (ov.bbox[2] - ov.bbox[0]) * scale + "px";
+    // Handwriting has no bold/italic/underline; showing them would promise
+    // something the PDF won't have.
+    txt.style.fontWeight = "400";
+    txt.style.fontStyle = "normal";
+    txt.style.textDecoration = "none";
+    requestAnimationFrame(() => fitHwText(txt, ov, scale));
+    return;
+  }
+  for (const prop of ["lineHeight", "wordSpacing", "letterSpacing", "whiteSpace", "width", "transform"]) {
+    txt.style[prop] = "";
+  }
   txt.style.fontFamily = {
     serif: '"Georgia","Times New Roman",serif',
     mono: '"IBM Plex Mono",ui-monospace,"Courier New",monospace',
@@ -2642,6 +2928,31 @@ function applyOverlayTextStyle(txt, ov, scale) {
   txt.style.fontWeight = ov.bold ? "700" : "400";
   txt.style.fontStyle = ov.italic ? "italic" : "normal";
   txt.style.textDecoration = ov.underline ? "underline" : "none";
+}
+
+// Place and shrink the laid-out text the way the stamp places the PNG: an
+// inline blank sits on its underscore and shrinks to the blank's width, an
+// open response hangs from the top and shrinks to the region's height. Needs
+// layout, so it runs after the element is in the page and again on input.
+function fitHwText(txt, ov, scale) {
+  if (!hwOn || !txt.isConnected) return;
+  const m = hwMetrics(ov);
+  const [x0, y0, x1, y1] = ov.bbox;
+  const w = txt.offsetWidth / scale, h = txt.offsetHeight / scale;   // untransformed, pt
+  // Where the browser puts the first baseline inside a line box of height band.
+  const cssBase = (m.band - (hwFontAscent + hwFontDescent) * m.em) / 2 + hwFontAscent * m.em;
+  const margin = CROP_MARGIN_PX * m.unit;   // the PNG keeps this much blank either side
+  let k, top;
+  if (m.thin) {
+    k = Math.min(1, (x1 - x0) / (w + 2 * margin));
+    top = (y1 - y0) - 1 - HW_BASELINE_RAISE * HW_EM_INLINE * m.sizeK - k * cssBase;
+  } else {
+    const lines = Math.max(1, Math.round(h / m.band));
+    k = Math.min(1, (y1 - y0) / (lines * m.band));
+    top = k * (BASELINE_FRAC * m.band - cssBase);
+  }
+  const left = 1 + margin * k;
+  txt.style.transform = `translate(${left * scale}px, ${top * scale}px) scale(${k})`;
 }
 
 function attachResize(handle, overlayEl, ov) {
@@ -2661,6 +2972,8 @@ function attachResize(handle, overlayEl, ov) {
                  Math.max(origBbox[0] + 8, origBbox[2] + dx),
                  Math.max(origBbox[1] + 8, origBbox[3] + dy)];
       applyOverlayPosition(overlayEl, ov, scale);
+      const txt = overlayEl.querySelector(".ov-text");
+      if (hwOn && txt) applyOverlayTextStyle(txt, ov, scale);
     }
     function onUp(ev) {
       handle.removeEventListener("pointermove", onMove);
@@ -2688,6 +3001,7 @@ function applyOverlayPosition(el, ov, scale) {
 
 function attachDragMove(handle, overlayEl, ov) {
   handle.addEventListener("pointerdown", e => {
+    if (startLassoDrag(e, handle, ov)) return;
     e.preventDefault();
     e.stopPropagation();
     handle.setPointerCapture?.(e.pointerId);
@@ -2823,10 +3137,14 @@ function runEraser(wrap, pageIdx, scale, wrapRect, sx, sy) {
 
 function attachPageDrawHandlers(wrap, pageIdx) {
   wrap.addEventListener("pointerdown", e => {
-    // No tool armed: a click on bare paper means "deselect", the way clicking
-    // off an object works in every editor.
+    // No tool armed means the select tool: a click on bare paper deselects, a
+    // drag draws a lasso and selects every overlay it touches.
     if (!toolActive()) {
-      if (!e.target.closest(".overlay")) clearSelection();
+      if (e.target.closest(".overlay")) return;
+      if (e.button !== 0) return;
+      document.activeElement?.blur?.();
+      clearSelection();
+      startLasso(e, wrap, pageIdx);
       return;
     }
     e.preventDefault();
@@ -2893,12 +3211,58 @@ function attachPageDrawHandlers(wrap, pageIdx) {
   });
 }
 
+function startLasso(e, wrap, pageIdx) {
+  e.preventDefault();   // no native text-selection highlight while dragging
+  wrap.setPointerCapture?.(e.pointerId);
+  const scale = pageScales[pageIdx] || 1;
+  const wrapRect = wrap.getBoundingClientRect();
+  const sx = e.clientX - wrapRect.left;
+  const sy = e.clientY - wrapRect.top;
+  let rect = null;
+  let box = null;   // [x, y, w, h] in screen px, relative to the page
+  function onMove(ev) {
+    const cx = ev.clientX - wrapRect.left;
+    const cy = ev.clientY - wrapRect.top;
+    box = [Math.min(sx, cx), Math.min(sy, cy), Math.abs(cx - sx), Math.abs(cy - sy)];
+    if (!rect) {
+      if (box[2] < 4 && box[3] < 4) return;   // still a click, not a drag
+      rect = document.createElement("div");
+      rect.className = "lasso-rect";
+      wrap.appendChild(rect);
+    }
+    rect.style.left = box[0] + "px";
+    rect.style.top = box[1] + "px";
+    rect.style.width = box[2] + "px";
+    rect.style.height = box[3] + "px";
+  }
+  function onUp() {
+    wrap.removeEventListener("pointermove", onMove);
+    wrap.removeEventListener("pointerup", onUp);
+    wrap.removeEventListener("pointercancel", onUp);
+    if (!rect) return;
+    rect.remove();
+    const [x, y, w, h] = box.map(v => v / scale);
+    // Touching counts, not just full containment: a thin answer line is hard
+    // to enclose completely without also sweeping up its neighbours.
+    const hits = overlays.filter(o => {
+      if (o.page !== pageIdx) return false;
+      const [x0, y0, x1, y1] = overlayBounds(o);
+      return x0 < x + w && x1 > x && y0 < y + h && y1 > y;
+    });
+    selectLasso(hits.map(o => o.id));
+  }
+  wrap.addEventListener("pointermove", onMove);
+  wrap.addEventListener("pointerup", onUp);
+  wrap.addEventListener("pointercancel", onUp);
+}
+
 // Append a new overlay (optionally prefilled) and, if asked, focus it for
 // editing. Used by both the manual "+ Add box" and the AI snip flow.
 function addOverlayAt(pageIdx, bbox, text, { focus = false } = {}) {
   const ov = { ...ovDefaults(), id: newOvId(), page: pageIdx, bbox, text: text || "" };
   ov.font = docFont || ov.font;   // adopt the document's font
   ov.size = docSize || ov.size;
+  ov.color = docColor;
   pushHistory();
   overlays.push(ov);
   positionOverlaysOnPage(pageIdx);
@@ -2928,12 +3292,14 @@ function setDrawMode(mode) {  // mode: "add" | "snip" | "draw" | "erase" | null
   $("snip-btn").classList.toggle("active", snipMode);
   $("draw-btn").classList.toggle("active", inkMode);
   $("erase-btn").classList.toggle("active", eraseMode);
+  $("select-btn").classList.toggle("active", !toolActive());
   document.querySelectorAll(".editor-page").forEach(p => {
     p.classList.toggle("adding", toolActive());
     p.classList.toggle("erasing", eraseMode);
   });
 }
 
+$("select-btn").addEventListener("click", () => setDrawMode(null));
 $("add-box-btn").addEventListener("click", () => setDrawMode(addMode ? null : "add"));
 $("snip-btn").addEventListener("click", () => setDrawMode(snipMode ? null : "snip"));
 $("draw-btn").addEventListener("click", () => setDrawMode(inkMode ? null : "draw"));
@@ -3017,15 +3383,64 @@ async function handleSnip(pageIdx, snipBbox) {
 // document-wide equivalent — so those three still disable with nothing selected.
 let docFont = "sans";
 let docSize = 11;
+let docColor = "#000000";
 
 function reflectDocFontUI() {
   const textOverlays = overlays.filter(o => !o.kind);
   const fonts = new Set(textOverlays.map(o => o.font).filter(Boolean));
   docFont = fonts.size === 1 ? [...fonts][0] : docFont;
-  const sizes = new Set(textOverlays.map(o => Math.round(o.size || 11)).filter(Boolean));
+  const sizes = new Set(textOverlays.map(o => roundSize(o.size || 11)));
   docSize = sizes.size === 1 ? [...sizes][0] : docSize;
+  const colors = new Set(textOverlays.map(o => o.color || "#000000"));
+  docColor = colors.size === 1 ? [...colors][0] : docColor;
   $("fmt-font").value = docFont;
   $("fmt-size").value = String(docSize);
+  reflectColorUI(docColor);
+}
+
+const SIZE_MIN = 1, SIZE_MAX = 400;
+function roundSize(n) { return Math.round(n * 10) / 10; }
+
+function lassoTextOverlays() {
+  return lassoIds.map(findOv).filter(o => o && !o.kind);
+}
+
+// A group selection shows its first text box's values, the same way a
+// multi-selection reads in any editor with mixed formatting.
+function reflectLassoUI() {
+  const texts = lassoTextOverlays();
+  ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).disabled = !texts.length);
+  const scope = $("fmt-scope");
+  scope.textContent = `${lassoIds.length} selected`;
+  scope.classList.add("one-box");
+  $("fmt-apply-all").hidden = true;
+  if (!texts.length) return;
+  const first = texts[0];
+  $("fmt-font").value = first.font;
+  $("fmt-size").value = String(roundSize(first.size));
+  reflectColorUI(first.color || "#000000");
+  ["bold","italic","underline"].forEach(k =>
+    $("fmt-" + k).classList.toggle("active", texts.every(o => o[k])));
+}
+
+function applyLassoFmt(patch) {
+  const texts = lassoTextOverlays();
+  if (!texts.length) return;
+  pushHistory("lassofmt:" + lassoIds.join(",") + ":" + Object.keys(patch).join(","));
+  texts.forEach(o => {
+    Object.assign(o, patch);
+    const txt = findOvEl(o.id)?.querySelector(".ov-text");
+    if (txt) applyOverlayTextStyle(txt, o, pageScales[o.page] || 1);
+  });
+  reflectLassoUI();
+  markDirty();
+}
+
+// Every picker routes through here: one box, a lasso group, or the document.
+function applyFmt(patch) {
+  if (activeOverlayId) applyActiveFmt(patch);
+  else if (lassoIds.length) applyLassoFmt(patch);
+  else applyDocFontPatch(patch);
 }
 
 function setActiveOverlay(id) {
@@ -3038,6 +3453,7 @@ function setActiveOverlay(id) {
   const scope = $("fmt-scope");
   if (!textOv) {
     ["fmt-bold","fmt-italic","fmt-underline"].forEach(c => $(c).classList.remove("active"));
+    if (!id && lassoIds.length) { reflectLassoUI(); return; }
     scope.textContent = "All text";
     scope.classList.remove("one-box");
     $("fmt-apply-all").hidden = true;
@@ -3048,7 +3464,8 @@ function setActiveOverlay(id) {
   scope.classList.add("one-box");
   $("fmt-apply-all").hidden = false;
   $("fmt-font").value = textOv.font;
-  $("fmt-size").value = String(Math.round(textOv.size));
+  $("fmt-size").value = String(roundSize(textOv.size));
+  reflectColorUI(textOv.color || "#000000");
   $("fmt-bold").classList.toggle("active", !!textOv.bold);
   $("fmt-italic").classList.toggle("active", !!textOv.italic);
   $("fmt-underline").classList.toggle("active", !!textOv.underline);
@@ -3071,6 +3488,10 @@ function applyActiveFmt(patch) {
 }
 
 function toggleFmt(key) {
+  if (!activeOverlayId && lassoIds.length) {
+    applyLassoFmt({ [key]: !lassoTextOverlays().every(o => o[key]) });
+    return;
+  }
   if (!activeOverlayId) return;
   const ov = findOv(activeOverlayId);
   if (!ov) return;
@@ -3081,16 +3502,21 @@ function toggleFmt(key) {
 // overlays don't have a font). Used when the pickers are touched with
 // nothing selected.
 function applyDocFontPatch(patch) {
-  pushHistory();
+  pushHistory("docfmt:" + Object.keys(patch).join(","));
   if (patch.font) docFont = patch.font;
   if (patch.size) docSize = patch.size;
+  if (patch.color) docColor = patch.color;
   overlays.filter(o => !o.kind).forEach(o => Object.assign(o, patch));
+  restyleAllOverlays();
+  markDirty();
+}
+
+function restyleAllOverlays() {
   document.querySelectorAll(".overlay").forEach(el => {
     const ov = findOv(el.dataset.id);
     const txt = el.querySelector(".ov-text");
     if (ov && txt) applyOverlayTextStyle(txt, ov, pageScales[ov.page] || 1);
   });
-  markDirty();
 }
 
 // ---- Handwriting toggle (Pro) ------------------------------------------
@@ -3101,6 +3527,12 @@ function applyDocFontPatch(patch) {
 const hwToggle = $("hw-toggle");
 let hwFontId = null;   // the user's own font id, loaded from /api/fonts
 let hwOn = false;
+// The same OTF the server writes with, loaded as a web font: in handwriting
+// mode the boxes are typed in it directly (see fitHwText). hwSettings are the
+// user's tuned knobs; the font metrics are per-em and measured once it loads.
+let hwFontReady = false;
+let hwSettings = { font_size: 100, letter_spacing: 100, word_spacing: 100 };
+let hwFontAscent = 0.95, hwFontDescent = 0.35, hwFontSpace = 0.3;
 
 async function loadMyFont() {
   if (!hwToggle) return;
@@ -3110,6 +3542,25 @@ async function loadMyFont() {
     const data = await r.json();
     hwFontId = (data.fonts && data.fonts[0]) ? data.fonts[0].id : null;
   } catch (_) { /* leave disabled */ }
+  if (!hwFontId || hwFontReady) return;
+  try {
+    const [face, settings] = await Promise.all([
+      new FontFace("PaperfillHand", `url(/api/fonts/${hwFontId}/font.otf)`).load(),
+      fetch(`/api/fonts/${hwFontId}/settings`).then(r => r.json()),
+    ]);
+    document.fonts.add(face);
+    hwSettings = { ...hwSettings, ...settings.settings };
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.font = '100px "PaperfillHand"';
+    const probe = ctx.measureText("x");
+    hwFontAscent = probe.fontBoundingBoxAscent / 100;
+    hwFontDescent = probe.fontBoundingBoxDescent / 100;
+    hwFontSpace = ctx.measureText(" ").width / 100;
+    hwFontReady = true;
+    restyleAllOverlays();
+  } catch (ex) {
+    console.warn("handwriting web font unavailable:", ex);
+  }
 }
 
 async function applyHwStyle(styleVal) {
@@ -3149,24 +3600,112 @@ if (hwToggle) {
 
 // Both pickers mark the document dirty through applyActiveFmt /
 // applyDocFontPatch, so autosave re-renders them like any other edit.
-$("fmt-font").addEventListener("change", e => {
-  if (activeOverlayId) applyActiveFmt({ font: e.target.value });
-  else applyDocFontPatch({ font: e.target.value });
+$("fmt-font").addEventListener("change", e => applyFmt({ font: e.target.value }));
+
+// The size field only commits on Enter or blur, so typing "63.9" doesn't
+// restyle the page at "6" and "63" on the way there.
+const sizeInput = $("fmt-size");
+function commitSize(size) {
+  size = roundSize(Math.min(SIZE_MAX, Math.max(SIZE_MIN, size)));
+  sizeInput.value = String(size);
+  applyFmt({ size });
+}
+sizeInput.addEventListener("change", () => {
+  const size = parseFloat(sizeInput.value);
+  if (Number.isFinite(size)) commitSize(size);
+  else setActiveOverlay(activeOverlayId);   // put the real value back
 });
-$("fmt-size").addEventListener("change", e => {
-  const size = parseFloat(e.target.value) || 11;
-  if (activeOverlayId) applyActiveFmt({ size });
-  else applyDocFontPatch({ size });
+sizeInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); sizeInput.blur(); }
+  else if (e.key === "Escape") {
+    e.stopPropagation();   // cancel the edit, not the selection
+    setActiveOverlay(activeOverlayId);
+    sizeInput.blur();
+  }
 });
+sizeInput.addEventListener("focus", () => sizeInput.select());
+// Keep the text box focused through a click on -/+, so the caret and the
+// refine bar survive the way they do for the other toolbar buttons.
+["fmt-size-dec", "fmt-size-inc"].forEach(id => {
+  $(id).addEventListener("mousedown", e => e.preventDefault());
+  $(id).addEventListener("click", () => {
+    const current = parseFloat(sizeInput.value) || docSize;
+    // Whole-number steps: 63.9 goes to 64 and 63, not 64.9 and 62.9.
+    commitSize(id === "fmt-size-inc" ? Math.floor(current) + 1 : Math.ceil(current) - 1);
+  });
+});
+
+const TEXT_COLORS = [
+  "#000000", "#4a4a4a", "#8a8a8a", "#c8c8c8", "#ffffff", "#7a3b12",
+  "#d3232f", "#ff5c8a", "#ff8a3d", "#f5b800", "#1a7f37", "#7ed957",
+  "#1a56db", "#1f9bd6", "#3ed6d6", "#0b2a8a", "#6c3fd6", "#c55fdc",
+];
+const colorDropdown = $("color-dropdown");
+const colorBtn = $("fmt-color-btn");
+const colorInput = $("fmt-color");
+
+TEXT_COLORS.forEach(c => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "color-swatch";
+  b.dataset.color = c;
+  b.style.background = c;
+  b.title = c;
+  b.addEventListener("mousedown", e => e.preventDefault());
+  b.addEventListener("click", () => {
+    closeColorDropdown();
+    applyFmt({ color: c });
+    reflectColorUI(c);
+  });
+  $("color-grid").appendChild(b);
+});
+
+function reflectColorUI(color) {
+  colorInput.value = color;
+  $("fmt-color-dot").style.background = color;
+  document.querySelectorAll(".color-swatch").forEach(s =>
+    s.classList.toggle("active", s.dataset.color === color.toLowerCase()));
+}
+
+function closeColorDropdown() {
+  colorDropdown.setAttribute("hidden", "");
+  colorBtn.setAttribute("aria-expanded", "false");
+}
+colorBtn.addEventListener("mousedown", e => e.preventDefault());
+colorBtn.addEventListener("click", e => {
+  e.stopPropagation();
+  if (colorDropdown.hasAttribute("hidden")) {
+    colorDropdown.removeAttribute("hidden");
+    colorBtn.setAttribute("aria-expanded", "true");
+  } else {
+    closeColorDropdown();
+  }
+});
+document.addEventListener("click", e => {
+  if (!colorDropdown.hasAttribute("hidden") && !e.target.closest(".color-picker-wrap")) closeColorDropdown();
+});
+$("fmt-color-custom").addEventListener("mousedown", e => e.preventDefault());
+$("fmt-color-custom").addEventListener("click", () => {
+  if (colorInput.showPicker) colorInput.showPicker();
+  else colorInput.click();
+});
+// "input" fires continuously while dragging around the native picker; the
+// history key folds that whole drag into one undo step.
+colorInput.addEventListener("input", () => {
+  applyFmt({ color: colorInput.value });
+  reflectColorUI(colorInput.value);
+});
+colorInput.addEventListener("change", closeColorDropdown);
+
 // Push the selected box's font and size onto every other text box. This is the
 // document-wide path made reachable *with* a box selected; with nothing
-// selected the two pickers already apply to everything, which the scope chip
-// now says out loud.
+// selected the pickers already apply to everything, which the scope chip
+// says out loud.
 $("fmt-apply-all").addEventListener("click", () => {
   const ov = activeOverlayId ? findOv(activeOverlayId) : null;
   if (!ov || ov.kind) return;
-  applyDocFontPatch({ font: ov.font, size: ov.size });
-  toast(`Every text box is now ${$("fmt-font").selectedOptions[0].text} ${Math.round(ov.size)}`);
+  applyDocFontPatch({ font: ov.font, size: ov.size, color: ov.color || "#000000" });
+  toast(`Every text box is now ${$("fmt-font").selectedOptions[0].text} ${roundSize(ov.size)}`);
 });
 $("fmt-bold").addEventListener("click", () => toggleFmt("bold"));
 $("fmt-italic").addEventListener("click", () => toggleFmt("italic"));
@@ -3252,7 +3791,13 @@ document.addEventListener("keydown", e => {
 
   if (e.key === "Escape") {
     if (toolActive()) exitDrawModes();
-    else if (activeOverlayId) { active?.blur?.(); clearSelection(); }
+    else if (activeOverlayId || lassoIds.length) { active?.blur?.(); clearSelection(); }
+    return;
+  }
+
+  if ((e.key === "Delete" || e.key === "Backspace") && !inText && !inField && lassoIds.length) {
+    e.preventDefault();
+    deleteLasso();
     return;
   }
 
@@ -3270,6 +3815,7 @@ document.addEventListener("keydown", e => {
   if (k === "d") { e.preventDefault(); setDrawMode(inkMode ? null : "draw"); }
   else if (k === "e") { e.preventDefault(); setDrawMode(eraseMode ? null : "erase"); }
   else if (k === "a") { e.preventDefault(); setDrawMode(addMode ? null : "add"); }
+  else if (k === "v") { e.preventDefault(); setDrawMode(null); }
 });
 
 $("undo-btn").addEventListener("click", undo);
@@ -3554,6 +4100,8 @@ function reflectHwState(styleId) {
     hwToggle.classList.toggle("active", hwOn);
     hwToggle.setAttribute("aria-pressed", hwOn ? "true" : "false");
   }
+  $("editor-pages").classList.toggle("hw-live", hwOn);
+  restyleAllOverlays();
 }
 
 async function restoreJob(jobId) {

@@ -442,7 +442,9 @@ def build_font(sources, out_path: str, family: str = "Paperfill Hand") -> str:
     fb = FontBuilder(UPM, isTTF=False)
     fb.setupGlyphOrder(glyph_order)
     fb.setupCharacterMap(cmap)
-    fb.setupCFF(family, {"FullName": family}, charstrings, {})
+    # The CFF name is a PostScript name, and browsers refuse a font whose
+    # PostScript name has a space in it.
+    fb.setupCFF(family.replace(" ", ""), {"FullName": family}, charstrings, {})
     metrics = {n: (advances[n], 0) for n in glyph_order}
     fb.setupHorizontalMetrics(metrics)
     fb.setupHorizontalHeader(ascent=ASCENT, descent=DESCENT)

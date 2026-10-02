@@ -44,9 +44,12 @@ HW_BASELINE_RAISE = 0.30
 
 _HW_SCALE_INLINE = HW_EM_INLINE / RENDER_PX
 _HW_SCALE_REGION = HW_EM_REGION / RENDER_PX
+# The editor's size picker is in points and defaults to 11. Handwriting scales
+# relative to that, so an untouched answer keeps the ems above.
+HW_BASE_SIZE = 11.0
 
 
-def hw_wrap_width(bbox) -> float | None:
+def hw_wrap_width(bbox, size: float = HW_BASE_SIZE) -> float | None:
     """Render-space pixel width to wrap a handwriting answer to so it flows onto
     multiple lines at the open-response em height instead of being squeezed onto
     one line. Returns None for thin inline-blank slots, which stay on a single
@@ -55,9 +58,9 @@ def hw_wrap_width(bbox) -> float | None:
     box_h = bbox[3] - bbox[1]
     if box_h < HW_THIN_H:
         return None
-    # A band scaled by _HW_SCALE_REGION should stay within box_w, so the wrap
+    # A band scaled by the region scale should stay within box_w, so the wrap
     # width in render-space px is box_w divided by that scale.
-    return box_w / _HW_SCALE_REGION
+    return box_w / (_HW_SCALE_REGION * size / HW_BASE_SIZE)
 
 _OV_DEFAULTS = {
     "mode": "region",
@@ -137,6 +140,9 @@ def _html_escape(s: str) -> str:
              .replace("\n", "<br>"))
 
 
+_LINE_SPACING = 1.15
+
+
 def _overlay_to_html(ov: dict) -> str | None:
     text = (ov.get("text") or "").strip()
     if not text:
@@ -153,8 +159,8 @@ def _overlay_to_html(ov: dict) -> str | None:
         f"font-weight: {weight}; "
         f"font-style: {style_italic}; "
         f"text-decoration: {decoration}; "
-        f"color: #000000; "
-        f"line-height: 1.15; "
+        f"color: {ov.get('color') or '#000000'}; "
+        f"line-height: {_LINE_SPACING}; "
         f"margin: 0; padding: 0;"
     )
     return f'<p style="{css}">{_html_escape(text)}</p>'
@@ -170,13 +176,31 @@ _WIDEN_STEP = 1.12
 _WIDEN_TRIES = 4
 
 
-def _widest_word(ov: dict) -> float:
-    """Width of the longest unbreakable run in an answer, at its own size."""
+def _single_line(ov: dict) -> bool:
+    """Whether the slot has room for a second line of text.
+
+    A blank on a ruled line does not: anything that wraps there lands on top of
+    whatever is printed underneath. So the answer has to go on one line, however
+    wide that turns out to be.
+    """
+    _, y0, _, y1 = ov["bbox"]
+    return y1 - y0 < float(ov.get("size", 11)) * _LINE_SPACING * 2
+
+
+def _layout_width(ov: dict) -> float:
+    """How wide the box has to be before the answer will lay out inside it.
+
+    A one-line slot needs the width of the whole answer; anything with room to
+    wrap only needs to clear its longest unbreakable word.
+    """
     faces = _BASE14.get(ov.get("font", "sans"), _BASE14["sans"])
     fontname = faces[bool(ov.get("bold")) + 2 * bool(ov.get("italic"))]
     size = float(ov.get("size", 11))
+    text = ov.get("text") or ""
+    if _single_line(ov):
+        return fitz.get_text_length(text, fontname=fontname, fontsize=size)
     return max((fitz.get_text_length(w, fontname=fontname, fontsize=size)
-                for w in (ov.get("text") or "").split()), default=0.0)
+                for w in text.split()), default=0.0)
 
 
 def _insert_answer(page, ov: dict, html: str) -> None:
@@ -186,20 +210,29 @@ def _insert_answer(page, ov: dict, html: str) -> None:
     answer in a small blank came out at a size nobody chose and disagreed with
     the box the editor draws around it. Slides spills instead, so we spill: the
     slot fixes the top-left corner and the wrap width, and whatever doesn't fit
-    runs past the bottom edge. A word too long to wrap is the exception —
-    insert_htmlbox lays out nothing at all rather than let a line exceed its
-    rect, so the slot has to widen to that word first, the same widening
+    runs past the bottom edge. Text too wide for the line it sits on is the
+    exception — insert_htmlbox lays out nothing at all rather than let a line
+    exceed its rect, so the slot has to widen to it first, the same widening
     `min-width: min-content` does in the editor.
 
     How wide is a guess and then a retry: the HTML engine picks its own faces
     for "serif" and friends, and its serif runs about 15% wider than the Times
     we measure with, so a width derived from the measurement alone gets refused.
     A refused insert draws nothing, which is what makes retrying in place safe.
+
+    A one-line slot is the case where that retry has to be forced. Given room
+    below, the engine wraps rather than refusing, and a measurement that came up
+    short comes out as a stack of fragments instead of an answer. Holding the
+    rect to the height of the slot turns the wrap back into a refusal, so the
+    same widening loop settles it.
     """
-    x0, y0, x1, _ = ov["bbox"]
-    width = max(x1 - x0, _widest_word(ov))
+    x0, y0, x1, y1 = ov["bbox"]
+    size = float(ov.get("size", 11))
+    bottom = (y0 + max(y1 - y0, size * _LINE_SPACING + 1)
+              if _single_line(ov) else page.rect.y1)
+    width = max(x1 - x0, _layout_width(ov))
     for _ in range(_WIDEN_TRIES):
-        rect = fitz.Rect(x0, y0, min(page.rect.x1, x0 + width), page.rect.y1)
+        rect = fitz.Rect(x0, y0, min(page.rect.x1, x0 + width), bottom)
         if page.insert_htmlbox(rect, html, scale_low=1)[0] >= 0:
             return
         if rect.x1 >= page.rect.x1:
@@ -235,7 +268,9 @@ def _already_printed(page, bbox, text: str) -> bool:
 
 
 def _insert_handwriting_image(page, bbox, png_bytes: bytes,
-                              pen_thickness_mm: float | None = None) -> None:
+                              pen_thickness_mm: float | None = None,
+                              size: float = HW_BASE_SIZE,
+                              color: str | None = None) -> None:
     """Stamp a transparent handwriting PNG into the slot at a consistent writing
     size. The PNG is a stack of fixed-height (LINE_BAND_PX) line bands drawn at
     RENDER_PX em; scaling by _HW_SCALE lands the em at HW_EM_PX, so every answer
@@ -249,7 +284,10 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes,
     (including any shrink-to-fit for an oversized answer) is only known at this
     point. That's what makes the millimetre setting land as an actual physical
     stroke width on the page regardless of how big or small the answer got
-    written."""
+    written.
+
+    ``size`` is the box's point size from the editor, applied relative to
+    HW_BASE_SIZE; ``color`` is a #rrggbb ink colour (the PNG itself is black)."""
     import io
     import numpy as np
     from PIL import Image
@@ -261,12 +299,13 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes,
     img_w, img_h = img.size
     if not (img_w and img_h):
         return
+    size_k = size / HW_BASE_SIZE
 
     if box_h < HW_THIN_H:
         # Inline blank: single line, written large. Only shrink if the answer
         # would overrun the blank's width. Anchor the glyph baseline onto the
         # underscore (~y1) so writing sits on the line with descenders below it.
-        scale = _HW_SCALE_INLINE
+        scale = _HW_SCALE_INLINE * size_k
         if img_w * scale > box_w:
             scale = box_w / img_w
         draw_w, draw_h = img_w * scale, img_h * scale
@@ -274,28 +313,31 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes,
         # A single-line image is exactly one band tall, so its baseline sits at
         # BASELINE_FRAC of img_h — derive it from the image so a font-size-scaled
         # band (taller/shorter than LINE_BAND_PX) still lands on the underscore.
-        baseline_y = y1 - 1 - HW_BASELINE_RAISE * HW_EM_INLINE
+        baseline_y = y1 - 1 - HW_BASELINE_RAISE * HW_EM_INLINE * size_k
         top = baseline_y - BASELINE_FRAC * img_h * scale
         rect = fitz.Rect(x0 + 1, top, x0 + 1 + draw_w, top + draw_h)
     else:
         # Open-response region: wrapped lines, top-anchored next to the question.
         # If the wrapped block is taller than the region, scale it down to fit.
-        scale = _HW_SCALE_REGION
+        scale = _HW_SCALE_REGION * size_k
         if img_h * scale > box_h:
             scale = box_h / img_h
         draw_w, draw_h = img_w * scale, img_h * scale
         rect = fitz.Rect(x0 + 1, y0, x0 + 1 + draw_w, y0 + draw_h)
 
-    if pen_thickness_mm:
-        # scale maps this PNG's own render-px to page-pt, so the render-px
-        # width that will land at the target mm is the physical target
-        # (converted to pt) divided by that same scale.
-        target_render_px = (pen_thickness_mm / MM_PER_PT) / scale
+    ink = _hex_to_rgb(color) if color else (0.0, 0.0, 0.0)
+    if pen_thickness_mm or any(ink):
         # np.array (not asarray): Pillow hands out its pixel buffer read-only,
-        # so asarray gives a view that raises on the alpha assignment below —
+        # so asarray gives a view that raises on the assignments below —
         # which the caller swallows, silently typesetting the answer instead.
         rgba = np.array(img.convert("RGBA"), dtype=np.uint8)
-        rgba[..., 3] = calibrate_stroke(rgba[..., 3], target_render_px)
+        if pen_thickness_mm:
+            # scale maps this PNG's own render-px to page-pt, so the render-px
+            # width that will land at the target mm is the physical target
+            # (converted to pt) divided by that same scale.
+            target_render_px = (pen_thickness_mm / MM_PER_PT) / scale
+            rgba[..., 3] = calibrate_stroke(rgba[..., 3], target_render_px)
+        rgba[..., :3] = [round(c * 255) for c in ink]
         buf = io.BytesIO()
         Image.fromarray(rgba, "RGBA").save(buf, format="PNG")
         png_bytes = buf.getvalue()
@@ -403,7 +445,9 @@ def stamp_overlays(doc, overlays: list[dict],
         png = images.get(ov.get("id"))
         if png:
             try:
-                _insert_handwriting_image(page, ov["bbox"], png, pen_thickness_mm)
+                _insert_handwriting_image(page, ov["bbox"], png, pen_thickness_mm,
+                                          float(ov.get("size", HW_BASE_SIZE)),
+                                          ov.get("color"))
                 continue
             except Exception:
                 pass  # fall through to text rendering on any image failure
