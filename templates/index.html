@@ -486,8 +486,9 @@ button {
 .hw-group { gap: 8px; }
 /* Same shape and type as every other toolbar button. Declared explicitly
    (rather than inherited from the global `button` rule) because this control
-   renders as an <a> when it links to pricing or onboarding, and only as a
-   <button> once a font exists. */
+   renders as an <a> when it links to pricing or onboarding, a plain <span>
+   when Pro isn't on sale and there's nowhere to link, and a <button> once a
+   font exists. */
 .hw-cta {
   display: inline-flex;
   align-items: center;
@@ -516,6 +517,7 @@ button {
   border-color: var(--accent);
 }
 .hw-cta.locked { color: var(--accent-deep); border-color: var(--rule); }
+span.hw-cta { cursor: default; }
 .hw-cta.busy { opacity: 0.6; pointer-events: none; }
 .hw-redo {
   font-family: var(--sans);
@@ -1151,7 +1153,7 @@ button {
         {% else %}
           <span class="tier-badge">Free</span>
           <span class="acct-meter" id="credits-left-chip">{{ '%g'|format(credits_left) }}/{{ free_daily_credits }} credits left today</span>
-          <a class="upgrade" href="{{ url_for('pricing') }}">Upgrade to Pro</a>
+          {% if payments_enabled %}<a class="upgrade" href="{{ url_for('pricing') }}">Upgrade to Pro</a>{% endif %}
         {% endif %}
       </span>
       <span class="acct acct-right">
@@ -1188,9 +1190,11 @@ button {
   <!-- ===== STAGE 1: Upload ===== -->
   <section class="stage active" id="stage-upload">
 
-    {% if not is_pro %}
+    {% if not is_pro and payments_enabled %}
     <!-- Free-tier upgrade card. The benefit list comes from pro_benefits in
-         app.py so it can't drift from the pricing page. -->
+         app.py so it can't drift from the pricing page. Hidden entirely when
+         Pro isn't on sale — the credit meter in the masthead still shows what's
+         left, and setCreditsLeft tolerates the card being absent. -->
     <div class="upgrade-card" id="upgrade-card">
       <div class="upgrade-copy">
         <div class="upgrade-head">
@@ -1344,7 +1348,11 @@ button {
       </div>
       <div class="fmt-group hw-group">
         {% if not is_pro %}
+          {% if payments_enabled %}
           <a class="hw-cta locked" href="{{ url_for('pricing') }}" title="Fill in your own handwriting, a Pro feature">Handwriting (Pro)</a>
+          {% else %}
+          <span class="hw-cta locked" title="Fill in your own handwriting, a Pro feature">Handwriting (Pro)</span>
+          {% endif %}
         {% elif has_font %}
           <button class="hw-cta" id="hw-toggle" type="button" aria-pressed="false" title="Fill the worksheet in your own handwriting">My handwriting</button>
           <a class="hw-redo" href="{{ url_for('handwriting_page') }}" title="Adjust or rebuild your handwriting">adjust</a>

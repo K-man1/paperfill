@@ -202,6 +202,7 @@ def _inject_auth_flags():
         "acct_name": session.get("user_name", ""),
         "acct_email": session.get("user_email", ""),
         "acct_picture": session.get("user_picture", ""),
+        "payments_enabled": payments_enabled(),
         "whop_checkout_link": WHOP_CHECKOUT_LINK,
         "pro_price": PRO_PRICE,
         # Free-tier meter. Pro is unmetered, so credits_left is None there and
@@ -318,6 +319,37 @@ WHOP_WEBHOOK_SECRET = os.environ.get("WHOP_WEBHOOK_SECRET", "")
 # so it can be bumped without touching markup.
 PRO_PRICE = os.environ.get("PRO_PRICE", "$10/yr")
 
+# Master switch for selling Pro. Off takes down the whole buying path — the
+# pricing page, the post-checkout landing page, the Whop webhook and every
+# upgrade call-to-action — without touching what Pro *is*: free accounts keep
+# their daily credits, Pro-only features stay Pro-only, and existing members
+# (paid, comped from /admin, or admin accounts) are unaffected. Use it to pull
+# billing while a payment provider is broken or between providers.
+#
+# PAYMENTS sets the boot default; the admin console writes payments_enabled.txt
+# and that wins from then on, so billing can be stopped without a redeploy. The
+# file is read per request (like the ad settings) so all gunicorn workers agree.
+PAYMENTS_DEFAULT = os.environ.get("PAYMENTS", "1") != "0"
+PAYMENTS_PATH = BASE_DIR / "payments_enabled.txt"
+
+
+def payments_enabled() -> bool:
+    try:
+        return PAYMENTS_PATH.read_text().strip() == "1"
+    except OSError:
+        return PAYMENTS_DEFAULT
+
+
+def set_payments_enabled(enabled: bool) -> None:
+    PAYMENTS_PATH.write_text("1" if enabled else "0")
+
+
+def _upgrade_url() -> str | None:
+    """Where to send someone who just hit a Pro wall, or None when there's
+    nothing to sell them. Callers must handle None — /pricing 404s while
+    payments are off, so linking to it anyway would be a dead end."""
+    return url_for("pricing") if payments_enabled() else None
+
 
 def pro_required(f):
     """Gate an /api/* route behind the Pro tier. Returns 403 if not signed in,
@@ -329,8 +361,10 @@ def pro_required(f):
         if not session.get("role"):
             return jsonify({"error": "authentication required"}), 403
         if not _is_pro():
-            return jsonify({"error": "Pro required",
-                            "upgrade_url": url_for("pricing")}), 402
+            body = {"error": "Pro required"}
+            if upgrade := _upgrade_url():
+                body["upgrade_url"] = upgrade
+            return jsonify(body), 402
         return f(*args, **kwargs)
     return wrapper
 
@@ -340,13 +374,18 @@ def _credit_limit_hit():
     None if the call may go ahead. Pro is unmetered and never hits it."""
     if _is_pro() or usage.remaining_credits(_user_key()) > 0:
         return None
-    return jsonify({
+    upgrade = _upgrade_url()
+    tail = (" Upgrade to Pro for unlimited fills." if upgrade
+            else " They reset at midnight UTC.")
+    body = {
         "error": f"You've used all {usage.FREE_DAILY_CREDITS} free AI credits "
-                 "for today. Upgrade to Pro for unlimited fills.",
+                 f"for today.{tail}",
         "limit_reached": True,
         "credits_left": 0,
-        "upgrade_url": url_for("pricing"),
-    }), 402
+    }
+    if upgrade:
+        body["upgrade_url"] = upgrade
+    return jsonify(body), 402
 
 oauth = OAuth(app)
 oauth.register(
@@ -570,6 +609,11 @@ def _require_pro_for_ww2explained():
             return jsonify({"error": "Pro required on this domain"}), 402
         return None
     if not _is_pro():
+        if not payments_enabled():
+            # Every other path on this host is Pro-only and /pricing is down
+            # with payments, so there is nowhere to send them.
+            abort(403, "This site is for Pro members, and Pro isn't on sale "
+                       "right now.")
         return redirect(url_for("pricing", ww2_only=1))
     return None
 
@@ -2032,7 +2076,7 @@ def handwriting_page():
     if not session.get("role"):
         return redirect(url_for("login"))
     if not _is_pro():
-        return redirect(url_for("pricing"))
+        return redirect(_upgrade_url() or url_for("index"))
     return render_template("handwriting.html")
 
 
@@ -2073,6 +2117,8 @@ def pricing():
     visitor here — shows a one-off notice. It's intentionally separate from
     _pro_benefits() so ww2explained.com access never shows up as a Pro perk
     on this page, the upgrade card, or the limit message."""
+    if not payments_enabled():
+        abort(404)
     return render_template("pricing.html", upgraded=False,
                             ww2_only=bool(request.args.get("ww2_only")))
 
@@ -2082,6 +2128,8 @@ def upgrade_success():
     """Whop's post-checkout redirect lands here. The webhook is what actually
     sets is_pro in the database; this route just re-reads the user's row so the
     *current session* reflects Pro without making them log out and back in."""
+    if not payments_enabled():
+        abort(404)
     if not session.get("role"):
         return redirect(url_for("login"))
     email = session.get("user_email", "")
@@ -2198,6 +2246,11 @@ def whop_webhook():
     two jobs are split by event: money is booked on the payment, access is
     granted or revoked on the membership. Booking revenue on both would
     double-count every sale."""
+    # Payments off means no deliveries should be arriving; refuse rather than
+    # let a stale or replayed one flip a tier behind the switch. Whop retries
+    # failures for a while, so a short pause doesn't lose a real sale.
+    if not payments_enabled():
+        abort(404)
     payload = request.get_data()
     if not _verify_whop_sig(payload, request.headers):
         return jsonify({"error": "bad signature"}), 400
@@ -2772,7 +2825,7 @@ def download_template():
     if not session.get("role"):
         return redirect(url_for("login"))
     if not _is_pro():
-        return redirect(url_for("pricing"))
+        return redirect(_upgrade_url() or url_for("index"))
     from paperfill.handwriting import template as hw_template
     return send_file(io.BytesIO(hw_template.template_pdf_bytes()),
                      mimetype="application/pdf", as_attachment=True,

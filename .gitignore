@@ -40,5 +40,8 @@ docs/ab-comparison/dle_p01*
 # Signup Pro toggle, edited from /admin (see get_auto_pro in app.py)
 auto_pro.txt
 
+# Payment switch, edited from /admin (see payments_enabled in app.py)
+payments_enabled.txt
+
 # Per-account fill preferences, edited from /settings (see data/prefs.py)
 user_prefs.json
