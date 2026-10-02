@@ -137,6 +137,14 @@ section { scroll-margin-top: 110px; }
 .chart { width: 100%; display: block; overflow: visible; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.75rem; color: var(--ink-soft); margin-top: 10px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.chart-host { overflow-x: auto; }
+.chart-host .chart { width: auto; }
+.col:hover .bar { opacity: 0.75; }
+#chart-tip {
+  position: fixed; z-index: 50; pointer-events: none; display: none;
+  background: var(--ink); color: #fff; font-family: var(--mono); font-size: 0.78rem;
+  padding: 5px 9px; border-radius: 6px; white-space: nowrap;
+}
 .empty-chart { padding: 30px 0; text-align: center; color: var(--ink-soft); font-size: 0.85rem; font-style: italic; }
 
 /* ---- Tables ---- */
@@ -175,6 +183,17 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
   padding: 20px 22px; margin-bottom: 18px; max-width: 560px;
 }
 .settings-card.wide { max-width: none; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 900px) { .settings-grid { grid-template-columns: 1fr; } }
+.settings-grid .settings-card { max-width: none; margin: 0; scroll-margin-top: 120px; }
+.settings-card h3 { font-family: var(--serif); font-size: 1.05rem; font-weight: 700; margin: 0 0 12px; }
+.settings-card .hint:last-child { margin: 12px 0 0; }
+.switch { display: flex; align-items: center; gap: 10px; font-size: 0.95rem; cursor: pointer; margin-bottom: 4px; }
+.switch input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.settings-card form .switch + .field { margin-top: 14px; }
+.actions { display: flex; gap: 8px; }
+.save-btn.ghost { background: transparent; border: 1px solid var(--rule); color: var(--ink); }
+.save-btn.ghost:hover { background: var(--paper-deep); }
 .settings-card .hint { color: var(--ink-soft); font-size: 0.85rem; margin: 0 0 16px; }
 .settings-card .current {
   font-family: var(--mono); background: var(--paper-deep); border: 1px solid var(--rule);
@@ -212,10 +231,6 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
 .model-row .now { font-size: 0.76rem; color: var(--ink-soft); margin-top: 6px; }
 .model-row .now .m { font-family: var(--mono); color: var(--ink); }
 .model-row .tag { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid var(--rule); border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
-.rate-row { display: grid; grid-template-columns: 1fr 130px 130px; gap: 10px; align-items: center; margin-bottom: 8px; }
-.rate-row .m { font-family: var(--mono); font-size: 0.82rem; word-break: break-all; }
-.rate-row input { padding: 7px 10px; }
-.rate-head { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-soft); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -232,13 +247,11 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
 </header>
 
 <nav class="subnav" id="subnav">
+  <a href="#growth">Growth</a>
   <a href="#money">Money</a>
   <a href="#usage">Usage</a>
-  <a href="#product">Product</a>
-  <a href="#accounts">Accounts</a>
   <a href="#models">Models</a>
   <a href="#reliability">AI health</a>
-  <a href="#audience">Audience</a>
   <a href="#settings">Settings</a>
   <a href="#logs">Assignments</a>
 </nav>
@@ -295,51 +308,64 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
   })();
   </script>
 
-  <!-- ============ HEADLINE ============ -->
-  <div class="stats">
-    <div class="stat-card hero">
-      <div class="stat-label">Revenue</div>
-      <div class="stat-value green">${{ '%.2f'|format(s.money.revenue) }}</div>
-      <div class="stat-sub">{{ s.money.payment_count }} paid checkout{{ '' if s.money.payment_count == 1 else 's' }}</div>
+  <!-- ============ GROWTH ============ -->
+  <section id="growth">
+    {% set signups = s.activity.signups %}
+    {% set signup_total = signups|sum(attribute='value') %}
+    <div class="stats">
+      <div class="stat-card hero">
+        <div class="stat-label">Signups</div>
+        <div class="stat-value accent">{{ signup_total|int }}</div>
+        <div class="stat-sub">{{ window_label|lower }} · {{ (signups|last).value|int if signups else 0 }} in the latest {{ 'hour' if s.hourly else 'day' }}</div>
+      </div>
+      <div class="stat-card hero">
+        <div class="stat-label">Worksheets filled</div>
+        <div class="stat-value">{{ s.product.total }}</div>
+        <div class="stat-sub">{{ window_label|lower }} · {{ s.product.report_pct }}% reported</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Accounts (all-time)</div>
+        <div class="stat-value blue">{{ s.accounts.total }}</div>
+        <div class="stat-sub">{{ s.accounts.pro }} Pro · {{ s.accounts.google }} Google, {{ s.accounts.email }} email</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">AI spend</div>
+        <div class="stat-value red">${{ '%.4f'|format(s.money.cost) }}</div>
+        <div class="stat-sub">{{ '{:,}'.format(s.money.tokens_total) }} tokens</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Hack Club credit (today)</div>
+        <div class="stat-value {{ 'red' if s.hack_club.pct_used >= 80 else '' }}">{{ s.hack_club.pct_used }}%</div>
+        <div class="stat-sub">${{ '%.2f'|format(s.hack_club.spent) }} of ${{ '%.2f'|format(s.hack_club.cap) }}{{ ' · exhausted' if s.hack_club.exhausted else '' }}</div>
+      </div>
     </div>
-    <div class="stat-card hero">
-      <div class="stat-label">AI spend</div>
-      <div class="stat-value red">${{ '%.4f'|format(s.money.cost) }}</div>
-      <div class="stat-sub">{{ '{:,}'.format(s.money.tokens_total) }} tokens</div>
+
+    <div class="card">
+      <h3>Signups per {{ 'hour' if s.hourly else 'day' }}</h3>
+      <p class="cap">{{ window_label }}. New accounts by creation time.</p>
+      <div id="c-signups"></div>
     </div>
-    <div class="stat-card hero">
-      <div class="stat-label">Hack Club credit (today)</div>
-      <div class="stat-value {{ 'red' if s.hack_club.pct_used >= 80 else '' }}">${{ '%.4f'|format(s.hack_club.spent) }}<span style="font-size:0.55em;color:var(--ink-soft);"> / ${{ '%.2f'|format(s.hack_club.cap) }}</span></div>
-      <div class="stat-sub">{{ s.hack_club.pct_used }}% used{{ ' — exhausted' if s.hack_club.exhausted else '' }} · resets at UTC midnight</div>
+    <div class="card" style="margin-top:18px;">
+      <h3>Fills per {{ 'hour' if s.hourly else 'day' }}</h3>
+      <p class="cap">{{ window_label }}.</p>
+      <div id="c-fills"></div>
     </div>
-    <div class="stat-card hero">
-      <div class="stat-label">Profit</div>
-      <div class="stat-value {{ 'green' if s.money.profit >= 0 else 'red' }}">${{ '%.2f'|format(s.money.profit) }}</div>
-      <div class="stat-sub">{{ (s.money.margin_pct ~ '% margin') if s.money.revenue else 'no revenue yet' }}</div>
+    <div class="card" style="margin-top:18px;">
+      <h3>Acquisition funnel</h3>
+      <p class="cap">Signup → fill → paid, all-time, split by where the account came
+         from. Ad means the landing URL carried a click id or a paid
+         <code>utm_medium</code>, so untagged campaigns count as organic. Accounts
+         from before attribution shipped are <b>unknown</b>, not organic.</p>
+      <div id="c-source-funnel"></div>
     </div>
-    <div class="stat-card">
-      <div class="stat-label">Worksheets filled</div>
-      <div class="stat-value">{{ s.product.total }}</div>
-      <div class="stat-sub">{{ s.product.handwriting }} in handwriting</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Accounts</div>
-      <div class="stat-value blue">{{ s.accounts.total }}</div>
-      <div class="stat-sub">{{ s.accounts.pro }} Pro · {{ s.accounts.pro_pct }}%</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Devices seen</div>
-      <div class="stat-value">{{ '{:,}'.format(device_count) }}</div>
-      <div class="stat-sub">{{ s.product.unique_ips }} IPs filled a sheet</div>
-    </div>
-  </div>
+  </section>
 
   <!-- ============ MONEY ============ -->
   <section id="money">
     <div class="section-title">Money</div>
     <p class="section-note">
-      Revenue comes from Whop payment events. AI spend is token counts (a fact
-      from the provider) multiplied by your configured rates (not a fact — set them below).
+      Revenue comes from Whop payment events. AI spend is token counts from the
+      provider multiplied by each model's published price.
     </p>
 
     {% if s.hack_club.exhausted %}
@@ -359,25 +385,27 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
     {% if s.hack_club.uncosted_calls %}
     <div class="banner banner-info">
       <b>{{ s.hack_club.uncosted_calls }} primary-provider call{{ '' if s.hack_club.uncosted_calls == 1 else 's' }} not counted toward the Hack Club estimate</b>
-      — no rate configured for their model. Set it under <b>AI rate card</b> below.
+      — no price on file for their model. Re-save that model under <b>Models</b> to pull the provider's price.
     </div>
     {% endif %}
 
-    <div class="grid2">
-      <div class="card">
-        <h3>Revenue vs AI spend</h3>
-        <p class="cap">{{ window_label }}.</p>
-        <div id="c-pnl"></div>
-        <div class="legend">
-          <span><i style="background:#16a34a"></i>Revenue</span>
-          <span><i style="background:#dc2626"></i>AI spend</span>
-        </div>
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Revenue</div>
+        <div class="stat-value green">${{ '%.2f'|format(s.money.revenue) }}</div>
+        <div class="stat-sub">{{ s.money.payment_count }} paid checkout{{ '' if s.money.payment_count == 1 else 's' }}</div>
       </div>
-      <div class="card">
-        <h3>Cumulative profit</h3>
-        <p class="cap">Revenue minus AI spend, running total.</p>
-        <div id="c-profit"></div>
+      <div class="stat-card">
+        <div class="stat-label">Profit</div>
+        <div class="stat-value {{ 'green' if s.money.profit >= 0 else 'red' }}">${{ '%.2f'|format(s.money.profit) }}</div>
+        <div class="stat-sub">{{ (s.money.margin_pct ~ '% margin') if s.money.revenue else 'no revenue yet' }}</div>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>AI spend per {{ 'hour' if s.hourly else 'day' }}</h3>
+      <p class="cap">{{ window_label }}.</p>
+      <div id="c-spend"></div>
     </div>
 
     <div class="grid2" style="margin-top:18px;">
@@ -409,41 +437,6 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
       </div>
     </div>
 
-    <div class="section-title" style="font-size:1rem;">AI rate card</div>
-    <div class="settings-card wide">
-      {% if rates_status == 'ok' %}
-        <div class="banner banner-ok">Rates saved. They apply to calls made from now on — past rows keep the cost they were recorded with.</div>
-      {% endif %}
-      <p class="hint">
-        Prices in <b>USD per 1,000,000 tokens</b>, taken from your provider's pricing page.
-        The Gemini fallback models ship with their published rates already filled in; anything
-        else starts blank rather than guessed, since a wrong rate here would make the profit
-        number above confidently wrong. A model left at 0 with the free-proxy box unticked
-        is reported as <i>uncosted</i>, not as free.
-      </p>
-      <form method="post" action="/admin/ai-rates" autocomplete="off">
-        <div class="field checkbox" style="margin-bottom:16px;">
-          <input type="checkbox" id="primary_free" name="primary_free"
-                 {% if rate_card._provider_primary_is_free %}checked{% endif %} />
-          <label for="primary_free">Primary provider is free (the Hack Club AI proxy) — bill only fallback calls</label>
-        </div>
-        <div class="rate-row">
-          <span class="rate-head">Model</span>
-          <span class="rate-head">$ / 1M input</span>
-          <span class="rate-head">$ / 1M output</span>
-        </div>
-        {% for m in rate_models %}
-        <div class="rate-row">
-          <span class="m">{{ m }}</span>
-          <input type="number" step="0.0001" min="0" name="rate_in[{{ m }}]"
-                 value="{{ rate_card.models.get(m, {}).get('in', 0) }}" />
-          <input type="number" step="0.0001" min="0" name="rate_out[{{ m }}]"
-                 value="{{ rate_card.models.get(m, {}).get('out', 0) }}" />
-        </div>
-        {% endfor %}
-        <button type="submit" class="save-btn" style="margin-top:12px;">Save rates</button>
-      </form>
-    </div>
   </section>
 
   <!-- ============ USAGE ============ -->
@@ -453,109 +446,34 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
       When people actually use the thing. Peak activity is
       <b>{{ s.time_of_day.peak_dow_label }}</b> around <b>{{ s.time_of_day.peak_hour_label }}</b>.
     </p>
-
-    <div class="card">
-      <h3>Worksheets filled — hour of day × day of week</h3>
-      <p class="cap">Darker means more fills started in that hour.</p>
-      <div id="c-heat"></div>
-    </div>
-
-    <div class="grid2" style="margin-top:18px;">
-      <div class="card">
-        <h3>Fills by hour of day</h3>
-        <p class="cap">All history, folded into 24 hours.</p>
-        <div id="c-hour"></div>
-      </div>
-      <div class="card">
-        <h3>Sign-ins by hour of day</h3>
-        <p class="cap">Includes failed attempts.</p>
-        <div id="c-hour-signin"></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:18px;">
-      <h3>Daily activity</h3>
-      <p class="cap">{{ window_label }}.</p>
-      <div id="c-activity"></div>
-      <div class="legend">
-        <span><i style="background:#ff5a1f"></i>Fills</span>
-        <span><i style="background:#2563eb"></i>Sign-ins</span>
-        <span><i style="background:#7c3aed"></i>Signups</span>
-      </div>
-    </div>
-
-    <div class="grid2" style="margin-top:18px;">
-      <div class="card">
-        <h3>New devices per day</h3>
-        <p class="cap">First time a browser was seen. Traffic, not usage.</p>
-        <div id="c-devices"></div>
-      </div>
-      <div class="card">
-        <h3>First-touch traffic — hour × day</h3>
-        <p class="cap">All {{ '{:,}'.format(device_count) }} devices, aggregated in Postgres.</p>
-        <div id="c-devheat"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ PRODUCT ============ -->
-  <section id="product">
-    <div class="section-title">Product</div>
-    <p class="section-note">How the filler is being used, and how often it goes wrong.</p>
     <div class="stats">
       <div class="stat-card">
-        <div class="stat-label">Problem reports</div>
-        <div class="stat-value {{ 'red' if s.product.report_pct > 10 else '' }}">{{ s.product.report_pct }}%</div>
-        <div class="stat-sub">{{ s.product.reported }} reported</div>
-      </div>
-      <div class="stat-card">
         <div class="stat-label">Fills per account</div>
-        <div class="stat-value">{{ s.accounts.fills_per_user }}</div>
-        <div class="stat-sub">across {{ s.accounts.total }} accounts</div>
+        <div class="stat-value">{{ '%g'|format(s.accounts.fills_per_user_median) }}<span style="font-size:0.5em;color:var(--ink-soft);"> median</span></div>
+        <div class="stat-sub">{{ s.accounts.fills_per_user_avg }} average · all-time, {{ s.accounts.total }} accounts</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Repeat usage</div>
         <div class="stat-value">{{ s.product.repeat_pct }}%</div>
         <div class="stat-sub">fills from returning IPs</div>
       </div>
-    </div>
-  </section>
-
-  <!-- ============ ACCOUNTS ============ -->
-  <section id="accounts">
-    <div class="section-title">Accounts</div>
-    <p class="section-note">Signups, tier split, and how far people get down the funnel.</p>
-    <div class="grid3">
-      <div class="card">
-        <h3>Free vs Pro</h3>
-        <p class="cap">{{ s.accounts.pro }} of {{ s.accounts.total }} on Pro.</p>
-        <div id="c-tier"></div>
-      </div>
-      <div class="card">
-        <h3>Sign-up method</h3>
-        <p class="cap">Google OAuth vs email/password.</p>
-        <div id="c-method"></div>
-      </div>
-      <div class="card">
-        <h3>Funnel</h3>
-        <p class="cap">Devices → accounts → Pro → paid. Bars are √-scaled so the
-           small stages stay visible; the numbers are exact.</p>
-        <div id="c-funnel"></div>
+      <div class="stat-card">
+        <div class="stat-label">Problem reports</div>
+        <div class="stat-value {{ 'red' if s.product.report_pct > 10 else '' }}">{{ s.product.report_pct }}%</div>
+        <div class="stat-sub">{{ s.product.reported }} reported</div>
       </div>
     </div>
-    <div class="card" style="margin-top:18px;">
-      <h3>Acquisition funnel</h3>
-      <p class="cap">Visit → signup → fill → paid, split by where the visitor came
-         from. Ad means the landing URL carried a click id or a paid
-         <code>utm_medium</code>, so untagged campaigns count as organic. Every
-         visit from before attribution shipped is <b>unknown</b>, not organic.
-         Bars are √-scaled between stages; the split within a bar is to scale.</p>
-      <div id="c-source-funnel"></div>
-    </div>
-    <div class="card" style="margin-top:18px;">
-      <h3>Signups per day</h3>
-      <p class="cap">{{ window_label }}.</p>
-      <div id="c-signups"></div>
+    <div class="grid2">
+      <div class="card">
+        <h3>Fills by time of day</h3>
+        <p class="cap">{{ window_label }}, added up by the hour they started (ET).</p>
+        <div id="c-hour"></div>
+      </div>
+      <div class="card">
+        <h3>Fills by day of week</h3>
+        <p class="cap">{{ window_label }}, added up by weekday.</p>
+        <div id="c-dow"></div>
+      </div>
     </div>
   </section>
 
@@ -721,83 +639,88 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
     </div>
   </section>
 
-  <!-- ============ AUDIENCE ============ -->
-  <section id="audience">
-    <div class="section-title">Audience</div>
-    <p class="section-note">Parsed from sign-in user-agent strings, so it's a rough split rather than exact.</p>
-    <div class="grid3">
-      <div class="card"><h3>Browser</h3><p class="cap">Share of sign-ins.</p><div id="c-browser"></div></div>
-      <div class="card"><h3>Operating system</h3><p class="cap">Share of sign-ins.</p><div id="c-os"></div></div>
-      <div class="card"><h3>Device type</h3><p class="cap">Mobile vs desktop.</p><div id="c-kind"></div></div>
-    </div>
-  </section>
-
   <!-- ============ SETTINGS ============ -->
   <section id="settings">
     <div class="section-title">Settings</div>
+    <p class="section-note">Switches save the moment you flip them.</p>
 
-    <div class="section-title" style="font-size:1rem;">Pro membership</div>
-    <div class="settings-card">
-      {% if pro_status == 'granted' %}
-        <div class="banner banner-ok">Pro granted to <span class="current">{{ pro_email }}</span>. It applies on their next sign-in (or immediately if they re-open the app).</div>
-      {% elif pro_status == 'revoked' %}
-        <div class="banner banner-ok">Pro revoked for <span class="current">{{ pro_email }}</span>.</div>
-      {% elif pro_status == 'nouser' %}
-        <div class="banner banner-err">No account found for <span class="current">{{ pro_email }}</span>. They need to sign in once before Pro can be set.</div>
-      {% elif pro_status == 'empty' %}
-        <div class="banner banner-err">Enter an email address.</div>
-      {% elif pro_status == 'auto' %}
-        <div class="banner banner-ok">New signups are now created on {{ 'Pro' if auto_pro else 'Free' }}.</div>
-      {% endif %}
-      <form method="post" action="/admin/auto-pro" autocomplete="off">
-        <div class="field checkbox">
-          <input type="checkbox" id="auto_pro" name="auto_pro" {% if auto_pro %}checked{% endif %} />
-          <label for="auto_pro">Give every new signup Pro automatically</label>
-        </div>
-        <p class="hint">
-          Applies at account creation only — turning this off leaves accounts that already
-          have Pro untouched.
-        </p>
-        <button type="submit" class="save-btn">Save signup setting</button>
-      </form>
-      <p class="hint">
-        Paid upgrades flip to Pro automatically via the Whop webhook. Use this to grant a
-        comp, fix a mismatched checkout email, or revoke access. Comps granted here are
-        deliberately <i>not</i> counted as revenue.
-      </p>
-      <form method="post" action="/admin/grant-pro" autocomplete="off">
-        <div class="field">
-          <label for="pro_email_input">Account email</label>
-          <input type="email" id="pro_email_input" name="email" required autocomplete="off" placeholder="user@example.com" />
-        </div>
-        <button type="submit" class="save-btn" name="action" value="grant">Grant Pro</button>
-        <button type="submit" class="save-btn" name="action" value="revoke" style="background:transparent;border:1px solid var(--rule);color:inherit;">Revoke Pro</button>
-      </form>
-    </div>
+    <div class="settings-grid">
+      <div class="settings-card" id="pro-sales">
+        <h3>Sell Pro</h3>
+        {% if pro_status == 'payments' %}
+          <div class="banner banner-ok">Saved. Pro is {{ 'on sale' if payments_enabled else 'not on sale' }}.</div>
+        {% endif %}
+        <form method="post" action="/admin/payments" autocomplete="off">
+          <label class="switch">
+            <input type="checkbox" name="payments_enabled" {% if payments_enabled %}checked{% endif %}
+                   onchange="this.form.submit()" />
+            <span>Pro is {{ 'on sale' if payments_enabled else 'not on sale' }}</span>
+          </label>
+        </form>
+        <p class="hint">Off takes down the pricing page, the upgrade buttons and the Whop
+          webhook. Everyone who already has Pro keeps it, and grants still work.</p>
+      </div>
 
-    <div class="section-title" style="font-size:1rem;">Ads</div>
-    <div class="settings-card">
-      {% if ads_status == 'ok' %}
-        <div class="banner banner-ok">Ad settings updated.</div>
-      {% endif %}
-      <p class="hint">
-        When enabled, a full-screen HilltopAds <strong>VAST</strong> video ad plays while the
-        worksheet fills. Ads stay off until at least one tag is set. Paste your VAST tag URL(s),
-        one per line — they're tried in order.
-      </p>
-      <form method="post" action="/admin/ads" autocomplete="off">
-        <div class="field checkbox">
-          <input type="checkbox" id="ads_enabled" name="ads_enabled" {% if ads_enabled %}checked{% endif %} />
-          <label for="ads_enabled">Include Ads</label>
-        </div>
-        <div class="field">
-          <label for="vast_tags">VAST tag URLs (one per line)</label>
-          <textarea id="vast_tags" name="vast_tags" rows="4"
-                    placeholder="https://…/vast-tag-1&#10;https://…/vast-tag-2"
-                    autocomplete="off" spellcheck="false">{{ vast_tags }}</textarea>
-        </div>
-        <button type="submit" class="save-btn">Save ad settings</button>
-      </form>
+      <div class="settings-card" id="pro-signup">
+        <h3>New signups</h3>
+        {% if pro_status == 'auto' %}
+          <div class="banner banner-ok">Saved. New signups start on {{ 'Pro' if auto_pro else 'Free' }}.</div>
+        {% endif %}
+        <form method="post" action="/admin/auto-pro" autocomplete="off">
+          <label class="switch">
+            <input type="checkbox" name="auto_pro" {% if auto_pro %}checked{% endif %}
+                   onchange="this.form.submit()" />
+            <span>Give every new signup Pro</span>
+          </label>
+        </form>
+        <p class="hint">Applies when an account is created. Turning it off leaves existing
+          Pro accounts alone.</p>
+      </div>
+
+      <div class="settings-card" id="pro-grant">
+        <h3>Grant or revoke Pro</h3>
+        {% if pro_status == 'granted' %}
+          <div class="banner banner-ok">Pro granted to <b>{{ pro_email }}</b>.</div>
+        {% elif pro_status == 'revoked' %}
+          <div class="banner banner-ok">Pro revoked for <b>{{ pro_email }}</b>.</div>
+        {% elif pro_status == 'nouser' %}
+          <div class="banner banner-err">No account for <b>{{ pro_email }}</b>. They need to sign in once first.</div>
+        {% elif pro_status == 'empty' %}
+          <div class="banner banner-err">Enter an email address.</div>
+        {% endif %}
+        <form method="post" action="/admin/grant-pro" autocomplete="off">
+          <div class="field">
+            <input type="email" name="email" required autocomplete="off"
+                   placeholder="user@example.com" aria-label="Account email" />
+          </div>
+          <div class="actions">
+            <button type="submit" class="save-btn" name="action" value="grant">Grant Pro</button>
+            <button type="submit" class="save-btn ghost" name="action" value="revoke">Revoke Pro</button>
+          </div>
+        </form>
+        <p class="hint">For comps, refunds, or a checkout email that doesn't match the login.
+          Comps aren't counted as revenue.</p>
+      </div>
+
+      <div class="settings-card" id="ads">
+        <h3>Ads</h3>
+        {% if ads_status == 'ok' %}
+          <div class="banner banner-ok">Ad settings saved.</div>
+        {% endif %}
+        <form method="post" action="/admin/ads" autocomplete="off">
+          <label class="switch">
+            <input type="checkbox" name="ads_enabled" {% if ads_enabled %}checked{% endif %} />
+            <span>Play a video ad while a worksheet fills</span>
+          </label>
+          <div class="field">
+            <label for="vast_tags">VAST tag URLs, one per line, tried in order</label>
+            <textarea id="vast_tags" name="vast_tags" rows="3"
+                      placeholder="https://…/vast-tag-1&#10;https://…/vast-tag-2"
+                      autocomplete="off" spellcheck="false">{{ vast_tags }}</textarea>
+          </div>
+          <button type="submit" class="save-btn">Save ads</button>
+        </form>
+      </div>
     </div>
   </section>
 
@@ -924,7 +847,7 @@ function empty(id, msg) {
   const host = document.getElementById(id);
   if (host) host.innerHTML = `<div class="empty-chart">${msg || 'No data yet.'}</div>`;
 }
-function tip(node, text) { el('title', {}, node).textContent = text; }
+function tip(node, text) { node.setAttribute('data-tip', text); }
 function fmt(n, dp) {
   if (dp != null) return n.toFixed(dp);
   // Snap away float residue (14.000000000000002) before stringifying.
@@ -939,91 +862,96 @@ function niceMax(v) {
   const r = v / mag;
   return (r <= 1 ? 1 : r <= 2 ? 2 : r <= 5 ? 5 : 10) * mag;
 }
-// Counts are whole numbers, so their gridlines must be too: snapping the top of
-// the axis to a multiple of the division count turns 20 over 3 divisions from
-// "20 / 13.333 / 6.667 / 0" into "21 / 14 / 7 / 0".
+// Pick the gridline step, then stack it: a peak of 3 gets 1/2/3/4 rather than
+// an axis of 8 that squashes every bar. Counts are whole numbers, so their
+// step is never below 1.
 function axisMax(v, divs, money) {
-  const m = niceMax(v);
-  return money ? m : Math.ceil(m / divs) * divs;
+  const step = niceMax(v / divs);
+  return (money ? step : Math.max(1, Math.ceil(step))) * divs;
 }
 
-/** Multi-series line chart. series: [{name,color,points:[{label,value}]}] */
-function lineChart(id, series, opts) {
+/** Bars over time or over a fixed set of buckets. points: [{label, value}]
+ *
+ * Drawn in real pixels at the card's width rather than a scaled viewBox, so
+ * text is the same size in every card. Every bucket gets its label, turned
+ * 45 degrees when it doesn't fit flat; when even that would collide, the
+ * chart keeps a minimum width per bar and scrolls sideways instead of
+ * dropping labels. Hovering anywhere in a bar's column shows its exact value.
+ */
+function columnChart(id, points, opts) {
   opts = opts || {};
-  const pts = series[0] ? series[0].points : [];
-  if (!pts.length || !series.some(s => s.points.some(p => p.value > 0))) return empty(id, opts.emptyMsg);
-  const W = 720, H = opts.height || 220, L = 52, R = 12, T = 12, B = 30;
-  const svg = mount(id, W, H); if (!svg) return;
-  const iw = W - L - R, ih = H - T - B;
-  const max = axisMax(Math.max(...series.flatMap(s => s.points.map(p => p.value))),
-                      4, opts.money);
-  const x = i => L + (pts.length === 1 ? iw / 2 : (i / (pts.length - 1)) * iw);
-  const y = v => T + ih - (v / max) * ih;
-
+  if (!points.length || !points.some(p => p.value > 0)) return empty(id, opts.emptyMsg);
+  const host = document.getElementById(id);
+  if (!host) return;
+  host.classList.add('chart-host');
+  const show = v => (opts.money ? '$' : '') + fmt(v, opts.dp);
+  const charW = 6.2;  // IBM Plex Mono advance at 10px
+  const longest = Math.max(...points.map(p => p.label.length)) * charW;
+  const L = opts.money ? 60 : 38, R = 8, T = 20;
+  const avail = host.clientWidth || 700;
+  const flatBw = (avail - L - R) / points.length;
+  const rotate = longest + 6 > flatBw;
+  const bw = Math.max(flatBw, rotate ? 16 : 0);
+  const W = Math.max(avail, L + R + bw * points.length);
+  const B = rotate ? Math.ceil(longest * 0.72) + 16 : 24;
+  const H = (opts.height || 200) + B;
+  host.innerHTML = '';
+  const svg = el('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: 'chart' }, host);
+  const ih = H - T - B;
+  const values = points.map(p => p.value);
+  const peak = Math.max(...values);
+  const max = axisMax(peak, 4, opts.money);
   for (let g = 0; g <= 4; g++) {
     const gy = T + (g / 4) * ih;
-    el('line', { x1: L, y1: gy, x2: W - R, y2: gy, stroke: C.ruleSoft, 'stroke-width': 1 }, svg);
-    const lbl = el('text', { x: L - 8, y: gy + 4, 'text-anchor': 'end', fill: C.soft,
-                             'font-size': 10, 'font-family': 'IBM Plex Mono, monospace' }, svg);
-    // (max * (4 - g)) / 4 rather than max * (1 - g/4): the former stays exact
-    // for integer maxima, the latter drifts into 14.000000000000002.
-    lbl.textContent = (opts.money ? '$' : '') + fmt((max * (4 - g)) / 4, opts.dp);
-  }
-  series.forEach(s => {
-    const d = s.points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
-    if (opts.area) {
-      el('path', { d: `${d} L${x(pts.length - 1)},${T + ih} L${x(0)},${T + ih} Z`,
-                   fill: s.color, opacity: 0.12 }, svg);
-    }
-    el('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2,
-                 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
-    s.points.forEach((p, i) => {
-      if (p.value <= 0 && !opts.dots) return;
-      const c = el('circle', { cx: x(i), cy: y(p.value), r: 2.6, fill: s.color }, svg);
-      tip(c, `${p.label} · ${s.name}: ${opts.money ? '$' : ''}${fmt(p.value, opts.dp)}`);
-    });
-  });
-  // Only a handful of tick labels — one per bucket is unreadable at 90+ days.
-  const step = Math.max(1, Math.ceil(pts.length / 7));
-  pts.forEach((p, i) => {
-    if (i % step && i !== pts.length - 1) return;
-    const t = el('text', { x: x(i), y: H - 10, 'text-anchor': 'middle', fill: C.soft,
-                           'font-size': 9.5, 'font-family': 'IBM Plex Mono, monospace' }, svg);
-    t.textContent = p.label;
-  });
-}
-
-/** Vertical bars from an array of numbers, labelled by index. */
-function barChart(id, values, opts) {
-  opts = opts || {};
-  if (!values.some(v => v > 0)) return empty(id, opts.emptyMsg);
-  const W = 720, H = opts.height || 190, L = 40, R = 10, T = 12, B = 26;
-  const svg = mount(id, W, H); if (!svg) return;
-  const iw = W - L - R, ih = H - T - B;
-  const max = axisMax(Math.max(...values), 3, false);
-  const bw = iw / values.length;
-  for (let g = 0; g <= 3; g++) {
-    const gy = T + (g / 3) * ih;
     el('line', { x1: L, y1: gy, x2: W - R, y2: gy, stroke: C.ruleSoft }, svg);
     const t = el('text', { x: L - 7, y: gy + 4, 'text-anchor': 'end', fill: C.soft,
                            'font-size': 10, 'font-family': 'IBM Plex Mono, monospace' }, svg);
-    t.textContent = fmt((max * (3 - g)) / 3);
+    t.textContent = show((max * (4 - g)) / 4);
   }
-  values.forEach((v, i) => {
-    const h = (v / max) * ih;
-    const r = el('rect', { x: L + i * bw + bw * 0.15, y: T + ih - h,
-                           width: bw * 0.7, height: Math.max(h, v > 0 ? 1.5 : 0),
-                           fill: opts.color || C.accent, rx: 1.5 }, svg);
-    tip(r, `${opts.labelFn ? opts.labelFn(i) : i}: ${v}`);
-  });
-  values.forEach((v, i) => {
-    if (opts.labelEvery && i % opts.labelEvery) return;
-    const t = el('text', { x: L + i * bw + bw / 2, y: H - 9, 'text-anchor': 'middle',
-                           fill: C.soft, 'font-size': 9.5,
-                           'font-family': 'IBM Plex Mono, monospace' }, svg);
-    t.textContent = opts.labelFn ? opts.labelFn(i) : i;
+  const labelAll = !opts.money && bw >= 18;
+  const peakAt = values.indexOf(peak);
+  points.forEach((p, i) => {
+    const x0 = L + i * bw, cx = x0 + bw / 2;
+    const h = (p.value / max) * ih;
+    const col = el('g', { class: 'col', 'data-tip': `${p.label}: ${show(p.value)}` }, svg);
+    el('rect', { x: x0, y: T, width: bw, height: ih, fill: 'transparent' }, col);
+    el('rect', { class: 'bar', x: x0 + bw * 0.12, y: T + ih - h, width: bw * 0.76,
+                 height: Math.max(h, p.value > 0 ? 1.5 : 0),
+                 fill: opts.color || C.accent, rx: 1.5 }, col);
+    if (p.value > 0 && (labelAll || i === peakAt)) {
+      const v = el('text', { x: cx, y: T + ih - h - 4, 'text-anchor': 'middle',
+                             fill: C.ink, 'font-size': 10, 'font-weight': 600,
+                             'font-family': 'IBM Plex Mono, monospace' }, col);
+      v.textContent = show(p.value);
+    }
+    const ly = T + ih + 14;
+    const lbl = el('text', rotate
+      ? { x: cx + 3, y: ly, 'text-anchor': 'end', transform: `rotate(-45 ${cx + 3} ${ly})` }
+      : { x: cx, y: ly, 'text-anchor': 'middle' }, col);
+    lbl.setAttribute('fill', C.soft);
+    lbl.setAttribute('font-size', 10);
+    lbl.setAttribute('font-family', 'IBM Plex Mono, monospace');
+    lbl.textContent = p.label;
   });
 }
+
+// One tooltip for every chart: the native <title> tooltip takes a second to
+// appear and doesn't show at all on some browsers.
+(function () {
+  const box = document.createElement('div');
+  box.id = 'chart-tip';
+  document.body.appendChild(box);
+  document.addEventListener('mousemove', e => {
+    const target = e.target.closest && e.target.closest('[data-tip]');
+    if (!target) { box.style.display = 'none'; return; }
+    box.textContent = target.getAttribute('data-tip');
+    box.style.display = 'block';
+    const x = Math.min(e.clientX + 12, window.innerWidth - box.offsetWidth - 8);
+    box.style.left = x + 'px';
+    box.style.top = (e.clientY - box.offsetHeight - 10) + 'px';
+  });
+  window.addEventListener('scroll', () => { box.style.display = 'none'; }, { passive: true });
+})();
 
 /** Horizontal labelled bars. rows: [{name, value, sub}] */
 function hbars(id, rows, opts) {
@@ -1054,123 +982,6 @@ function hbars(id, rows, opts) {
   });
 }
 
-/** Donut with an inline legend. rows: [name, value][] */
-function donut(id, rows, opts) {
-  opts = opts || {};
-  rows = (rows || []).map(r => Array.isArray(r) ? { name: r[0], value: r[1] } : r)
-                     .filter(r => r.value > 0);
-  const total = rows.reduce((a, r) => a + r.value, 0);
-  if (!total) return empty(id, opts.emptyMsg);
-  const W = 300, H = 180, cx = 82, cy = 90, rOut = 66, rIn = 40;
-  const svg = mount(id, W, H); if (!svg) return;
-  let a0 = -Math.PI / 2;
-  rows.forEach((r, i) => {
-    const frac = r.value / total, a1 = a0 + frac * Math.PI * 2;
-    const color = opts.colors ? opts.colors[i % opts.colors.length] : PALETTE[i % PALETTE.length];
-    // A single 100% slice can't be drawn as an arc (start == end), so draw it
-    // as a ring instead of leaving the chart blank.
-    if (frac >= 0.9999) {
-      el('circle', { cx, cy, r: (rOut + rIn) / 2, fill: 'none', stroke: color,
-                     'stroke-width': rOut - rIn }, svg);
-    } else {
-      const p = (a, rad) => `${(cx + rad * Math.cos(a)).toFixed(2)},${(cy + rad * Math.sin(a)).toFixed(2)}`;
-      const big = frac > 0.5 ? 1 : 0;
-      const path = el('path', {
-        d: `M${p(a0, rOut)} A${rOut},${rOut} 0 ${big} 1 ${p(a1, rOut)} L${p(a1, rIn)} A${rIn},${rIn} 0 ${big} 0 ${p(a0, rIn)} Z`,
-        fill: color }, svg);
-      tip(path, `${r.name}: ${r.value} (${(frac * 100).toFixed(1)}%)`);
-    }
-    const ly = 22 + i * 19;
-    el('rect', { x: 172, y: ly - 8, width: 10, height: 10, fill: color, rx: 2 }, svg);
-    const t = el('text', { x: 188, y: ly + 1, fill: C.ink, 'font-size': 11 }, svg);
-    t.textContent = `${r.name} · ${(frac * 100).toFixed(0)}%`;
-    a0 = a1;
-  });
-  const c = el('text', { x: cx, y: cy + 2, 'text-anchor': 'middle', fill: C.ink,
-                         'font-size': 20, 'font-weight': 700, 'font-family': 'Fraunces, serif' }, svg);
-  c.textContent = fmt(total);
-  const l = el('text', { x: cx, y: cy + 18, 'text-anchor': 'middle', fill: C.soft, 'font-size': 10 }, svg);
-  l.textContent = opts.centerLabel || 'total';
-}
-
-/** 7×24 heatmap. grid[dow][hour] */
-function heatmap(id, grid, max, opts) {
-  opts = opts || {};
-  if (!max) return empty(id, opts.emptyMsg);
-  const cw = 27, ch = 22, L = 36, T = 18;
-  const W = L + 24 * cw + 10, H = T + 7 * ch + 22;
-  const svg = mount(id, W, H); if (!svg) return;
-  const days = S.time_of_day.dow_names;
-  for (let h = 0; h < 24; h += 2) {
-    const t = el('text', { x: L + h * cw + cw / 2, y: 12, 'text-anchor': 'middle',
-                           fill: C.soft, 'font-size': 9.5,
-                           'font-family': 'IBM Plex Mono, monospace' }, svg);
-    t.textContent = String(h).padStart(2, '0');
-  }
-  for (let d = 0; d < 7; d++) {
-    const t = el('text', { x: L - 7, y: T + d * ch + 15, 'text-anchor': 'end', fill: C.soft,
-                           'font-size': 10 }, svg);
-    t.textContent = days[d];
-    for (let h = 0; h < 24; h++) {
-      const v = grid[d][h];
-      // Square-root ramp: with one very busy hour a linear ramp washes every
-      // other cell out to near-white and the pattern disappears.
-      const k = v ? 0.12 + 0.88 * Math.sqrt(v / max) : 0;
-      const r = el('rect', { x: L + h * cw + 1, y: T + d * ch + 1, width: cw - 2, height: ch - 2,
-                             rx: 2, fill: v ? C.accent : '#f0ece0', opacity: v ? k : 1,
-                             stroke: C.ruleSoft, 'stroke-width': 0.5 }, svg);
-      tip(r, `${days[d]} ${String(h).padStart(2, '0')}:00 — ${v}`);
-    }
-  }
-  const ly = T + 7 * ch + 15;
-  const lt = el('text', { x: L, y: ly, fill: C.soft, 'font-size': 9.5 }, svg);
-  lt.textContent = 'less';
-  for (let i = 0; i < 5; i++) {
-    el('rect', { x: L + 32 + i * 15, y: ly - 8, width: 12, height: 10, rx: 2,
-                 fill: C.accent, opacity: 0.12 + 0.88 * Math.sqrt((i + 1) / 5) }, svg);
-  }
-  const rt = el('text', { x: L + 32 + 5 * 15 + 4, y: ly, fill: C.soft, 'font-size': 9.5 }, svg);
-  rt.textContent = `more (peak ${max})`;
-}
-
-/** Funnel: stages narrowing top to bottom.
- *
- * Bar widths are SQUARE-ROOT scaled, not linear. This funnel spans ~115k
- * devices down to a handful of accounts, and on a linear scale every stage
- * after the first collapses to an invisible 3px sliver with its label spilling
- * off the bar. Sqrt keeps the later stages legible while preserving the
- * ordering; the caption says so, and the exact numbers are printed anyway, so
- * nothing is being hidden by the distortion.
- */
-function funnel(id, stages) {
-  const rows = stages.filter(s => s.value >= 0);
-  if (!rows.length || !rows[0].value) return empty(id);
-  const W = 300, rowH = 42, H = rows.length * rowH + 6;
-  const svg = mount(id, W, H); if (!svg) return;
-  const max = Math.sqrt(rows[0].value);
-  const barTop = 16, barH = 15;
-  rows.forEach((r, i) => {
-    const y = i * rowH + 4;
-    // Name and value live above the bar in ink, so they stay readable no
-    // matter how narrow the bar gets.
-    const t = el('text', { x: 0, y: y + 11, fill: C.ink, 'font-size': 11.5, 'font-weight': 600 }, svg);
-    t.textContent = `${r.name} · ${fmt(r.value)}`;
-    if (i > 0 && rows[i - 1].value) {
-      const p = el('text', { x: W, y: y + 11, 'text-anchor': 'end', fill: C.soft,
-                             'font-size': 10, 'font-family': 'IBM Plex Mono, monospace' }, svg);
-      // A 4-in-115,000 conversion is 0.0035%, which "toFixed(2)" flattens to a
-      // meaningless 0.00%. Keep significant digits when the rate is tiny.
-      const v = (r.value / rows[i - 1].value) * 100;
-      p.textContent = (v > 0 && v < 0.1 ? Number(v.toPrecision(2)) : v.toFixed(1)) + '% of prev';
-    }
-    el('rect', { x: 0, y: y + barTop, width: W, height: barH, fill: C.paper, rx: 2 }, svg);
-    const w = r.value > 0 ? Math.max((Math.sqrt(r.value) / max) * W, 3) : 0;
-    const rect = el('rect', { x: 0, y: y + barTop, width: w, height: barH, rx: 2,
-                              fill: PALETTE[i % PALETTE.length], opacity: 0.9 }, svg);
-    tip(rect, `${r.name}: ${r.value}`);
-  });
-}
-
 // `unknown` is deliberately muted but not invisible: right now it's every row
 // in the table, and against the empty-bar track a lighter grey reads as "no
 // data" rather than "data we can't attribute".
@@ -1178,20 +989,12 @@ const SOURCE_COLORS = { ad: C.accent, organic: C.blue, unknown: C.rule };
 const SOURCE_LABELS = { ad: 'Ad', organic: 'Organic', unknown: 'Unknown' };
 
 /** Funnel split by traffic source: stages narrow top to bottom, each bar
- *  segmented by where those people came from.
- *
- *  Row-to-row widths are √-scaled for the same reason as `funnel` above: the
- *  drop from six figures of devices to single-digit accounts flattens every
- *  later stage to a sliver on a linear scale. Segments *within* a row are
- *  plain linear shares of that row's own total, so the ad/organic split a
- *  reader is actually here to judge is never distorted.
- */
+ *  segmented by where those accounts came from. Everything is to scale. */
 function sourceFunnel(id, f) {
   const rows = (f && f.stages) || [];
-  if (!rows.length || !rows[0].total) return empty(id, 'No traffic recorded yet.');
-  const W = 300, rowH = 46, legendH = 20, H = rows.length * rowH + legendH;
+  if (!rows.length || !rows[0].total) return empty(id, 'No accounts yet.');
+  const W = 720, rowH = 46, legendH = 20, H = rows.length * rowH + legendH;
   const svg = mount(id, W, H); if (!svg) return;
-  const max = Math.sqrt(rows[0].total);
   const barTop = 18, barH = 15;
 
   rows.forEach((r, i) => {
@@ -1207,7 +1010,7 @@ function sourceFunnel(id, f) {
       p.textContent = (v > 0 && v < 0.1 ? Number(v.toPrecision(2)) : v.toFixed(1)) + '% of prev';
     }
     el('rect', { x: 0, y: y + barTop, width: W, height: barH, fill: C.paper, rx: 2 }, svg);
-    const w = r.total > 0 ? Math.max((Math.sqrt(r.total) / max) * W, 3) : 0;
+    const w = r.total > 0 ? Math.max((r.total / rows[0].total) * W, 3) : 0;
     let x = 0;
     f.sources.forEach(src => {
       const v = r.values[src] || 0;
@@ -1233,64 +1036,32 @@ function sourceFunnel(id, f) {
 
 // ---- Render -------------------------------------------------------------
 const M = S.money, A = S.activity, T = S.time_of_day;
+const HOUR_LABELS = Array.from({ length: 24 }, (_, h) =>
+  `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`);
 
-lineChart('c-pnl', [
-  { name: 'Revenue', color: C.green, points: M.revenue_series },
-  { name: 'AI spend', color: C.red, points: M.cost_series },
-], { money: true, dp: 4, emptyMsg: 'No revenue or costed AI calls yet — this fills in as money moves.' });
+// The bar charts size themselves to their card, so they redraw on resize.
+function renderCharts() {
+  columnChart('c-signups', A.signups, { color: C.purple, emptyMsg: 'No signups in this window.' });
+  columnChart('c-fills', A.fills, { emptyMsg: 'No fills in this window.' });
+  columnChart('c-spend', M.cost_series, { color: C.red, money: true, dp: 4, height: 160,
+              emptyMsg: 'No costed AI calls in this window.' });
+  columnChart('c-hour', T.by_hour.map((v, h) => ({ label: HOUR_LABELS[h], value: v })),
+              { height: 160, emptyMsg: 'No fills in this window.' });
+  columnChart('c-dow', T.by_dow.map((v, d) => ({ label: T.dow_names[d], value: v })),
+              { height: 160, emptyMsg: 'No fills in this window.' });
+}
+renderCharts();
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderCharts, 150);
+});
 
-// Cumulative profit, computed client-side from the two daily series.
-(function () {
-  let run = 0;
-  const pts = M.revenue_series.map((p, i) => {
-    run += p.value - (M.cost_series[i] ? M.cost_series[i].value : 0);
-    return { label: p.label, value: run };
-  });
-  lineChart('c-profit', [{ name: 'Profit', color: C.green, points: pts }],
-            { money: true, dp: 2, area: true, dots: true,
-              emptyMsg: 'Nothing to plot until there is revenue or costed spend.' });
-})();
-
+sourceFunnel('c-source-funnel', S.funnel);
 hbars('c-purpose', M.by_purpose.map(p => ({
   name: p.name, value: p.tokens,
   sub: `${p.tokens.toLocaleString()} tok · $${p.cost.toFixed(4)}`,
 })), { colors: true, emptyMsg: 'No AI calls recorded yet.' });
-
-heatmap('c-heat', T.grid, T.max, { emptyMsg: 'No fills recorded yet.' });
-barChart('c-hour', T.by_hour, { labelEvery: 2, labelFn: i => String(i).padStart(2, '0'),
-                                emptyMsg: 'No fills recorded yet.' });
-barChart('c-hour-signin', T.signin_by_hour, { color: C.blue, labelEvery: 2,
-         labelFn: i => String(i).padStart(2, '0'), emptyMsg: 'No sign-ins recorded yet.' });
-
-lineChart('c-activity', [
-  { name: 'Fills', color: C.accent, points: A.fills },
-  { name: 'Sign-ins', color: C.blue, points: A.signins },
-  { name: 'Signups', color: C.purple, points: A.signups },
-], { height: 240 });
-
-lineChart('c-devices', [{ name: 'Devices', color: C.blue, points: A.devices }],
-          { area: true,
-            emptyMsg: A.devices_daily_only
-              ? 'Device counts are aggregated per day — pick a window longer than 3 days.'
-              : undefined });
-heatmap('c-devheat', S.device_heat.grid, S.device_heat.max);
-
-donut('c-tier', [['Pro', S.accounts.pro], ['Free', S.accounts.free]],
-      { colors: [C.accent, C.soft], centerLabel: 'accounts' });
-donut('c-method', [['Google', S.accounts.google], ['Email', S.accounts.email]],
-      { colors: [C.blue, C.purple], centerLabel: 'accounts' });
-funnel('c-funnel', [
-  { name: 'Devices', value: S.device_total },
-  { name: 'Accounts', value: S.accounts.total },
-  { name: 'Pro', value: S.accounts.pro },
-  { name: 'Paid', value: S.accounts.paid },
-]);
-sourceFunnel('c-source-funnel', S.funnel);
-lineChart('c-signups', [{ name: 'Signups', color: C.purple, points: A.signups }], { area: true });
-
-donut('c-browser', S.clients.browsers, { centerLabel: 'sign-ins' });
-donut('c-os', S.clients.os, { centerLabel: 'sign-ins' });
-donut('c-kind', S.clients.kinds, { colors: [C.blue, C.accent], centerLabel: 'sign-ins' });
 
 // ---- Nav highlighting ---------------------------------------------------
 const links = [...document.querySelectorAll('.subnav a')];

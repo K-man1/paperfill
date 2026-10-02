@@ -1791,7 +1791,7 @@ def admin():
 
     window, window_key = _admin_window()
 
-    # Nine independent HTTP round-trips to Supabase. Serially that's several
+    # Six independent HTTP round-trips to Supabase. Serially that's several
     # seconds of pure latency, so fan them out — they don't depend on each
     # other. Each fetch already swallows its own errors and returns [].
     from concurrent.futures import ThreadPoolExecutor
@@ -1806,10 +1806,6 @@ def admin():
         # windowed fetch above can't answer for a window that ended earlier.
         "hack_club_calls": lambda: db.fetch_ai_calls(utc_day_start),
         "payments": db.fetch_payments,
-        "devices_daily": db.fetch_devices_daily,
-        "devices_hourly": db.fetch_devices_hourly,
-        "device_total": db.device_count,
-        "device_counts": db.device_counts_by_source,
     }
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
         futures = {k: ex.submit(fn) for k, fn in jobs.items()}
@@ -1818,11 +1814,9 @@ def admin():
     s = stats.build(
         signins=data["signins"], assignments=data["assignments"],
         users=data["users"], ai_calls=data["ai_calls"],
-        payments=data["payments"], devices_daily=data["devices_daily"],
-        devices_hourly=data["devices_hourly"], device_total=data["device_total"],
-        hack_club_calls=data["hack_club_calls"],
+        payments=data["payments"], hack_club_calls=data["hack_club_calls"],
         rate_card=costs.load(), hack_club_cap_usd=HACK_CLUB_BUDGET_USD,
-        window=window, device_counts=data["device_counts"],
+        window=window,
     )
 
     # Read from the shared database so every worker shows the same numbers.
@@ -1843,7 +1837,6 @@ def admin():
     # DB, so a reported row can legitimately have no PDF here.
     pdf_count = sum(1 for e in activity_log if e["has_pdf"])
     last_download = last_reports_download()
-    rate_card = costs.load()
     model_catalog = models.catalog()
     return render_template(
         "admin.html",
@@ -1858,7 +1851,6 @@ def admin():
             datetime.fromtimestamp(last_download, timezone.utc)
             .strftime("%Y-%m-%d %H:%M UTC") if last_download else None),
         reports_status=request.args.get("reports_status"),
-        device_count=data["device_total"],
         s=s,
         window_presets=WINDOW_PRESETS,
         window_key=window_key,
@@ -1866,12 +1858,6 @@ def admin():
         window_from=(request.args.get("from") or ""),
         window_to=(request.args.get("to") or ""),
         tz_label=f"ET (UTC{window.tz_offset:+g})",
-        rate_card=rate_card,
-        rate_models=sorted(set(costs.known_models())
-                           | set(rate_card["models"])
-                           | {r["name"] for r in s["money"]["by_model"]
-                              if r["name"] != "—"}),
-        rates_status=request.args.get("rates_status"),
         model_slots=models.SLOTS,
         model_overrides=models.overrides(),
         model_resolved=models.resolved(),
@@ -1968,12 +1954,13 @@ def grant_pro():
     email = (request.form.get("email") or "").strip().lower()
     grant = request.form.get("action") == "grant"
     if not email:
-        return redirect(url_for("admin", pro_status="empty"))
+        return redirect(url_for("admin", pro_status="empty") + "#pro-grant")
     ok = db.set_user_pro(email, grant)
     if ok:
         _forget_pro(email)
     status = ("granted" if grant else "revoked") if ok else "nouser"
-    return redirect(url_for("admin", pro_status=status, pro_email=email))
+    return redirect(url_for("admin", pro_status=status, pro_email=email)
+                    + "#pro-grant")
 
 
 @app.post("/admin/auto-pro")
@@ -1982,30 +1969,15 @@ def change_auto_pro():
         return redirect(url_for("login"))
     # Unchecked checkboxes don't submit, so absence means "off".
     set_auto_pro(request.form.get("auto_pro") == "on")
-    return redirect(url_for("admin", pro_status="auto"))
+    return redirect(url_for("admin", pro_status="auto") + "#pro-signup")
 
 
-@app.post("/admin/ai-rates")
-def change_ai_rates():
-    """Save the AI price list used to cost every future call.
-
-    Anything saved here overrides the built-in rates in costs.BUILTIN_RATES,
-    which only cover the models we actually route to. Editing rates does NOT
-    rewrite past calls: each row stores the cost computed when it happened.
-    """
+@app.post("/admin/payments")
+def change_payments():
     if session.get("role") != "admin":
         return redirect(url_for("login"))
-    rates = {}
-    # Fields arrive as rate_in[<model>] / rate_out[<model>].
-    for key, val in request.form.items():
-        if key.startswith("rate_in[") and key.endswith("]"):
-            name = key[8:-1]
-            rates.setdefault(name, {})["in"] = val
-        elif key.startswith("rate_out[") and key.endswith("]"):
-            name = key[9:-1]
-            rates.setdefault(name, {})["out"] = val
-    costs.save(rates, request.form.get("primary_free") == "on")
-    return redirect(url_for("admin", rates_status="ok") + "#money")
+    set_payments_enabled(request.form.get("payments_enabled") == "on")
+    return redirect(url_for("admin", pro_status="payments") + "#pro-sales")
 
 
 @app.post("/admin/models")
@@ -2048,7 +2020,7 @@ def change_ads():
     # Unchecked checkboxes don't submit, so absence means "off".
     set_ads_enabled(request.form.get("ads_enabled") == "on")
     set_vast_tags(request.form.get("vast_tags") or "")
-    return redirect(url_for("admin", ads_status="ok"))
+    return redirect(url_for("admin", ads_status="ok") + "#ads")
 
 
 @app.route("/")

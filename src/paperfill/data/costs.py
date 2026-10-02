@@ -4,15 +4,16 @@ What each AI call costs — a rate card you configure, not one we guess.
 Token *counts* come from the provider's response and are facts. Token *prices*
 are not: they change, they differ per provider, and a wrong number here turns
 the whole P&L chart into confident fiction. So nothing is hardcoded from
-memory. Rates live in ai_rates.json, edited from the admin dashboard, and any
+memory. Rates live in ai_rates.json, seeded from the provider's published
+price whenever a model is picked under Models in the admin dashboard, and any
 model without a rate is reported as "uncosted" rather than silently counted as
 free.
 
 Two things ship with real defaults. The primary provider: PaperFill runs on the
 Hack Club AI proxy, which is free, so calls that land on it genuinely cost $0.
 And the Gemini models we actually route to on the paid OpenRouter fallback,
-whose published rates are in BUILTIN_RATES below. Any other model starts unset —
-fill it in from your provider's pricing page.
+whose published rates are in BUILTIN_RATES below. Any other model starts unset
+until it is picked under Models.
 
 Prices are USD per 1,000,000 tokens, quoted separately for input and output
 because every provider charges more for output.
@@ -25,13 +26,6 @@ import json
 from paperfill.paths import REPO_ROOT
 
 _PATH = REPO_ROOT / "ai_rates.json"
-
-# Models the app can reach today, so the admin editor can pre-list them even
-# before any call has been made.
-def known_models() -> list[str]:
-    from paperfill.data import models
-    return sorted(set(models.resolved().values()))
-
 
 # OpenRouter list prices, USD per 1M tokens. Seed rates so a fresh deploy costs
 # its calls correctly with an empty ai_rates.json; add a row for whatever the

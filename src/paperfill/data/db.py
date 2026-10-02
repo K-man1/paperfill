@@ -234,68 +234,6 @@ def fetch_users() -> list[dict]:
                 "google_sub,source&order=created_at.asc")
 
 
-def fetch_devices_daily() -> list[dict]:
-    """One row per day from the devices_daily view. The devices table has six
-    figures of rows — aggregating in Postgres keeps them out of this process."""
-    return _get("devices_daily?select=day,devices&order=day.asc")
-
-
-def fetch_devices_hourly() -> list[dict]:
-    return _get("devices_hourly?select=dow,hour,devices")
-
-
-def count_rows(table: str) -> int:
-    """Row count without transferring the rows. PostgREST returns the total in
-    the Content-Range header when asked for an exact count, so this replaces a
-    ~115k-row download that the admin page used to do on every load."""
-    if not enabled():
-        return 0
-    try:
-        r = requests.get(
-            _rest(f"{table}?select=*&limit=0"),
-            headers=_headers({"Prefer": "count=exact"}),
-            timeout=_TIMEOUT,
-        )
-        # Header looks like "0-24/1234" or "*/1234".
-        total = r.headers.get("Content-Range", "").split("/")[-1]
-        return int(total) if total.isdigit() else 0
-    except (requests.RequestException, ValueError) as e:
-        print(f"[db] count_rows({table}) failed: {e}")
-        return 0
-
-
-def device_count() -> int:
-    return count_rows("devices")
-
-
-def device_counts_by_source() -> dict[str, int]:
-    """How many devices arrived from each traffic source, counted in Postgres.
-
-    Three header-only count queries rather than one download: the table is at
-    six figures and the admin page already refuses to pull it. `unknown` is
-    every device recorded before attribution existed, kept separate from
-    `organic` so the funnel never claims a visit was organic when the truth is
-    that nobody was looking."""
-    if not enabled():
-        return {"ad": 0, "organic": 0, "unknown": 0}
-    counts = {}
-    for label, clause in (("ad", "source=eq.ad"),
-                          ("organic", "source=eq.organic"),
-                          ("unknown", "source=is.null")):
-        try:
-            r = requests.get(
-                _rest(f"devices?select=device_id&limit=0&{clause}"),
-                headers=_headers({"Prefer": "count=exact"}),
-                timeout=_TIMEOUT,
-            )
-            total = r.headers.get("Content-Range", "").split("/")[-1]
-            counts[label] = int(total) if total.isdigit() else 0
-        except (requests.RequestException, ValueError) as e:
-            print(f"[db] device_counts_by_source({label}) failed: {e}")
-            counts[label] = 0
-    return counts
-
-
 def device_source(device_id: str) -> str | None:
     """The traffic source recorded for a device, for stamping onto an account
     at signup. Read from the row rather than the session so it survives the

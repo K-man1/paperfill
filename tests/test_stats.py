@@ -46,7 +46,7 @@ def test_time_of_day_buckets_by_hour_and_weekday():
     assert out["grid"][0][14] == 2        # Monday 14:00
     assert out["grid"][1][9] == 1         # Tuesday 09:00
     assert out["by_hour"][14] == 2
-    assert out["peak_hour_label"] == "14:00"
+    assert out["peak_hour_label"] == "2pm"
     assert out["peak_dow_label"] == "Mon"
 
 
@@ -118,7 +118,7 @@ def test_short_windows_bucket_by_hour():
     out = stats.money([{"ts": now.isoformat(), "cost_usd": 1.0}], [], w)
     assert len(out["cost_series"]) == 6
     assert out["cost_series"][-1]["value"] == 1.0
-    assert out["cost_series"][0]["label"] == (now - timedelta(hours=5)).strftime("%H:%M")
+    assert out["cost_series"][0]["label"] == stats.hour_label((now - timedelta(hours=5)).hour)
 
 
 def test_window_filters_events_but_not_accounts():
@@ -130,8 +130,7 @@ def test_window_filters_events_but_not_accounts():
     old_fill = {"ts": (now - timedelta(days=40)).isoformat(), "style": "Typed text"}
     s = stats.build(signins=[], assignments=[recent, old_fill],
                     users=[{"created_at": (now - timedelta(days=90)).isoformat()}],
-                    ai_calls=[], payments=[], devices_daily=[], devices_hourly=[],
-                    device_total=7, window=w)
+                    ai_calls=[], payments=[], window=w)
     assert s["product"]["total"] == 1
     assert s["accounts"]["total"] == 1
 
@@ -197,19 +196,6 @@ def test_filter_includes_the_start_instant_and_excludes_the_end():
         {"ts": end.isoformat(), "id": "at-end"},
     ]
     assert [r["id"] for r in w.filter(rows)] == ["at-start", "before-end"]
-
-
-def test_devices_daily_lands_in_a_bucket_the_chart_actually_draws():
-    """devices_daily is aggregated per UTC calendar day while the chart's
-    buckets are local days. Matched on the bare UTC date, the newest row has
-    no bucket at all between UTC midnight and midnight in ET, so it silently
-    drops off the chart every night."""
-    # 20:00 ET on the 10th is already 01:00 UTC on the 11th.
-    w = _et_window(datetime(2026, 12, 5, tzinfo=ET),
-                   datetime(2026, 12, 10, 20, tzinfo=ET))
-    out = stats.activity([], [], [], [{"day": "2026-12-11", "devices": 9}], w)
-    assert [p["label"] for p in out["devices"]][-1] == "12-10"
-    assert out["devices"][-1]["value"] == 9
 
 
 # ---- Product -------------------------------------------------------------
@@ -302,9 +288,9 @@ def test_a_person_who_filled_ten_times_is_one_filler():
     f = stats.funnel(
         users=_users(("a@x.com", "ad")),
         assignments=[{"user_email": "a@x.com"} for _ in range(10)],
-        payments=[], device_counts={},
+        payments=[],
     )
-    assert f["stages"][2]["values"]["ad"] == 1
+    assert f["stages"][1]["values"]["ad"] == 1
 
 
 def test_repeat_charges_to_one_payer_are_one_paying_account():
@@ -314,9 +300,8 @@ def test_repeat_charges_to_one_payer_are_one_paying_account():
         users=_users(("a@x.com", "organic")),
         assignments=[],
         payments=[{"email": "a@x.com"}, {"email": "a@x.com"}],
-        device_counts={},
-    )
-    assert f["stages"][3]["total"] == 1
+            )
+    assert f["stages"][2]["total"] == 1
 
 
 def test_the_account_stages_can_only_narrow():
@@ -327,11 +312,10 @@ def test_the_account_stages_can_only_narrow():
         users=_users(("a@x.com", "ad"), ("b@x.com", "organic"), ("c@x.com", None)),
         assignments=[{"user_email": "a@x.com"}, {"user_email": "b@x.com"}],
         payments=[{"email": "a@x.com"}],
-        device_counts={"ad": 10, "organic": 5, "unknown": 900},
     )
     totals = [s["total"] for s in f["stages"]]
-    assert totals[1] >= totals[2] >= totals[3]
-    assert totals == [915, 3, 2, 1]
+    assert totals[0] >= totals[1] >= totals[2]
+    assert totals == [3, 2, 1]
 
 
 def test_an_unattributed_row_is_unknown_and_never_organic():
@@ -339,17 +323,17 @@ def test_an_unattributed_row_is_unknown_and_never_organic():
     those into organic would silently credit organic with the whole back
     catalogue and make any ad comparison meaningless."""
     f = stats.funnel(users=_users(("a@x.com", None), ("b@x.com", "")),
-                     assignments=[], payments=[], device_counts={})
-    assert f["stages"][1]["values"] == {"ad": 0, "organic": 0, "unknown": 2}
+                     assignments=[], payments=[])
+    assert f["stages"][0]["values"] == {"ad": 0, "organic": 0, "unknown": 2}
 
 
 def test_a_fill_attributes_to_its_accounts_source_not_its_own():
     f = stats.funnel(
         users=_users(("a@x.com", "ad")),
         assignments=[{"user_email": "A@X.com"}],   # casing varies at the boundary
-        payments=[], device_counts={},
+        payments=[],
     )
-    assert f["stages"][2]["values"]["ad"] == 1
+    assert f["stages"][1]["values"]["ad"] == 1
 
 
 def test_fills_with_no_account_are_dropped_not_counted_unknown():
@@ -358,19 +342,20 @@ def test_fills_with_no_account_are_dropped_not_counted_unknown():
     over-count the IP version had."""
     f = stats.funnel(users=_users(("a@x.com", "ad")),
                      assignments=[{"user_email": None}, {"user_email": ""}],
-                     payments=[], device_counts={})
-    assert f["stages"][2]["total"] == 0
+                     payments=[])
+    assert f["stages"][1]["total"] == 0
 
 
-def test_devices_come_from_the_counts_not_the_account_rows():
-    """Devices are counted before anyone identifies themselves, so that stage
-    is a separate population handed in from Postgres rather than derived."""
-    f = stats.funnel(users=[], assignments=[], payments=[],
-                     device_counts={"ad": 7, "organic": 3, "unknown": 1})
-    assert f["stages"][0]["values"] == {"ad": 7, "organic": 3, "unknown": 1}
-    assert f["stages"][0]["total"] == 11
+def test_median_fills_counts_accounts_that_never_filled():
+    """One heavy user drags the average up; the median should still say the
+    typical account filled nothing."""
+    users = [{"email": e} for e in ("a@x.com", "b@x.com", "c@x.com")]
+    fills = [{"user_email": "a@x.com"} for _ in range(9)]
+    out = stats.accounts(users, fills, [])
+    assert out["fills_per_user_avg"] == 3.0
+    assert out["fills_per_user_median"] == 0.0
 
 
-def test_missing_device_counts_do_not_explode():
-    f = stats.funnel(users=[], assignments=[], payments=[], device_counts=None)
-    assert f["stages"][0]["total"] == 0
+def test_hour_labels_are_twelve_hour():
+    assert [stats.hour_label(h) for h in (0, 1, 11, 12, 13, 23)] == \
+        ["12am", "1am", "11am", "12pm", "1pm", "11pm"]

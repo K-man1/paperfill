@@ -17,13 +17,14 @@ Three conventions worth knowing before reading further:
   lie, so `money()` reports how many it had to ignore.
 * **The window filters events, not inventory.** `build()` slices the event
   streams — fills, sign-ins, AI calls, payments — to the chosen window, but
-  account and device totals stay all-time: "how many accounts exist" is a
+  account totals stay all-time: "how many accounts exist" is a
   stock, and windowing it would answer a question nobody asked.
 """
 
 from __future__ import annotations
 
 import math
+import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -137,8 +138,13 @@ class Window:
         # Inside a single day the date is noise; across two or three it's the
         # only thing telling 09:00 Tuesday from 09:00 Wednesday.
         if self.end - self.start <= timedelta(days=1):
-            return dt.strftime("%H:%M")
-        return dt.strftime("%m-%d %H:%M")
+            return hour_label(dt.hour)
+        return f"{dt:%m-%d} {hour_label(dt.hour)}"
+
+
+def hour_label(hour: int) -> str:
+    """0 -> "12am", 13 -> "1pm"."""
+    return f"{hour % 12 or 12}{'am' if hour < 12 else 'pm'}"
 
 
 def _stamps(rows: list[dict], field: str, tz) -> list[datetime]:
@@ -205,47 +211,23 @@ def time_of_day(assignments, signins, tz_offset: float) -> dict:
         "by_dow": by_dow,
         "signin_by_hour": signin_by_hour,
         "peak_hour": peak_hour,
-        "peak_hour_label": f"{peak_hour:02d}:00" if peak_hour is not None else "—",
+        "peak_hour_label": hour_label(peak_hour) if peak_hour is not None else "—",
         "peak_dow_label": DOW_NAMES[peak_dow] if peak_dow is not None else "—",
         "dow_names": DOW_NAMES,
     }
 
 
-def activity(assignments, signins, users, devices_daily, window: Window) -> dict:
+def activity(assignments, signins, users, window: Window) -> dict:
     """Volume time series for the main charts, bucketed to fit the window."""
     tz = window.tz
     fills = Counter(window.key(dt) for dt in _stamps(assignments, "ts", tz))
     logins = Counter(window.key(dt) for dt in _stamps(signins, "ts", tz))
     signups = Counter(window.key(dt) for dt in _stamps(users, "created_at", tz))
 
-    # devices_daily is pre-aggregated per calendar day in Postgres, so it can't
-    # be split into hours. An hourly window gets an empty series rather than a
-    # day total smeared across 24 buckets.
-    #
-    # Its days are UTC days; the chart's buckets are local ones. A row is a
-    # span of 24 hours starting at its own UTC midnight, so resolve that
-    # instant through the same bucket() every other count goes through.
-    # Matching the bare UTC date against a local bucket key instead leaves the
-    # newest row with nowhere to land for the hours between UTC midnight and
-    # local midnight, and it drops off the chart every night.
-    dev = {}
-    if not window.hourly:
-        for row in devices_daily or []:
-            try:
-                day = datetime.fromisoformat(str(row.get("day")))
-                count = int(row.get("devices") or 0)
-            except (ValueError, TypeError):
-                continue
-            key = window.bucket(day.replace(tzinfo=timezone.utc))
-            if key is not None:
-                dev[key] = count
-
     return {
         "fills": window.series(fills),
         "signins": window.series(logins),
         "signups": window.series(signups),
-        "devices": window.series(dev),
-        "devices_daily_only": window.hourly,
     }
 
 
@@ -436,8 +418,20 @@ def accounts(users, assignments, payments) -> dict:
         "email": total - google,
         "paid": len(payments or []),
         "paid_pct": pct(len(payments or []), total),
-        "fills_per_user": round(len(assignments or []) / total, 1) if total else 0.0,
+        "fills_per_user_avg": round(len(assignments or []) / total, 1) if total else 0.0,
+        "fills_per_user_median": _median_fills(users, assignments),
     }
+
+
+def _median_fills(users, assignments) -> float:
+    """Median fills per account, counting accounts that never filled as 0.
+    Fills whose email matches no account are left out: they have no account
+    to be the median of."""
+    per_user = Counter((a.get("user_email") or "").strip().lower()
+                       for a in assignments or [])
+    counts = [per_user.get((u.get("email") or "").strip().lower(), 0)
+              for u in users or []]
+    return float(statistics.median(counts)) if counts else 0.0
 
 
 FUNNEL_SOURCES = ("ad", "organic", "unknown")
@@ -451,14 +445,13 @@ def _source_bucket(value) -> str:
     return source if source in ("ad", "organic") else "unknown"
 
 
-def funnel(users, assignments, payments, device_counts) -> dict:
-    """Visit, signup, fill, pay, split by where the visitor came from.
+def funnel(users, assignments, payments) -> dict:
+    """Signup, fill, pay, split by where the account came from.
 
-    Every stage after the first is keyed on the account, so one person is
-    counted in the same column at each stage they reach and the funnel can
-    only ever narrow. Devices are the exception: they're counted before anyone
-    identifies themselves, so that row is a different population and the drop
-    from it into signups is a rate, not a cohort.
+    Every stage is keyed on the account, so one person is counted in the same
+    column at each stage they reach and the funnel can only ever narrow. There
+    is no visit stage: the devices table is almost entirely bots and scanners,
+    and no filter over it produced a number worth trusting.
 
     Fills and payments both attribute through the account rather than
     themselves: a fill has no source of its own, and it's the traffic that
@@ -480,7 +473,6 @@ def funnel(users, assignments, payments, device_counts) -> dict:
     paid.discard("")
 
     counts = [
-        ("Visited", {s: (device_counts or {}).get(s, 0) for s in FUNNEL_SOURCES}),
         ("Signed up", by_source(source_by_email)),
         ("Filled a PDF", by_source(filled)),
         ("Paid", by_source(paid)),
@@ -566,28 +558,9 @@ def clients(signins) -> dict:
     }
 
 
-def devices_heatmap(rows) -> dict:
-    """First-touch traffic by dow×hour, straight from the devices_hourly view.
-
-    Comes pre-aggregated from Postgres because the devices table is six figures
-    of rows and has no business being pulled into this process.
-    """
-    grid = [[0] * 24 for _ in range(7)]
-    for r in rows or []:
-        try:
-            # Postgres DOW is 0=Sunday; the grid is 0=Monday.
-            dow = (int(r.get("dow")) + 6) % 7
-            grid[dow][int(r.get("hour"))] += int(r.get("devices") or 0)
-        except (TypeError, ValueError, IndexError):
-            continue
-    return {"grid": grid, "max": max((max(row) for row in grid), default=0)}
-
-
 def build(*, signins, assignments, users, ai_calls, payments,
-          devices_daily, devices_hourly, device_total,
           window: Window, hack_club_calls: list[dict] | None = None,
-          rate_card: dict | None = None, hack_club_cap_usd: float = 3.0,
-          device_counts: dict | None = None) -> dict:
+          rate_card: dict | None = None, hack_club_cap_usd: float = 3.0) -> dict:
     """Everything the dashboard needs, in one dict.
 
     The window is applied here, once, so every section is slicing the same
@@ -605,8 +578,7 @@ def build(*, signins, assignments, users, ai_calls, payments,
 
     return {
         "time_of_day": time_of_day(win_assignments, win_signins, window.tz_offset),
-        "activity": activity(win_assignments, win_signins, users,
-                             devices_daily, window),
+        "activity": activity(win_assignments, win_signins, users, window),
         "money": money(win_calls, win_payments, window),
         "hack_club": hack_club_budget(
             ai_calls if hack_club_calls is None else hack_club_calls,
@@ -616,11 +588,9 @@ def build(*, signins, assignments, users, ai_calls, payments,
         # All-time, like `accounts`: attribution is a property of how an
         # account arrived, and windowing it would drop the signup that a
         # campaign is being judged on.
-        "funnel": funnel(users, assignments, payments, device_counts),
+        "funnel": funnel(users, assignments, payments),
         "product": product(win_assignments),
         "clients": clients(win_signins),
-        "device_heat": devices_heatmap(devices_hourly),
-        "device_total": device_total,
         "tz_offset": window.tz_offset,
         "window_label": window.label,
         "hourly": window.hourly,
