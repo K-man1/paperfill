@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Paperfill — Past fills</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#f7f4ee;--ink:#1f1d1a;--ink-soft:#5c564c;--rule:#d5cec1;--accent:#ff5a1f;--accent-deep:#c93f10;--serif:"Fraunces",serif;--sans:"IBM Plex Sans",system-ui,sans-serif;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.5;}
+.wrap{max-width:900px;margin:0 auto;padding:42px 22px 80px;}
+a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
+h1{font-family:var(--serif);font-weight:800;font-size:34px;margin:14px 0 6px;}
+.lede{color:var(--ink-soft);margin:0 0 28px;}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:18px;}
+.fill{background:#fff;border:1px solid var(--rule);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;}
+.thumb{display:block;width:100%;aspect-ratio:8.5/11;background:#efeae0 no-repeat top center/cover;border:none;border-bottom:1px solid var(--rule);padding:0;cursor:zoom-in;}
+.meta{padding:14px 16px 4px;flex:1;}
+.fill .name{font-weight:600;font-size:15px;word-break:break-word;}
+.fill .when{font-size:13px;color:var(--ink-soft);margin-top:2px;}
+.chip{display:inline-block;margin-top:8px;font-size:12px;font-weight:600;color:var(--ink-soft);border:1px solid var(--rule);border-radius:999px;padding:1px 9px;}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px 16px;}
+
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:none;border-radius:8px;padding:8px 14px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;}
+.btn.accent{background:var(--accent);} .btn.accent:hover{background:var(--accent-deep);}
+.btn.quiet{background:none;color:var(--ink-soft);border:1px solid var(--rule);}
+.btn.quiet:hover{color:var(--ink);}
+.btn.danger{background:none;color:var(--accent-deep);border:1px solid var(--rule);margin-left:auto;}
+.btn.danger:hover{background:#fff1ec;}
+.btn:disabled{opacity:.5;cursor:default;}
+
+.confirm{padding:0 16px 16px;font-size:13px;color:var(--ink-soft);}
+.confirm p{margin:0 0 8px;}
+.err{color:var(--accent-deep);font-weight:500;font-size:14px;}
+.empty{background:#fff;border:1px solid var(--rule);border-radius:12px;padding:30px 24px;color:var(--ink-soft);}
+.empty p{margin:0 0 14px;}
+
+.viewer{position:fixed;inset:0;background:rgba(31,29,26,.72);display:none;overflow:auto;padding:0 18px 60px;z-index:20;}
+.viewer.open{display:block;}
+/* Sticky so Close stays reachable however long the worksheet is — the pages
+   scroll under it rather than taking it away. */
+.viewer-head{position:sticky;top:0;z-index:1;max-width:820px;margin:0 auto 14px;display:flex;gap:14px;align-items:center;color:#fff;padding:10px 0;background:rgba(31,29,26,.72);}
+.viewer-head .name{font-weight:600;flex:1;word-break:break-word;}
+.viewer-head .btn.quiet{color:#fff;border-color:rgba(255,255,255,.45);}
+.viewer-head .btn.quiet:hover{color:#fff;background:rgba(255,255,255,.14);}
+.viewer-pages{max-width:820px;margin:0 auto;display:flex;flex-direction:column;gap:14px;}
+.viewer-pages img{width:100%;display:block;border-radius:8px;background:#fff;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">Back to Paperfill</a>
+  <h1>Past fills</h1>
+  <p class="lede">Everything you've filled in the last {{ history_days }} days. Open one
+     to read it, reopen it in the editor to change an answer, or delete it and
+     its PDF from the server for good.</p>
+
+  <div id="mount"><p class="lede">Loading…</p></div>
+  <p class="err" id="err"></p>
+</div>
+
+<div class="viewer" id="viewer">
+  <div class="viewer-head">
+    <span class="name" id="viewer-name"></span>
+    <a class="btn accent" id="viewer-download" href="#">Download</a>
+    <button class="btn quiet" type="button" id="viewer-close">Close</button>
+  </div>
+  <div class="viewer-pages" id="viewer-pages"></div>
+</div>
+
+<script>
+const el = (id) => document.getElementById(id);
+const mount = el("mount"), viewer = el("viewer");
+
+// Times come back as Postgres timestamptz (UTC). Anchor "today" and
+// "yesterday" to the reader's own midnight, not to a 24-hour count back from
+// now, or a fill from 11pm last night reads as today all through this morning.
+function whenLabel(iso) {
+  const at = new Date(iso);
+  if (isNaN(at)) return "";
+  const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  if (at >= midnight) return "Today at " + time;
+  const yesterday = new Date(midnight); yesterday.setDate(yesterday.getDate() - 1);
+  if (at >= yesterday) return "Yesterday at " + time;
+  return at.toLocaleDateString([], { month: "short", day: "numeric" }) + " at " + time;
+}
+
+function card(fill) {
+  const node = document.createElement("div");
+  node.className = "fill";
+
+  const thumb = document.createElement("button");
+  thumb.className = "thumb";
+  thumb.type = "button";
+  thumb.style.backgroundImage =
+    `url("/api/preview/${encodeURIComponent(fill.job_id)}/filled/0")`;
+  thumb.title = "Open " + fill.name;
+  thumb.addEventListener("click", () => openViewer(fill));
+  node.append(thumb);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = fill.name;
+  const when = document.createElement("div");
+  when.className = "when";
+  when.textContent = whenLabel(fill.ts);
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  chip.textContent = fill.style;
+  meta.append(name, when, chip);
+  node.append(meta);
+
+  const row = document.createElement("div");
+  row.className = "row";
+  const view = document.createElement("button");
+  view.className = "btn"; view.type = "button"; view.textContent = "View";
+  view.addEventListener("click", () => openViewer(fill));
+  const edit = document.createElement("a");
+  edit.className = "btn accent"; edit.textContent = "Edit";
+  edit.href = "/?job=" + encodeURIComponent(fill.job_id);
+  const del = document.createElement("button");
+  del.className = "btn danger"; del.type = "button"; del.textContent = "Delete";
+  del.addEventListener("click", () => askDelete(node, fill));
+  row.append(view, edit, del);
+  node.append(row);
+
+  return node;
+}
+
+// Deleting takes the user's PDF off the server, so it asks in place rather than
+// through a confirm() the browser lets you click past by muscle memory.
+function askDelete(node, fill) {
+  if (node.querySelector(".confirm")) return;
+  const box = document.createElement("div");
+  box.className = "confirm";
+  const copy = document.createElement("p");
+  copy.textContent = "Delete this fill? The PDF you uploaded and the filled "
+    + "copy are removed from the server. This can't be undone.";
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.padding = "0";
+  const yes = document.createElement("button");
+  yes.className = "btn danger"; yes.type = "button";
+  yes.style.marginLeft = "0"; yes.textContent = "Delete for good";
+  const no = document.createElement("button");
+  no.className = "btn quiet"; no.type = "button"; no.textContent = "Keep it";
+  no.addEventListener("click", () => box.remove());
+  yes.addEventListener("click", async () => {
+    yes.disabled = no.disabled = true;
+    try {
+      const r = await fetch("/api/history/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: fill.job_id }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || "delete failed");
+      node.remove();
+      if (!document.querySelector(".fill")) showEmpty();
+    } catch (ex) {
+      el("err").textContent = "Couldn't delete that fill: " + ex.message;
+      yes.disabled = no.disabled = false;
+    }
+  });
+  row.append(yes, no);
+  box.append(copy, row);
+  node.append(box);
+}
+
+async function openViewer(fill) {
+  el("viewer-name").textContent = fill.name;
+  el("viewer-download").href = "/api/download/" + encodeURIComponent(fill.job_id);
+  const pages = el("viewer-pages");
+  pages.textContent = "";
+  viewer.classList.add("open");
+  document.body.style.overflow = "hidden";
+  // The list doesn't carry a page count — it would cost a read of every job's
+  // metadata to build. Ask for just the one being opened.
+  let count = 1;
+  try {
+    const r = await fetch("/api/job/" + encodeURIComponent(fill.job_id));
+    if (r.ok) count = (await r.json()).page_count || 1;
+  } catch (_) { /* one page is still worth showing */ }
+  for (let i = 0; i < count; i++) {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = `${fill.name} page ${i + 1}`;
+    img.src = `/api/preview/${encodeURIComponent(fill.job_id)}/filled/${i}`;
+    pages.append(img);
+  }
+}
+
+function closeViewer() {
+  viewer.classList.remove("open");
+  document.body.style.overflow = "";
+  el("viewer-pages").textContent = "";
+}
+
+el("viewer-close").addEventListener("click", closeViewer);
+viewer.addEventListener("click", (e) => { if (e.target === viewer) closeViewer(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && viewer.classList.contains("open")) closeViewer();
+});
+
+function showEmpty() {
+  mount.textContent = "";
+  const box = document.createElement("div");
+  box.className = "empty";
+  const copy = document.createElement("p");
+  copy.textContent = "Nothing here yet. Fill a worksheet and it'll show up, "
+    + "for {{ history_days }} days.";
+  const go = document.createElement("a");
+  go.className = "btn accent"; go.href = "/"; go.textContent = "Fill a worksheet";
+  box.append(copy, go);
+  mount.append(box);
+}
+
+(async function load() {
+  try {
+    const r = await fetch("/api/history");
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "failed");
+    const fills = (await r.json()).fills || [];
+    if (!fills.length) return showEmpty();
+    mount.textContent = "";
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    fills.forEach(f => grid.append(card(f)));
+    mount.append(grid);
+  } catch (ex) {
+    mount.textContent = "";
+    el("err").textContent = "Couldn't load your past fills: " + ex.message;
+  }
+})();
+</script>
+</body>
+</html>

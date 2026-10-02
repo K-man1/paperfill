@@ -205,6 +205,37 @@ def fetch_assignments() -> list[dict]:
                 "&order=ts.asc")
 
 
+def fetch_fills_for(email: str, since) -> list[dict]:
+    """One account's own fills, newest first, from `since` onwards.
+
+    The address goes into the query rather than into a filter applied to the
+    result: this table holds every account's fills, and a page that shows a
+    user their own worksheets must never be one forgotten comparison away from
+    showing them somebody else's."""
+    email = (email or "").strip().lower()
+    if not enabled() or not email:
+        return []
+    return _get(
+        "assignments?select=job_id,name,ts,style"
+        f"&user_email=eq.{requests.utils.quote(email, safe='')}"
+        f"&ts=gte.{requests.utils.quote(since.isoformat(), safe='')}"
+        "&order=ts.desc"
+    )
+
+
+def fill_owner(job_id: str) -> str | None:
+    """The address that filled this job, lowercased, or None if the row is
+    unknown or was recorded without one (a signed-out fill from before the
+    product was gated). Used to check a delete against the session."""
+    if not enabled() or not job_id:
+        return None
+    rows = _get("assignments?select=user_email"
+                f"&job_id=eq.{requests.utils.quote(job_id, safe='')}")
+    if not rows:
+        return None
+    return (rows[0].get("user_email") or "").strip().lower() or None
+
+
 def fetch_ai_calls(start=None, end=None, limit: int = 20000) -> list[dict]:
     """Metered LLM calls, newest first, restricted to [start, end) when either
     bound is given.

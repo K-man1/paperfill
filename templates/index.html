@@ -1191,6 +1191,7 @@ span.hw-cta { cursor: default; }
             </svg>
           </button>
           <div class="settings-dropdown" id="settings-dropdown">
+            <a href="{{ url_for('history_page') }}">Past fills</a>
             <a href="{{ url_for('settings_page') }}">Fill settings</a>
             {% if is_pro %}
             <a href="{{ url_for('handwriting_page') }}">Your handwriting</a>

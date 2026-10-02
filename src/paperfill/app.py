@@ -117,7 +117,14 @@ PREVIEW_MATRIX = fitz.Matrix(110 / 72, 110 / 72)
 # Finished jobs are kept (on disk and in memory) this many days after their
 # last activity, then swept so neither outputs/ nor the in-memory JOBS dict
 # grows without bound. A re-render or handwriting pass refreshes the clock.
-JOB_RETENTION_DAYS = 7
+#
+# This is also the window /history covers, deliberately as one number rather
+# than two: the page offers to open, edit and download a past fill, and none of
+# those survive the sweep, so a longer history than this would list entries
+# that go nowhere. Two costs come with raising it — every uploaded and filled
+# PDF sits on disk that much longer, and templates/privacy.html quotes the
+# figure to users, so it has to move in the same commit.
+JOB_RETENTION_DAYS = 30
 
 # templates/ and static/ stay at the repo root (Flask convention), but this
 # module now lives in src/paperfill/, so Flask's default root_path would look
@@ -872,6 +879,21 @@ def load_job(job_id: str) -> dict | None:
     return job
 
 
+def purge_job(job_id: str) -> None:
+    """Delete everything a job owns: the PDF it was made from, the filled one,
+    the previews and the in-memory copy.
+
+    reports/<id>/ is intentionally left alone. A report outlives its job so it
+    is still reproducible whenever an admin gets to it, and it expires on its
+    own REPORT_RETENTION_DAYS clock in sweep_old_reports()."""
+    shutil.rmtree(OUTPUTS / job_id, ignore_errors=True)
+    (UPLOADS / f"{job_id}.pdf").unlink(missing_ok=True)
+    # The rendered PDF is a sibling of outputs/<id>/, not a file inside it, so
+    # the rmtree above doesn't touch it.
+    (OUTPUTS / f"{job_id}-filled.pdf").unlink(missing_ok=True)
+    JOBS.pop(job_id, None)
+
+
 def sweep_old_jobs() -> None:
     """Best-effort: drop jobs older than JOB_RETENTION_DAYS from disk and
     memory so outputs/ and the JOBS dict can't grow forever. A job's
@@ -888,15 +910,21 @@ def sweep_old_jobs() -> None:
                 continue
         except OSError:
             continue
-        shutil.rmtree(d, ignore_errors=True)
-        # reports/<id>/ is intentionally left alone: a report outlives its job
-        # so it's still reproducible when it's read, and expires on its own
-        # REPORT_RETENTION_DAYS clock in sweep_old_reports().
-        (UPLOADS / f"{d.name}.pdf").unlink(missing_ok=True)
-        # The rendered PDF is a sibling of outputs/<id>/, not a file inside it,
-        # so rmtree above doesn't touch it.
-        (OUTPUTS / f"{d.name}-filled.pdf").unlink(missing_ok=True)
-        JOBS.pop(d.name, None)
+        purge_job(d.name)
+
+    # The loop above only walks directories, so anything that lost its
+    # outputs/<id>/ without being swept alongside it — a job that failed before
+    # the directory was created, a partial delete — is invisible to it and would
+    # survive forever. These are user documents and the privacy policy commits
+    # to deleting them, so sweep them on their own mtime.
+    for f in [*OUTPUTS.glob("*-filled.pdf"), *UPLOADS.glob("*.pdf")]:
+        if (OUTPUTS / f.stem.removesuffix("-filled")).is_dir():
+            continue
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 # ---- Helpers -------------------------------------------------------------
@@ -2207,6 +2235,71 @@ def get_settings():
 def save_settings():
     data = request.get_json(silent=True) or {}
     return jsonify(prefs.save(_user_key(), data))
+
+
+@app.route("/history")
+def history_page():
+    """Past fills: what this account has filled inside the retention window,
+    with the editor a click away."""
+    if not session.get("role"):
+        return redirect(url_for("login"))
+    return render_template("history.html", history_days=JOB_RETENTION_DAYS)
+
+
+@app.get("/api/history")
+def history():
+    """This account's own fills, newest first, over the last
+    JOB_RETENTION_DAYS.
+
+    The index comes from the database, which already records who filled what
+    and when, but a row only survives if the filled PDF is still on disk. The
+    two expire on separate clocks — the database keeps a fill for the admin
+    dashboard forever, the sweep takes the documents — and everything this page
+    offers to do with an entry reads those documents. Listing a fill whose
+    pages are gone would be offering a view, an edit and a download that all
+    fail, so a missing PDF drops the row instead.
+
+    With the database off (a checkout without SUPABASE_URL) there is no index
+    to read and the page is simply empty."""
+    email = (session.get("user_email") or "").strip().lower()
+    since = datetime.now(timezone.utc) - timedelta(days=JOB_RETENTION_DAYS)
+    fills = [
+        {
+            "job_id": row["job_id"],
+            "name": row.get("name") or "Untitled",
+            "ts": row.get("ts"),
+            "style": row.get("style") or _style_label(None),
+        }
+        for row in db.fetch_fills_for(email, since)
+        if _JOB_ID_RE.match(row.get("job_id") or "")
+        and (OUTPUTS / f"{row['job_id']}-filled.pdf").exists()
+    ]
+    return jsonify({"days": JOB_RETENTION_DAYS, "fills": fills})
+
+
+@app.post("/api/history/delete")
+def delete_fill():
+    """Drop one past fill: the PDF the user uploaded, the filled copy and every
+    preview rendered from either. That is also what takes it off /history,
+    since the list only shows fills whose files are still here.
+
+    The database row stays. It is what the admin dashboard counts fills from,
+    and the fill did happen — editing that record so a list looks shorter would
+    quietly move the numbers the product is steered by. Nothing about the
+    user's document survives it, which is what they are asking for."""
+    data = request.get_json(silent=True) or {}
+    job_id = str(data.get("job_id", ""))
+    if not _JOB_ID_RE.match(job_id):
+        return jsonify({"error": "bad job_id"}), 400
+    email = (session.get("user_email") or "").strip().lower()
+    # Everywhere else a job id is the whole capability: unguessable, and enough
+    # on its own to open the job. It also travels, in the ?job= link the editor
+    # puts in the address bar. Holding that link must not be enough to destroy
+    # someone's worksheet, so this one asks who filled it.
+    if not email or db.fill_owner(job_id) != email:
+        return jsonify({"error": "no such fill"}), 404
+    purge_job(job_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/pricing")
