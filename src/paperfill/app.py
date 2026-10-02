@@ -968,6 +968,57 @@ def _snapshot_report_settings(job_id: str, text: str) -> bool:
         return False
 
 
+def _snapshot_report_diagnostics(job_id: str) -> bool:
+    """Write what detection and fill actually produced to diagnostics.json.
+
+    The PDFs show *that* an answer is missing; this shows at which step. The
+    per-page table answers it at a glance: on the AI Vision path a page with
+    few model boxes lost its answers in the model call, one with boxes but
+    fewer units lost them to snapping or dedupe, and one with units but no
+    answers lost them in the fill."""
+    if not _JOB_ID_RE.match(job_id or ""):
+        return False
+    job = load_job(job_id)
+    if not job or not job.get("structure"):
+        return False
+    structure = job["structure"]
+    answers = job.get("answers") or {}
+    model_boxes = structure.get("model_boxes")
+
+    paired = list(zip(structure["units"], strip_bboxes_for_llm(structure)["units"]))
+    pages = []
+    for page_no in range(job.get("page_count") or 0):
+        units = [(u, clean) for u, clean in paired if u["page"] == page_no]
+        keys = [k for _, clean in units
+                for k in clean.get("slots") or [clean.get("answer_key")]]
+        row = {
+            "page": page_no,
+            "units": len(units),
+            "answer_slots": len(keys),
+            "answered": sum(1 for k in keys if str(answers.get(k) or "").strip()),
+        }
+        # Only the AI Vision detector has a model step to report.
+        if model_boxes is not None:
+            row["model_boxes"] = sum(1 for b in model_boxes if b["page"] == page_no)
+        pages.append(row)
+
+    diag = {
+        "pages": pages,
+        "fill_instructions": job.get("fill_instructions"),
+        "structure": structure,
+        "answers": answers,
+    }
+    try:
+        dest = REPORTS / job_id
+        dest.mkdir(exist_ok=True)
+        (dest / "diagnostics.json").write_text(
+            json.dumps(diag, indent=1, ensure_ascii=False))
+        return True
+    except OSError as e:
+        print(f"[report] diagnostics snapshot failed for {job_id}: {e}")
+        return False
+
+
 def read_report_settings(job_id: str) -> dict | None:
     """Load a report's settings sidecar, with format ids mapped to their UI
     labels for display. None when there's no sidecar (every report filed
@@ -2650,6 +2701,7 @@ def submit_report():
         return jsonify({"error": "unknown job_id"}), 404
     _snapshot_reported_pdf(job_id)
     _snapshot_report_settings(job_id, text)
+    _snapshot_report_diagnostics(job_id)
     return jsonify({"ok": True})
 
 
