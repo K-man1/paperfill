@@ -233,7 +233,10 @@ def test_signup_creates_the_account_on_the_tier_auto_pro_says(client, monkeypatc
     created = {}
     monkeypatch.setattr(A, "EMAIL_AUTH_ENABLED", True)
     monkeypatch.setattr(A, "get_auto_pro", lambda: False)
-    monkeypatch.setattr(A, "send_verification_email", lambda *a: None)
+    # Signup now creates the row only once the mail is away, so the stub has to
+    # report success; the MX check is stubbed to keep the suite off the network.
+    monkeypatch.setattr(A, "send_verification_email", lambda *a: True)
+    monkeypatch.setattr(A.email_domains, "_accepts_mail", lambda domain: True)
     monkeypatch.setattr(A.db, "get_user_by_email", lambda email: None)
     monkeypatch.setattr(A.db, "device_source", lambda cookie: None, raising=False)
     monkeypatch.setattr(A.db, "create_email_user",
@@ -242,3 +245,79 @@ def test_signup_creates_the_account_on_the_tier_auto_pro_says(client, monkeypatc
     client.post("/signup", data={"email": "new@example.com",
                                  "password": "hunter2hunter2", "name": "New"})
     assert created["is_pro"] is False
+
+
+# ---- The payment switch --------------------------------------------------
+# PAYMENTS / the /admin toggle only stop *selling*. Everything about who is
+# Pro — the webhook's past work, admin grants, the free daily limit — has to
+# behave exactly as it did before the switch was thrown.
+
+@pytest.fixture
+def payments_off(monkeypatch):
+    monkeypatch.setattr(A, "payments_enabled", lambda: False)
+
+
+def test_the_switch_defaults_to_on_and_the_file_overrides_it(monkeypatch, tmp_path):
+    """payments_enabled.txt is gitignored, so it's absent on a fresh deploy and
+    the env default has to carry: absent must not read as "stop selling"."""
+    monkeypatch.setattr(A, "PAYMENTS_PATH", tmp_path / "payments_enabled.txt")
+    monkeypatch.setattr(A, "PAYMENTS_DEFAULT", True)
+    assert A.payments_enabled() is True
+
+    A.set_payments_enabled(False)
+    assert A.payments_enabled() is False
+    A.set_payments_enabled(True)
+    assert A.payments_enabled() is True
+
+    monkeypatch.setattr(A, "PAYMENTS_PATH", tmp_path / "missing.txt")
+    monkeypatch.setattr(A, "PAYMENTS_DEFAULT", False)
+    assert A.payments_enabled() is False
+
+
+def test_payments_off_takes_down_the_whole_buying_path(client, users, payments_off):
+    assert client.get("/pricing").status_code == 404
+    assert client.get("/upgrade/success").status_code == 404
+
+
+def test_a_webhook_arriving_while_payments_are_off_grants_nothing(client, users,
+                                                                  payments_off):
+    """A correctly signed delivery is still refused — a replay while billing is
+    down must not flip a tier behind the switch."""
+    users[BUYER] = {"email": BUYER, "is_pro": False}
+    sign_in(client, BUYER)
+    assert whop_event(client, "membership.activated").status_code == 404
+    assert users[BUYER]["is_pro"] is False
+    assert not is_pro_now(client)
+
+
+def test_existing_pro_accounts_are_untouched_by_the_switch(client, users, payments_off):
+    users[BUYER] = {"email": BUYER, "is_pro": True}
+    sign_in(client, BUYER, is_pro=True)
+    assert is_pro_now(client)
+    assert client.get("/handwriting").status_code == 200
+
+
+def test_free_accounts_are_still_gated_with_payments_off(client, users, payments_off):
+    """The paywall stays up; only the way out of it is gone. The 402 drops
+    upgrade_url rather than pointing at a page that now 404s."""
+    users[BUYER] = {"email": BUYER, "is_pro": False}
+    sign_in(client, BUYER)
+    r = client.get("/api/fonts")
+    assert r.status_code == 402 and "upgrade_url" not in r.get_json()
+    assert client.get("/handwriting").headers["Location"].endswith("/")
+
+
+def test_an_admin_can_still_grant_pro_with_payments_off(client, users, payments_off):
+    users[BUYER] = {"email": BUYER, "is_pro": False}
+    sign_in(client, ADMIN, role="admin")
+    client.post("/admin/grant-pro", data={"email": BUYER, "action": "grant"})
+    assert users[BUYER]["is_pro"] is True
+
+
+def test_a_free_user_cannot_flip_the_payments_toggle(client, users, monkeypatch):
+    flipped = []
+    monkeypatch.setattr(A, "set_payments_enabled", lambda on: flipped.append(on))
+    sign_in(client, BUYER)
+    r = client.post("/admin/payments", data={"payments_enabled": "on"})
+    assert r.status_code == 302 and "/login" in r.headers["Location"]
+    assert flipped == []

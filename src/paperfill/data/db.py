@@ -341,6 +341,32 @@ def create_email_user(email: str, password_hash: str, name: str,
     return None
 
 
+def refresh_verification_token(email: str, token: str,
+                               token_expires: str) -> bool:
+    """Issue a new verification token for an unverified account, replacing any
+    outstanding one. Returns True if a row was actually updated.
+
+    `email_verified=is.false` is part of the filter, not just a caller-side
+    check: an already-verified account must never be handed a fresh token,
+    because that link signs whoever opens it straight in."""
+    if not enabled():
+        return False
+    try:
+        r = requests.patch(
+            _rest(f"users?email=eq.{requests.utils.quote(email, safe='')}"
+                  f"&email_verified=is.false"),
+            headers=_headers({"Prefer": "return=representation"}),
+            json={"verification_token": token, "token_expires": token_expires},
+            timeout=_TIMEOUT,
+        )
+        if r.status_code < 400:
+            return bool(r.json())
+        print(f"[db] refresh_verification_token HTTP {r.status_code}: {r.text[:200]}")
+    except (requests.RequestException, ValueError) as e:
+        print(f"[db] refresh_verification_token failed: {e}")
+    return False
+
+
 def get_user_by_token(token: str) -> dict | None:
     """Fetch the account holding this verification token (with its expiry so
     the caller can decide if it's still valid), or None if unknown."""

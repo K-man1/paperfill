@@ -27,6 +27,8 @@ where = ["src"]
 # read relative to the package, so they must travel with it into a wheel.
 [tool.setuptools.package-data]
 "paperfill.handwriting" = ["data/*.pdf", "data/*.json"]
+# The disposable-email blocklist is read relative to the module that uses it.
+"paperfill.utils" = ["disposable_domains.txt"]
 
 [tool.pytest.ini_options]
 # Without this, pytest's rootdir-insertion puts tests/ on sys.path but not

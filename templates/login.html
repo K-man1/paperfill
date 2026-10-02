@@ -179,6 +179,13 @@ button[type="submit"]:hover { background: #35302a; }
   text-decoration: none;
 }
 .toggle a:hover { text-decoration: underline; }
+.legal {
+  margin: 24px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.legal a { color: var(--ink-soft); text-decoration: underline; }
 .hidden { display: none; }
 </style>
 </head>
@@ -205,10 +212,12 @@ button[type="submit"]:hover { background: #35302a; }
   {% if email_auth %}
   <div class="divider">or</div>
 
-  {# `mode` decides which form is shown first; defaults to sign-in. #}
+  {# `mode` decides which form is shown first; defaults to sign-in. "resend" is
+     what a failed sign-in on an unverified account lands on. #}
   {% set start_signup = (mode == "signup") %}
+  {% set start_resend = (mode == "resend") %}
 
-  <form method="post" action="/login" id="signin-form" class="{{ 'hidden' if start_signup else '' }}">
+  <form method="post" action="/login" id="signin-form" class="{{ 'hidden' if start_signup or start_resend else '' }}">
     <label class="field-label" for="si-email">Email</label>
     <input type="email" id="si-email" name="email" autocomplete="email" required placeholder="you@example.com" />
     <label class="field-label" for="si-password">Password</label>
@@ -226,15 +235,35 @@ button[type="submit"]:hover { background: #35302a; }
     <button type="submit">Create Account</button>
   </form>
 
+  <form method="post" action="/resend" id="resend-form" class="{{ '' if start_resend else 'hidden' }}">
+    <label class="field-label" for="rs-email">Email</label>
+    {# Prefilled when a sign-in bounced off an unverified account, so the user
+       isn't asked to type the address they just typed. #}
+    <input type="email" id="rs-email" name="email" autocomplete="email" required
+           value="{{ email or '' }}" placeholder="you@example.com" />
+    <button type="submit">Send New Link</button>
+  </form>
+
   <div class="toggle">
     <span id="toggle-to-signup" class="{{ 'hidden' if start_signup else '' }}">
       New here? <a onclick="showSignup()">Create an account</a>
     </span>
-    <span id="toggle-to-signin" class="{{ '' if start_signup else 'hidden' }}">
+    <span id="toggle-to-signin" class="{{ '' if start_signup or start_resend else 'hidden' }}">
       Already have an account? <a onclick="showSignin()">Sign in</a>
+    </span>
+    <span id="toggle-to-resend" class="{{ 'hidden' if start_resend else '' }}">
+      <br />Didn't get the verification email?
+      <a onclick="showResend()">Send it again</a>
     </span>
   </div>
   {% endif %}
+
+  {# Shown at the point of sign-up, not just linked in a footer: consent that's
+     visible where the account is created is the version that actually holds. #}
+  <p class="legal">By continuing you agree to our
+    <a href="{{ url_for('terms') }}">Terms</a> and
+    <a href="{{ url_for('privacy') }}">Privacy Policy</a>.
+    You must be 13 or older to use Paperfill.</p>
 </div>
 
 {% if email_auth %}
@@ -242,19 +271,33 @@ button[type="submit"]:hover { background: #35302a; }
   var subtitle = document.getElementById("subtitle");
   function showSignup() {
     document.getElementById("signin-form").classList.add("hidden");
+    document.getElementById("resend-form").classList.add("hidden");
     document.getElementById("signup-form").classList.remove("hidden");
     document.getElementById("toggle-to-signup").classList.add("hidden");
     document.getElementById("toggle-to-signin").classList.remove("hidden");
+    document.getElementById("toggle-to-resend").classList.add("hidden");
     subtitle.textContent = "Create your account";
   }
   function showSignin() {
     document.getElementById("signup-form").classList.add("hidden");
+    document.getElementById("resend-form").classList.add("hidden");
     document.getElementById("signin-form").classList.remove("hidden");
     document.getElementById("toggle-to-signin").classList.add("hidden");
     document.getElementById("toggle-to-signup").classList.remove("hidden");
+    document.getElementById("toggle-to-resend").classList.remove("hidden");
     subtitle.textContent = "Sign in to continue";
   }
+  function showResend() {
+    document.getElementById("signin-form").classList.add("hidden");
+    document.getElementById("signup-form").classList.add("hidden");
+    document.getElementById("resend-form").classList.remove("hidden");
+    document.getElementById("toggle-to-signup").classList.add("hidden");
+    document.getElementById("toggle-to-resend").classList.add("hidden");
+    document.getElementById("toggle-to-signin").classList.remove("hidden");
+    subtitle.textContent = "Resend your verification link";
+  }
   {% if start_signup %}subtitle.textContent = "Create your account";{% endif %}
+  {% if start_resend %}subtitle.textContent = "Resend your verification link";{% endif %}
 </script>
 {% endif %}
 </body>

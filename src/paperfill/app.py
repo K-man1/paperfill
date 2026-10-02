@@ -56,6 +56,7 @@ from paperfill.data import models
 from paperfill.data import prefs
 from paperfill.data import stats
 from paperfill.data import usage
+from paperfill.utils import email_domains
 from paperfill.utils.json_utils import extract_json_object
 from paperfill.utils.plain_math import plain_math
 from paperfill.ai.preprocess import preprocess_pdf, text_page_rect
@@ -182,9 +183,16 @@ app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "1") != "0
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
-# Email/password auth is off by default so production launches Google-only.
-# Flip EMAIL_AUTH=1 in the env (once SMTP is configured) to expose it.
-EMAIL_AUTH_ENABLED = os.environ.get("EMAIL_AUTH", "0") == "1"
+# Email/password sign-in, alongside Google. Set EMAIL_AUTH=0 to hide the forms
+# and 404 /signup, /verify and the /login POST again.
+EMAIL_AUTH_ENABLED = os.environ.get("EMAIL_AUTH", "1") != "0"
+
+# Without SMTP the verification link only reaches the server log, which is a
+# working local dev loop and a dead signup form in production. Say so at boot
+# rather than letting real users wait for mail that was never sent.
+if EMAIL_AUTH_ENABLED and not os.environ.get("SMTP_HOST"):
+    print("[auth] EMAIL_AUTH is on but SMTP_HOST is unset: verification links "
+          "will be printed to this log instead of emailed.")
 
 
 @app.context_processor
@@ -401,19 +409,68 @@ oauth.register(
     client_kwargs={"scope": "openid email profile"},
 )
 
+# Signup and the resend form both mail an address the sender doesn't have to
+# own, so both are metered. The counters live in this process: with two gunicorn
+# workers a determined caller gets roughly twice the quota, and a restart clears
+# them. That's the price of not putting a Supabase write in front of every
+# attempt, and approximate limits still stop what these endpoints actually see.
+_RATE_BUCKETS: dict[tuple[str, str], list[float]] = {}
+
+# Per-IP signup ceiling. Deliberately loose: this is a tool for students, and a
+# class signing up together arrives from one school NAT address, so a tight
+# per-IP limit locks out the legitimate case long before the abusive one.
+SIGNUP_LIMIT, SIGNUP_WINDOW = 20, 3600
+# Per-address ceiling on verification emails, across signup and resend. This is
+# the limit that matters: without it anyone can aim either form at a stranger's
+# inbox and flood it.
+VERIFY_MAIL_LIMIT, VERIFY_MAIL_WINDOW = 3, 3600
+# Failed sign-ins per address. Keyed by the address and not the IP because a
+# whole class shares one school NAT address, and locking all of them out
+# because one of them fat-fingered a password is worse than the brute force
+# this is here to stop.
+LOGIN_LIMIT, LOGIN_WINDOW = 10, 3600
+
+
+def _rate_limited(bucket: str, key: str, limit: int, window: int,
+                  *, record: bool = True) -> bool:
+    """Record one attempt against (bucket, key) and report whether to refuse it.
+
+    Sliding window rather than a fixed one: timestamps age out individually, so
+    the quota refills gradually instead of every blocked caller being handed a
+    fresh allowance on the hour. A refused attempt isn't recorded, which keeps
+    each key's list bounded by `limit` no matter how hard it's hammered.
+
+    `record=False` asks the question without spending quota on the asking. Sign-in
+    needs that: only a *failed* password may count, or a user who signs in
+    successfully all day would throttle themselves out of their own account.
+    """
+    now = time.monotonic()
+    hits = [t for t in _RATE_BUCKETS.get((bucket, key), []) if now - t < window]
+    over = len(hits) >= limit
+    if record and not over:
+        hits.append(now)
+    # Bound the table itself. Keys are IPs and addresses, so a wide enough
+    # attack would otherwise grow it without limit.
+    if len(_RATE_BUCKETS) > 5000:
+        _RATE_BUCKETS.clear()
+    _RATE_BUCKETS[(bucket, key)] = hits
+    return over
+
+
 # A verification link is only good for this long. Short enough to limit the
 # damage if an email is forwarded or leaks; long enough that a user who opens
 # it the next morning still gets in.
 VERIFY_TOKEN_TTL = timedelta(hours=24)
 
 
-def send_verification_email(to_email: str, verify_url: str) -> None:
-    """Email a verification link. If SMTP isn't configured (local dev), fall
-    back to printing the link to the server log so the flow is still testable."""
+def send_verification_email(to_email: str, verify_url: str) -> bool:
+    """Email a verification link, returning whether it went out. If SMTP isn't
+    configured (local dev), fall back to printing the link to the server log so
+    the flow is still testable."""
     host = os.environ.get("SMTP_HOST")
     if not host:
         print(f"[auth] SMTP not configured. Verify link for {to_email}:\n  {verify_url}")
-        return
+        return True
     msg = EmailMessage()
     msg["Subject"] = "Verify your Paperfill account"
     msg["From"] = os.environ.get("SMTP_FROM", "no-reply@paperfill.app")
@@ -433,8 +490,12 @@ def send_verification_email(to_email: str, verify_url: str) -> None:
                 s.login(user, pw)
             s.send_message(msg)
     except (smtplib.SMTPException, OSError) as e:
-        # Never let a mail hiccup 500 the signup; the user can re-request later.
+        # Reported, not raised: signup turns this into an error the user can act
+        # on, which beats a 500 and beats "check your inbox" for mail that is
+        # never coming.
         print(f"[auth] send_verification_email failed for {to_email}: {e}")
+        return False
+    return True
 
 # How much of the stored answer-key / reference text to feed the vision model
 # when answering a hand-snipped question (see /api/snip).
@@ -1550,33 +1611,57 @@ def login():
             abort(404)
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
+        # Checked before the account is looked up, so the answer is the same
+        # whether or not that address has an account — otherwise the throttle
+        # itself becomes the oracle the generic error message avoids being.
+        if _rate_limited("login_email", email, LOGIN_LIMIT, LOGIN_WINDOW,
+                         record=False):
+            _record_signin("failed")
+            return render_template("login.html", error=(
+                "Too many failed sign-in attempts for that account. Please "
+                "try again in an hour."))
         user = db.get_user_by_email(email)
         # Same generic message whether the email is unknown or the password is
         # wrong: telling an attacker "that email exists" leaks who has accounts.
         if not user or not user.get("password_hash") or \
                 not check_password_hash(user["password_hash"], password):
+            # Only failures are counted, and the return value is the check we
+            # already did above.
+            _rate_limited("login_email", email, LOGIN_LIMIT, LOGIN_WINDOW)
             _record_signin("failed")
             return render_template("login.html",
                                    error="Incorrect email or password.")
         if not user.get("email_verified"):
             return render_template(
-                "login.html",
-                error="Please verify your email first. Check your inbox for the link.")
+                "login.html", mode="resend", email=email,
+                error="Please verify your email first. Check your inbox for the "
+                      "link, or send yourself a new one.")
+        # Proving you own the account spends the failures that came before it,
+        # so a few fumbled attempts can't strand the next real sign-in.
+        _RATE_BUCKETS.pop(("login_email", email), None)
         _record_signin("user")
         _start_user_session(user)
         return redirect(url_for("index"))
-    return render_template("login.html", error=None)
+    return render_template("login.html", error=None,
+                           mode=request.args.get("mode"))
 
 
 @app.post("/signup")
 def signup():
     if not EMAIL_AUTH_ENABLED:
         abort(404)
+    if _rate_limited("signup_ip", _client_ip(), SIGNUP_LIMIT, SIGNUP_WINDOW):
+        return render_template("login.html", mode="signup", error=(
+            "Too many accounts have been created from this network recently. "
+            "Please try again later."))
     email = (request.form.get("email") or "").strip().lower()
     password = request.form.get("password") or ""
     name = (request.form.get("name") or "").strip()
-    if "@" not in email or "." not in email.split("@")[-1]:
-        return render_template("login.html", error="Enter a valid email address.", mode="signup")
+    # Syntax, throwaway domains and deliverability in one call, so the rules
+    # live next to the blocklist they depend on rather than in this route.
+    bad_address = email_domains.rejection_reason(email)
+    if bad_address:
+        return render_template("login.html", error=bad_address, mode="signup")
     if len(password) < 8:
         return render_template("login.html",
                                error="Password must be at least 8 characters.", mode="signup")
@@ -1584,25 +1669,62 @@ def signup():
         return render_template("login.html",
                                error="An account with that email already exists.", mode="signup")
 
+    # Mail first, row second. An account that exists but whose link never got
+    # sent can't sign in and can't sign up again — the address is taken — so on
+    # a mail failure it's better that nothing was written and the user can
+    # simply retry.
+    if _rate_limited("verify_mail", email, VERIFY_MAIL_LIMIT, VERIFY_MAIL_WINDOW):
+        return render_template("login.html", mode="signup", error=(
+            "We've already sent several verification emails to that address. "
+            "Check your inbox, or try again in an hour."))
+
     token = secrets.token_urlsafe(32)
-    expires = (datetime.now(timezone.utc) + VERIFY_TOKEN_TTL).isoformat()
+    verify_url = url_for("verify_email", token=token, _external=True)
+    if not send_verification_email(email, verify_url):
+        return render_template("login.html", mode="signup", error=(
+            "We couldn't send the verification email just now. Please try "
+            "again in a few minutes."))
+
     user = db.create_email_user(
         email=email,
         password_hash=generate_password_hash(password),
         name=name,
         token=token,
-        token_expires=expires,
+        token_expires=(datetime.now(timezone.utc) + VERIFY_TOKEN_TTL).isoformat(),
         source=_signup_source(),
         is_pro=get_auto_pro(),
     )
     if user is None:
         return render_template("login.html",
                                error="Could not create account. Please try again.", mode="signup")
-    verify_url = url_for("verify_email", token=token, _external=True)
-    send_verification_email(email, verify_url)
     return render_template("login.html", notice=(
         "Account created. Check your email for a verification link to finish "
         "setting up your account."))
+
+
+@app.post("/resend")
+def resend_verification():
+    if not EMAIL_AUTH_ENABLED:
+        abort(404)
+    email = (request.form.get("email") or "").strip().lower()
+    # One answer for every input. This form takes an address from anyone, so a
+    # response that varied with whether the account existed, or was already
+    # verified, would turn it into a way to test who has signed up.
+    notice = ("If that address has an unverified account, a new verification "
+              "link is on its way. The link is good for 24 hours.")
+    if _rate_limited("verify_mail", email, VERIFY_MAIL_LIMIT, VERIFY_MAIL_WINDOW):
+        return render_template("login.html", notice=notice)
+
+    user = db.get_user_by_email(email)
+    # Google accounts have no password to sign in with, so a verification link
+    # would give them nothing to come back to.
+    if user and not user.get("email_verified") and user.get("password_hash"):
+        token = secrets.token_urlsafe(32)
+        expires = (datetime.now(timezone.utc) + VERIFY_TOKEN_TTL).isoformat()
+        if db.refresh_verification_token(email, token, expires):
+            send_verification_email(
+                email, url_for("verify_email", token=token, _external=True))
+    return render_template("login.html", notice=notice)
 
 
 @app.route("/verify/<token>")
