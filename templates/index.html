@@ -271,6 +271,18 @@ header.masthead {
 }
 .attach-btn:hover { border-color: var(--ink-soft); color: var(--ink); }
 .attach-btn input { display: none; }
+.web-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.web-toggle input { accent-color: var(--accent); }
+.web-toggle:hover { color: var(--ink); }
 .hw-hint { color: var(--ink-soft); font-size: 13px; font-weight: 400; align-self: center; }
 /* ---- Answer-format picker (multi-select) ---- */
 .fmt-block { margin-bottom: 16px; }
@@ -1286,6 +1298,12 @@ span.hw-cta { cursor: default; }
           <button type="button" id="yt-add-btn">Add video</button>
         </div>
       </div>
+      {% if is_pro %}
+      <label class="web-toggle" title="The AI looks up anything on the sheet it can't answer from memory.">
+        <input type="checkbox" id="web-search">
+        Search the web for anything it doesn't know
+      </label>
+      {% endif %}
       <ul class="attach-list" id="attach-list"></ul>
     </div>
 
@@ -1710,6 +1728,13 @@ async function gatherContext() {
   return data.context || "";
 }
 
+// The checkbox is only rendered for Pro accounts, and a free session that asks
+// for a search anyway is refused by /api/fill.
+function webSearchOn() {
+  const box = $("web-search");
+  return !!(box && box.checked);
+}
+
 // ---- Full-screen ad while filling -----------------------------------------
 // Ad and fill start together. The worksheet only reveals once the fill is
 // actually done; a "skip" is offered only in the rare case where the fill
@@ -1998,6 +2023,7 @@ async function handleUpload(file) {
           job_id: currentJob.job_id,
           instructions: $("instructions").value,
           context: contextText,
+          web_search: webSearchOn(),
         }),
       });
       let fillData = await readJson(r2);
@@ -2020,6 +2046,13 @@ async function handleUpload(file) {
     showStage("result");
     // renderResult AFTER stage is visible, so img.clientWidth is non-zero
     renderResult(fillData);
+    // An empty list means the AI read the sheet and decided it didn't need to
+    // look anything up — worth saying, or a ticked box looks like it did nothing.
+    if (fillData.web_queries) {
+      toast(fillData.web_queries.length
+        ? "Searched the web for: " + fillData.web_queries.join("; ")
+        : "Nothing on this sheet needed a web search.");
+    }
     if (reuploadWarning) {
       toast("This PDF was already filled by PaperFill, so its answers were " +
             "left as they were. Upload the blank worksheet to fill it fresh.", true);

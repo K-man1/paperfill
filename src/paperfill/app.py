@@ -69,7 +69,7 @@ from paperfill.ai.vision_preprocess import VISION_DPI
 from paperfill.ai.llm_client import call_context
 from paperfill.handwriting import font_store
 from paperfill.utils.context_sources import (extract_file_text, fetch_youtube_transcript,
-                                             assemble_context)
+                                             assemble_context, web_search_context)
 
 
 # ---- Setup ---------------------------------------------------------------
@@ -310,6 +310,9 @@ def _pro_benefits() -> list[dict]:
          "detail": "Pro fills run on a stronger model, so answers are better."},
         {"title": "Fill in your own handwriting",
          "detail": "Turn your real handwriting into a font and write with it."},
+        {"title": "Web search",
+         "detail": "The AI looks up anything on the sheet it can't answer from "
+                   "memory, so current-events questions get current answers."},
     ]
 
 
@@ -2733,6 +2736,16 @@ def fill():
         if limited:
             return limited
 
+    # Pro-only, and enforced here rather than by hiding the checkbox: a free
+    # session that asks for it is told why instead of quietly getting a fill
+    # with no searching in it.
+    want_web = bool(data.get("web_search"))
+    if want_web and not _is_pro():
+        body = {"error": "Web search is a Pro feature."}
+        if upgrade := _upgrade_url():
+            body["upgrade_url"] = upgrade
+        return jsonify(body), 402
+
     instructions = str(data.get("instructions", ""))[:8000]
     context_text = str(data.get("context", ""))[:30000]
     if context_text.strip():
@@ -2749,7 +2762,7 @@ def fill():
     # copied request context keeps the session-backed helpers (_is_pro,
     # _user_key, _record_fill, and prefs inside _rerender_job) working there.
     work = copy_current_request_context(_fill_job)
-    threading.Thread(target=work, args=(job_id, job, instructions),
+    threading.Thread(target=work, args=(job_id, job, instructions, want_web),
                      name=f"fill-{job_id}").start()
     return jsonify({"job_id": job_id, "status": "filling"}), 202
 
@@ -2757,7 +2770,8 @@ def fill():
 FILL_STALE_SECONDS = 600
 
 
-def _fill_job(job_id: str, job: dict, instructions: str) -> None:
+def _fill_job(job_id: str, job: dict, instructions: str,
+              web_search: bool = False) -> None:
     """Answer and render a fill in the background. Mutates `job` in place and
     flips fill_status last, for the same load_job reason as _detect_job."""
     def fail(message: str, code: int) -> None:
@@ -2770,6 +2784,16 @@ def _fill_job(job_id: str, job: dict, instructions: str) -> None:
     # "filling" until FILL_STALE_SECONDS.
     try:
         structure_for_llm = strip_bboxes_for_llm(job["structure"])
+        if web_search:
+            found, job["web_queries"] = web_search_context(
+                [u["prompt_text"] for u in job["structure"]["units"]],
+                instructions, job_id)
+            if found:
+                instructions = (
+                    f"{instructions}\n\nWeb search results gathered for this "
+                    f"worksheet (current pages from the live web — prefer them "
+                    f"over your own knowledge where the two disagree):\n{found}"
+                ).strip()
         answers: dict[str, str] = {}
         # Primary path: answer-then-anchor — let the model see the page so it can use
         # answer banks, matching options and layout. Falls back to the text-only fill
@@ -2845,6 +2869,9 @@ def fill_status(job_id):
         # None for Pro (unmetered); the UI only shows a meter on Free. Read
         # fresh here since the fill just spent some of it.
         "credits_left": None if _is_pro() else usage.remaining_credits(_user_key()),
+        # [] when the box was ticked but the model found nothing worth looking
+        # up, which is a different thing from not ticking it.
+        "web_queries": job.get("web_queries"),
     })
 
 

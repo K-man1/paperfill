@@ -8,6 +8,9 @@ AI should lean on when filling the sheet:
     content is extracted (images are OCR'd with the same vision model used for
     scanned worksheets) and folded into the instructions block.
   - YouTube videos: the transcript is fetched and treated as study material.
+  - The web: Pro only. The model reads the worksheet, decides what it can't
+    answer from memory, and those searches run through the proxy's Exa
+    endpoint.
 
 Everything here returns plain strings so the caller can concatenate them into
 the single `instructions` string that call_openai_to_fill() already honors.
@@ -18,8 +21,10 @@ import os
 import re
 
 import fitz
+import requests
 
 from paperfill.data import models
+from paperfill.utils.json_utils import json_from_response
 
 # Per-source caps so one giant PDF or a 3-hour lecture transcript can't blow
 # out the prompt. Tuned to stay well under the model's context window when
@@ -184,3 +189,171 @@ def assemble_context(sources: list[tuple[str, str]]) -> str:
             continue
         blocks.append(f"--- {label} ---\n{text}")
     return "\n\n".join(blocks)
+
+
+# ---- Web search ----------------------------------------------------------
+# A Pro-only third source, and the only one the user doesn't assemble by hand:
+# the model reads the worksheet, says what it can't answer from memory, and
+# those queries go to Exa through the same proxy that serves the chat calls.
+# Searching is not free — Exa comes off the same daily budget — so a sheet the
+# model can already answer has to cost nothing, which is what the planner's
+# empty list is for.
+
+# Enough for a handful of results to survive the trip into the fill prompt
+# without crowding out the worksheet itself.
+MAX_SEARCH_CHARS = 9000
+MAX_QUERIES = 3
+RESULTS_PER_QUERY = 4
+SNIPPET_CHARS = 1200
+SEARCH_TIMEOUT = 25
+
+# How much of the worksheet the planner sees. It only has to recognise what the
+# questions are about, and a 50-item sheet's full text is mostly repetition.
+MAX_PLAN_CHARS = 4000
+
+# Three short search strings, plus room for a reasoning model to think first.
+# Set explicitly because the proxy reserves a model's full output window against
+# the day's remaining allowance otherwise: unset, this call is refused with a
+# 402 whenever the budget runs low and fails over to the paid provider.
+PLAN_MAX_TOKENS = 600
+
+_PLAN_SYSTEM = (
+    "You are deciding what to look up on the web before a worksheet is "
+    "answered. You get the worksheet's questions and any material the user "
+    "attached. The user has explicitly asked for a web search, so search "
+    "whenever a question turns on a fact that could have changed or that you "
+    "would otherwise be guessing at: current events, recent figures, "
+    "this year's rankings or prices, a named local detail, a source you would "
+    "have to reconstruct from memory.\n"
+    "Return NOTHING for what you already know cold or what the attached "
+    "material already covers — arithmetic, grammar, vocabulary, a reading "
+    "passage, settled history or science.\n"
+    "Write each query the way you would type it into a search engine: "
+    "specific, standalone, no question marks needed. At most "
+    f"{MAX_QUERIES}, and one good query beats three overlapping ones.\n"
+    'Return ONLY a JSON object: {"queries": ["...", "..."]}, with an empty '
+    "list when the sheet needs no looking up. /no_think"
+)
+
+
+def _api_key() -> str:
+    return (os.environ.get("AI_API_KEY") or os.environ.get("HCAI_API_KEY")
+            or os.environ.get("OPENAI_API_KEY") or "")
+
+
+def exa_search(query: str, num_results: int = RESULTS_PER_QUERY) -> list[dict]:
+    """
+    One Exa search through the AI proxy. Returns
+    [{title, url, published, text}], newest-first as Exa ranked them.
+
+    Raises on a refused or unreadable response rather than returning nothing:
+    "the search found no pages" and "the search never ran" lead to different
+    answers on the sheet, and the caller logs which one happened.
+    """
+    base = (os.environ.get("AI_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL",
+                              "https://ai.hackclub.com/proxy/v1"))
+    resp = requests.post(
+        base.rstrip("/") + "/exa/search",
+        headers={"Authorization": f"Bearer {_api_key()}"},
+        json={"query": query, "numResults": num_results, "type": "auto",
+              "contents": {"text": {"maxCharacters": SNIPPET_CHARS}}},
+        timeout=SEARCH_TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise ValueError(f"Exa HTTP {resp.status_code}: {resp.text[:200]}")
+    payload = resp.json()
+    # Exa bills per search against the same daily allowance as the chat calls,
+    # and unlike them it never reaches the spend dashboard (that table is keyed
+    # on token counts). The log is the only place this shows up.
+    cost = (payload.get("costDollars") or {}).get("total")
+    print(f"[search] {query!r} -> {len(payload.get('results') or [])} results"
+          + (f", ${cost}" if cost is not None else ""))
+
+    results = []
+    for r in payload.get("results") or []:
+        text = _truncate(r.get("text") or "", SNIPPET_CHARS)
+        if not text:
+            continue
+        results.append({
+            "title": (r.get("title") or r.get("url") or "").strip(),
+            "url": (r.get("url") or "").strip(),
+            "published": (r.get("publishedDate") or "")[:10],
+            "text": text,
+        })
+    return results
+
+
+def plan_search_queries(questions: list[str], instructions: str = "",
+                        job_id: str = "") -> list[str]:
+    """
+    Ask the model which searches, if any, would help answer this worksheet.
+    At most MAX_QUERIES, and an empty list whenever the sheet is self-contained.
+    """
+    from paperfill.ai.llm_client import build_client, call_context
+
+    sheet = _truncate("\n".join(q for q in questions if q), MAX_PLAN_CHARS)
+    if not sheet:
+        return []
+    user = sheet if not instructions.strip() else (
+        f"Material the user already attached:\n"
+        f"{_truncate(instructions, MAX_PLAN_CHARS)}\n\n"
+        f"Worksheet questions:\n{sheet}"
+    )
+
+    # Pro-only feature, so the Pro slot is the only one it can run on.
+    with call_context("web_search", job_id=job_id, is_pro=True):
+        resp = build_client().chat.completions.create(
+            model=models.get("text_fill_pro"),
+            messages=[{"role": "system", "content": _PLAN_SYSTEM},
+                      {"role": "user", "content": user}],
+            response_format={"type": "json_object"},
+            max_tokens=PLAN_MAX_TOKENS,
+        )
+    # json_from_response rather than a bare parse: a reasoning model that spends
+    # PLAN_MAX_TOKENS thinking returns truncated JSON, and "the reply was cut
+    # off" has to reach the log instead of looking like "nothing to search for".
+    queries = json_from_response(resp).get("queries")
+    if not isinstance(queries, list):
+        return []
+    clean = []
+    for q in queries:
+        q = str(q).strip()[:200]
+        if q and q not in clean:
+            clean.append(q)
+    return clean[:MAX_QUERIES]
+
+
+def web_search_context(questions: list[str], instructions: str = "",
+                       job_id: str = "") -> tuple[str, list[str]]:
+    """
+    Search the web for whatever this worksheet needs. Returns the labelled
+    context block and the queries that actually returned something — both empty
+    when the model decided the sheet needs no searching.
+
+    Best-effort like the other sources: a planner or search failure leaves the
+    fill to run on the model's own knowledge instead of sinking it.
+    """
+    try:
+        queries = plan_search_queries(questions, instructions, job_id)
+    except Exception as e:
+        print(f"[search] could not plan queries: {e}")
+        return "", []
+
+    sources, searched = [], []
+    for query in queries:
+        try:
+            results = exa_search(query)
+        except (requests.RequestException, ValueError) as e:
+            print(f"[search] {query!r} failed: {e}")
+            continue
+        if not results:
+            continue
+        body = "\n\n".join(
+            f"{r['title']}" + (f" ({r['published']})" if r["published"] else "")
+            + f"\n{r['url']}\n{r['text']}"
+            for r in results
+        )
+        sources.append((f"Web search: {query}", body))
+        searched.append(query)
+    return _truncate(assemble_context(sources), MAX_SEARCH_CHARS), searched

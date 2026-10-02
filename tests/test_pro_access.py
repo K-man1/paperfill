@@ -166,6 +166,40 @@ def test_a_free_account_is_locked_out_of_pro_features(client, users):
     assert client.get("/api/fonts/template").status_code == 302
 
 
+def test_a_free_account_cannot_ask_for_a_web_search(client, users, monkeypatch):
+    """The checkbox is only rendered for Pro, so this is the case where someone
+    posts the flag themselves. It has to be refused before the fill starts,
+    rather than searching anyway or filling as though it had."""
+    users[BUYER] = {"email": BUYER, "is_pro": False}
+    sign_in(client, BUYER)
+    started = []
+    monkeypatch.setattr(A, "load_job", lambda job_id: {"status": "ready"})
+    monkeypatch.setattr(A, "_fill_job", lambda *a: started.append(a))
+
+    r = client.post("/api/fill", json={"job_id": "j1", "web_search": True})
+    assert r.status_code == 402
+    assert "Pro" in r.get_json()["error"]      # the tier gate, not the credit one
+    assert started == []
+
+
+def test_pro_gets_the_web_search_it_asked_for(client, users, monkeypatch):
+    """Other half of the same gate: the flag has to survive the hand-off to the
+    background fill, or the feature is bought and never runs."""
+    users[BUYER] = {"email": BUYER, "is_pro": True}
+    sign_in(client, BUYER, is_pro=True)
+    started = []
+    monkeypatch.setattr(A, "load_job", lambda job_id: {"status": "ready"})
+    monkeypatch.setattr(A, "save_job", lambda job_id: None)
+    monkeypatch.setattr(A, "_fill_job", lambda *a: started.append(a))
+
+    r = client.post("/api/fill", json={"job_id": "j1", "web_search": True})
+    assert r.status_code == 202
+    deadline = time.time() + 5          # the fill runs on its own thread
+    while not started and time.time() < deadline:
+        time.sleep(0.01)
+    assert started and started[0][-1] is True
+
+
 def test_a_signed_out_visitor_is_locked_out(client, users):
     assert client.get("/api/fonts").status_code == 403
     assert client.post("/api/fonts").status_code == 403
