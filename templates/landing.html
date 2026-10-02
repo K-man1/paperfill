@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Paperfill — AI worksheet filler</title>
+<meta name="description" content="Upload a PDF worksheet and get it back filled in, optionally in your own handwriting." />
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #f7f4ee;
+  --paper-deep: #ece7dc;
+  --ink: #1f1d1a;
+  --ink-soft: #5c564c;
+  --rule: #d5cec1;
+  --rule-soft: #e6e1d6;
+  --accent: #ff5a1f;
+  --accent-deep: #c93f10;
+  --pencil: #2b4a8b;
+  --serif: "Fraunces", "Times New Roman", serif;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --hand: "Caveat", cursive;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); line-height: 1.55; }
+a { color: inherit; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 22px; }
+
+.nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+.logo { font-family: var(--serif); font-size: 1.6rem; font-weight: 800; letter-spacing: -0.5px; text-decoration: none; }
+.logo em { font-style: normal; color: var(--accent); }
+.nav-links { display: flex; gap: 22px; align-items: center; font-size: 15px; }
+.nav-links a { text-decoration: none; color: var(--ink-soft); }
+.nav-links a:hover { color: var(--ink); }
+.nav-links .signin { color: var(--ink); font-weight: 600; }
+
+.btn { display: inline-block; background: var(--ink); color: var(--paper); border-radius: 9px; padding: 13px 22px; font-weight: 600; text-decoration: none; transition: background .15s; }
+.btn:hover { background: #35302a; }
+.btn.accent { background: var(--accent); color: #fff; }
+.btn.accent:hover { background: var(--accent-deep); }
+.btn.ghost { background: transparent; color: var(--ink); border: 1.5px solid var(--rule); }
+.btn.ghost:hover { border-color: var(--ink-soft); background: transparent; }
+
+.hero { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; padding: 40px 0 72px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent-deep); margin: 0 0 14px; }
+h1 { font-family: var(--serif); font-weight: 800; font-size: clamp(38px, 5.4vw, 60px); line-height: 1.04; letter-spacing: -1px; margin: 0 0 18px; }
+h1 .mark { background: linear-gradient(transparent 62%, #ffd2bf 62%); }
+.lede { font-size: 18px; color: var(--ink-soft); margin: 0 0 28px; max-width: 470px; }
+.cta-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.fine { font-size: 13px; color: var(--ink-soft); margin-top: 14px; }
+
+/* The hero worksheet is plain markup, not a screenshot, so it stays crisp and
+   can't go stale when the editor's chrome changes. */
+.sheet { background: #fff; border: 1px solid var(--rule); border-radius: 6px; padding: 28px 30px 30px; box-shadow: 0 18px 40px -22px rgba(31,29,26,.35); transform: rotate(1.2deg); font-family: Georgia, serif; font-size: 15px; }
+.sheet-head { display: flex; justify-content: space-between; font-size: 13px; border-bottom: 2px solid var(--ink); padding-bottom: 8px; margin-bottom: 16px; }
+.sheet h3 { font-family: Georgia, serif; font-size: 17px; margin: 0 0 12px; }
+.q { margin: 0 0 14px; }
+.blank { display: inline-block; min-width: 110px; border-bottom: 1px solid var(--ink); padding: 0 4px; font-family: var(--sans); font-size: 14px; color: var(--accent-deep); }
+.blank.hand, .lines.hand { font-family: var(--hand); font-size: 22px; line-height: 1; color: var(--pencil); }
+.lines { display: block; border-bottom: 1px solid var(--rule); padding: 2px 0 1px; margin-top: 4px; font-family: var(--sans); font-size: 14px; color: var(--accent-deep); }
+.choices { display: flex; gap: 18px; margin-top: 4px; }
+.choices span { padding: 0 6px; }
+.choices .picked { border: 2px solid var(--accent); border-radius: 50%; }
+
+.section { padding: 64px 0; border-top: 1px solid var(--rule-soft); }
+h2 { font-family: var(--serif); font-weight: 800; font-size: clamp(28px, 3.6vw, 38px); letter-spacing: -.5px; margin: 0 0 10px; }
+.section-lede { color: var(--ink-soft); margin: 0 0 36px; max-width: 560px; }
+
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; counter-reset: step; }
+.step { counter-increment: step; }
+.step::before { content: counter(step, decimal-leading-zero); display: block; font-family: var(--mono); font-size: 13px; color: var(--accent-deep); margin-bottom: 8px; }
+.step h4, .feature h4 { font-family: var(--serif); font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+.step p, .feature p { color: var(--ink-soft); margin: 0; font-size: 15px; }
+
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.feature { background: #fff; border: 1px solid var(--rule); border-radius: 12px; padding: 22px 22px 24px; }
+.tag { display: inline-block; font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-deep); border: 1px solid #f3c3ad; background: #fff4ee; border-radius: 20px; padding: 2px 9px; margin-bottom: 10px; }
+
+.formats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+.formats span { background: var(--paper-deep); border-radius: 20px; padding: 6px 14px; font-size: 14px; }
+
+.hw { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+.hw-demo { background: #fff; border: 1px solid var(--rule); border-radius: 12px; padding: 24px 26px; }
+.hw-row { display: flex; align-items: baseline; gap: 14px; padding: 10px 0; border-bottom: 1px dashed var(--rule); }
+.hw-row:last-child { border-bottom: none; }
+.hw-row small { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); width: 72px; flex-shrink: 0; }
+.hw-row .typed { font-size: 17px; }
+.hw-row .written { font-family: var(--hand); font-size: 30px; line-height: 1; color: var(--pencil); }
+.hw ul { padding-left: 18px; color: var(--ink-soft); margin: 16px 0 24px; }
+.hw li { margin-bottom: 6px; }
+
+.tiers { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 760px; }
+.tier { background: #fff; border: 1px solid var(--rule); border-radius: 12px; padding: 22px 24px; }
+.tier.pro { border-color: var(--accent); }
+.tier h4 { font-family: var(--serif); font-size: 22px; margin: 0 0 2px; }
+.tier .price { color: var(--ink-soft); margin: 0 0 12px; }
+.tier ul { list-style: none; padding: 0; margin: 0; }
+.tier li { padding: 6px 0 6px 22px; position: relative; font-size: 15px; color: var(--ink-soft); }
+.tier li::before { content: "\2713"; position: absolute; left: 0; color: var(--accent-deep); font-weight: 700; }
+
+.closer { text-align: center; padding: 72px 0 40px; border-top: 1px solid var(--rule-soft); }
+.closer p { color: var(--ink-soft); margin: 0 0 24px; }
+
+.site-footer { border-top: 1px solid var(--rule-soft); padding: 18px 0 40px; display: flex; gap: 20px; justify-content: center; font-size: 13px; }
+.site-footer a { color: var(--ink-soft); text-decoration: none; }
+.site-footer a:hover { color: var(--ink); }
+
+@media (max-width: 820px) {
+  .hero, .hw { grid-template-columns: 1fr; gap: 36px; }
+  .hero { padding-top: 16px; }
+  .sheet { transform: none; }
+  .steps, .features { grid-template-columns: 1fr; }
+  .tiers { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .wrap { padding: 0 16px; }
+  .nav-links a:not(.signin) { display: none; }
+  .sheet { padding: 20px 18px 22px; }
+  .blank { min-width: 80px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav">
+    <a class="logo" href="/">Paper<em>fill</em></a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      {% if payments_enabled %}<a href="{{ url_for('pricing') }}">Pricing</a>{% endif %}
+      <a class="signin" href="{{ url_for('login') }}">Sign in</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <p class="eyebrow">AI worksheet filler</p>
+      <h1>Drop in a worksheet. Get it back <span class="mark">filled in.</span></h1>
+      <p class="lede">Paperfill finds every blank on your PDF, answers it, and writes the answer
+        right where it belongs. Tweak anything in the editor, then download.</p>
+      <div class="cta-row">
+        <a class="btn accent" href="{{ url_for('login', mode='signup') }}">Try it free</a>
+        <a class="btn ghost" href="#how">See how it works</a>
+      </div>
+      <p class="fine">Free every day, no card needed. {{ free_daily_credits }} credits covers about {{ (free_daily_credits / 2)|int }} pages.</p>
+    </div>
+
+    <div class="sheet" aria-label="Example of a filled worksheet">
+      <div class="sheet-head"><span>Name: <span class="blank hand" style="min-width:90px">Alex R.</span></span><span>Unit 4 Review</span></div>
+      <h3>The Water Cycle</h3>
+      <p class="q">1. Water vapor cooling into droplets is called <span class="blank">condensation</span>.</p>
+      <p class="q">2. The sun's energy drives <span class="blank hand">evaporation</span> from oceans and lakes.</p>
+      <p class="q">3. Which of these is a form of precipitation?
+        <span class="choices"><span>A. fog</span><span class="picked">B. sleet</span><span>C. dew</span></span></p>
+      <p class="q" style="margin-bottom:0">4. Explain why groundwater is part of the cycle.
+        <span class="lines">Rain soaks into the soil and collects underground,</span>
+        <span class="lines">then slowly returns to rivers and the ocean.</span></p>
+    </div>
+  </header>
+</div>
+
+<section class="section" id="how">
+  <div class="wrap">
+    <h2>Three steps, no retyping</h2>
+    <p class="section-lede">You keep the original PDF, layout and all. Paperfill just writes on it.</p>
+    <div class="steps">
+      <div class="step">
+        <h4>Upload a PDF</h4>
+        <p>Typed handouts, textbook pages, even scanned or photographed sheets. Up to {{ max_upload_mb }} MB.</p>
+      </div>
+      <div class="step">
+        <h4>Let it fill</h4>
+        <p>It spots the blanks, reads the questions, and places each answer in the right spot at the right size.</p>
+      </div>
+      <div class="step">
+        <h4>Edit and download</h4>
+        <p>Fix any answer, add your own, then download a clean filled PDF ready to turn in.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="features">
+  <div class="wrap">
+    <h2>Built for real worksheets</h2>
+    <p class="section-lede">Not a chat box you paste questions into. It works on the page itself.</p>
+    <div class="features">
+      <div class="feature">
+        <h4>Two ways to read the page</h4>
+        <p>Standard detection is fast on clean PDFs. AI Vision looks at the page like you do, so diagrams, graphs, tables and scans still work.</p>
+      </div>
+      <div class="feature">
+        <h4>A real editor</h4>
+        <p>Move, resize and restyle any answer. Change fonts, sizes and colors, undo anything, and add boxes of your own.</p>
+      </div>
+      <div class="feature">
+        <h4>Refine an answer</h4>
+        <p>Select a box and make it shorter, longer, or rewrite it with your own instruction.</p>
+      </div>
+      <div class="feature">
+        <h4>Ask about anything it missed</h4>
+        <p>Snip a region of the page and the AI answers just that question, right where you snipped.</p>
+      </div>
+      <div class="feature">
+        <h4>Bring your class materials</h4>
+        <p>Attach notes, readings, images or a YouTube lesson, and the answers draw from them instead of guessing.</p>
+      </div>
+      <div class="feature">
+        <h4>Draw and graph</h4>
+        <p>Sketch on the page with the pen, and let it plot graphs straight onto the printed grid.</p>
+      </div>
+    </div>
+    <div class="formats" aria-label="Supported answer formats">
+      <span>Fill-in-the-blank</span><span>Open response</span><span>Multiple choice</span><span>Bullet lists</span><span>Tables and charts</span><span>Name and date headers</span>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap hw">
+    <div>
+      <span class="tag">Pro</span>
+      <h2>In your own handwriting</h2>
+      <p class="section-lede" style="margin-bottom:0">Fill out one template sheet by hand and Paperfill turns it into a font that's yours.
+        Every answer can then be written the way you'd write it.</p>
+      <ul>
+        <li>Built from your actual letters, not a stock script font</li>
+        <li>Tune spacing, size and pen thickness with a live preview</li>
+        <li>Switch any worksheet between typed and handwritten in one click</li>
+      </ul>
+      {% if payments_enabled %}<a class="btn" href="{{ url_for('pricing') }}">See Pro</a>{% endif %}
+    </div>
+    <div class="hw-demo" aria-label="Typed versus handwritten answer">
+      <div class="hw-row"><small>Typed</small><span class="typed">Photosynthesis makes glucose.</span></div>
+      <div class="hw-row"><small>Yours</small><span class="written">Photosynthesis makes glucose.</span></div>
+      <div class="hw-row"><small>Typed</small><span class="typed">x = 4, y = &minus;2</span></div>
+      <div class="hw-row"><small>Yours</small><span class="written">x = 4, y = &minus;2</span></div>
+    </div>
+  </div>
+</section>
+
+{% if payments_enabled %}
+<section class="section">
+  <div class="wrap">
+    <h2>Free to start</h2>
+    <p class="section-lede">Every account gets daily credits. Pro is there when you want more.</p>
+    <div class="tiers">
+      <div class="tier">
+        <h4>Free</h4>
+        <p class="price">$0, forever</p>
+        <ul>
+          <li>{{ free_daily_credits }} AI credits a day (~{{ (free_daily_credits / 2)|int }} pages)</li>
+          <li>Standard and AI Vision detection</li>
+          <li>The full editor, refine and ask-AI tools</li>
+        </ul>
+      </div>
+      <div class="tier pro">
+        <h4>Pro</h4>
+        <p class="price">{{ pro_price }}</p>
+        <ul>
+          {% for b in pro_benefits %}<li>{{ b.title }}</li>{% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<section class="closer">
+  <div class="wrap">
+    <h2>Your next worksheet, done.</h2>
+    <p>Sign up with Google or email and fill your first PDF in under a minute.</p>
+    <a class="btn accent" href="{{ url_for('login', mode='signup') }}">Try it free</a>
+  </div>
+</section>
+
+<footer class="site-footer">
+  {% if payments_enabled %}<a href="{{ url_for('pricing') }}">Pricing</a>{% endif %}
+  <a href="{{ url_for('terms') }}">Terms</a>
+  <a href="{{ url_for('privacy') }}">Privacy</a>
+  <a href="{{ url_for('login') }}">Sign in</a>
+</footer>
+</body>
+</html>

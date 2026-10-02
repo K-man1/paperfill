@@ -2025,9 +2025,9 @@ def change_ads():
 
 @app.route("/")
 def index():
-    # Gated: require a sign-in (user or admin) before the filler is shown.
+    # The filler needs an account; signed-out visitors get the landing page.
     if not session.get("role"):
-        return redirect(url_for("login"))
+        return render_template("landing.html", max_upload_mb=MAX_UPLOAD_MB)
     # Ads only run when enabled AND at least one VAST tag is configured; the
     # template treats an empty tag list as "off" regardless of the flag.
     return render_template(
@@ -2093,6 +2093,18 @@ def pricing():
         abort(404)
     return render_template("pricing.html", upgraded=False,
                             ww2_only=bool(request.args.get("ww2_only")))
+
+
+@app.route("/privacy")
+def privacy():
+    """Public, signed-out. Google's OAuth verification requires a reachable
+    privacy policy URL, so this must stay unauthenticated and stable."""
+    return render_template("privacy.html")
+
+
+@app.route("/terms")
+def terms():
+    return render_template("terms.html")
 
 
 @app.route("/upgrade/success")

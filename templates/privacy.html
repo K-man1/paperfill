@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Paperfill — Privacy Policy</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.png') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#f7f4ee;--ink:#1f1d1a;--ink-soft:#5c564c;--rule:#d5cec1;--accent:#ff5a1f;--accent-deep:#c93f10;--serif:"Fraunces",serif;--sans:"IBM Plex Sans",system-ui,sans-serif;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.6;}
+.wrap{max-width:720px;margin:0 auto;padding:42px 22px 90px;}
+a.back{color:var(--accent-deep);font-weight:600;text-decoration:none;}
+h1{font-family:var(--serif);font-weight:800;font-size:36px;margin:18px 0 4px;}
+.updated{color:var(--ink-soft);font-size:14px;margin:0 0 30px;}
+h2{font-family:var(--serif);font-weight:600;font-size:22px;margin:34px 0 10px;padding-top:22px;border-top:1px solid var(--rule);}
+h2:first-of-type{border-top:none;padding-top:0;}
+p{margin:0 0 14px;}
+ul{margin:0 0 14px;padding-left:22px;}
+li{margin-bottom:8px;}
+.lede{font-size:17px;color:var(--ink-soft);margin-bottom:26px;}
+.callout{background:#fff;border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:8px;padding:16px 18px;margin:0 0 18px;}
+.callout p:last-child{margin-bottom:0;}
+a{color:var(--accent-deep);}
+table{width:100%;border-collapse:collapse;margin:0 0 16px;font-size:15px;}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--rule);vertical-align:top;}
+th{font-weight:600;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">Back to Paperfill</a>
+
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: 28 August 2026</p>
+
+  <p class="lede">Paperfill fills out worksheets for you. That means you hand us
+  documents, and documents are personal. This page is a plain description of what
+  we collect, who else sees it, and how long we keep it.</p>
+
+  <div class="callout">
+    <p><b>The short version.</b> Your uploaded worksheets are sent to third-party
+    AI providers so they can be read and filled in. They are deleted from our
+    servers after 30 days. We do not sell your data. Don't upload anything
+    confidential.</p>
+  </div>
+
+  <h2>Who runs Paperfill</h2>
+  <p>Paperfill is operated by an independent developer ("we", "us"). You can reach us at
+  <a href="mailto:paperfill@user.hackclub.app">paperfill@user.hackclub.app</a> with any question about this
+  policy or about your data.</p>
+
+  <h2>What we collect</h2>
+  <table>
+    <tr>
+      <th>Account information</th>
+      <td>If you sign in with Google, we receive your email address, name, and
+      profile picture. If you sign up with an email address, we store the address,
+      your name, and a cryptographic hash of your password (never the password
+      itself).</td>
+    </tr>
+    <tr>
+      <th>Documents you upload</th>
+      <td>The PDFs and images you submit to be filled, and the filled versions we
+      produce. If you use the handwriting feature, the template page you write on
+      and the font generated from it.</td>
+    </tr>
+    <tr>
+      <th>Usage records</th>
+      <td>How many fills you have run, which AI models handled them, and the
+      resulting cost. This is how the daily free-credit limit works.</td>
+    </tr>
+    <tr>
+      <th>Device information</th>
+      <td>We set a cookie containing a random device identifier that lasts two
+      years, and record your IP address, browser user-agent string, and the site
+      that referred you. This is used to understand where visitors come from and to
+      enforce limits on accounts that abuse the service.</td>
+    </tr>
+    <tr>
+      <th>Problem reports</th>
+      <td>If you use "Report a problem", your message is stored together with the
+      PDF you uploaded, so the failure can be reproduced.</td>
+    </tr>
+  </table>
+
+  <h2>How your documents are processed</h2>
+  <p>This is the part most worth reading. To fill a worksheet, Paperfill sends the
+  page (as text, as an image, or both) to third-party AI providers. Those providers
+  receive the contents of your document. Currently these are:</p>
+  <ul>
+    <li>The <b>Hack Club AI proxy</b>, which is the primary route for AI requests.</li>
+    <li><b>OpenRouter</b>, used as a fallback when the primary route fails, which in
+    turn routes requests to <b>Google</b> Gemini models.</li>
+  </ul>
+  <p>Each of these providers handles your data under its own terms and privacy
+  policy, and we cannot guarantee how long they retain requests or whether they use
+  them to improve their own systems. If a document is confidential, do not upload it
+  to Paperfill.</p>
+
+  <h2>Other services we rely on</h2>
+  <ul>
+    <li><b>Supabase</b> stores account records, usage counts, and subscription status.</li>
+    <li><b>Hack Club Nest</b> hosts the application and its files.</li>
+    <li><b>Google</b> provides sign-in when you choose it.</li>
+    <li><b>Whop</b> processes Pro payments. Whop handles the transaction and we
+    never see or store your card details; we receive only your email address and
+    whether the subscription is active.</li>
+    <li>An <b>email provider</b> delivers account verification messages.</li>
+    <li><b>HilltopAds</b> may serve video advertising to free accounts. When ads are
+    enabled, the ad network receives your IP address and browser information and may
+    set its own identifiers. Pro accounts are not shown ads.</li>
+  </ul>
+
+  <h2>How long we keep things</h2>
+  <ul>
+    <li><b>Uploaded documents and filled outputs: 30 days.</b> They stay that long
+    so you can reopen them from Past fills; after that they are deleted from the
+    server automatically. You can delete any of them yourself, sooner, from Past
+    fills.</li>
+    <li><b>Problem reports, including the attached PDF: 30 days.</b></li>
+    <li><b>Account information and usage counts:</b> kept while your account exists.</li>
+    <li><b>Handwriting fonts:</b> kept until you replace or delete them.</li>
+  </ul>
+
+  <h2>What we don't do</h2>
+  <ul>
+    <li>We do not sell your personal information.</li>
+    <li>We do not use your documents to train our own models.</li>
+    <li>We do not read your documents except when you send a problem report, or
+    where we have to investigate abuse of the service.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>Paperfill is not intended for children under 13, and we do not knowingly
+  collect personal information from anyone under 13. You must be at least 13 to
+  create an account. If you believe a child under 13 has given us personal
+  information, email us at <a href="mailto:paperfill@user.hackclub.app">paperfill@user.hackclub.app</a> and
+  we will delete it.</p>
+
+  <h2>Your choices</h2>
+  <p>You can ask us to delete your account and everything attached to it by emailing
+  <a href="mailto:paperfill@user.hackclub.app">paperfill@user.hackclub.app</a> from the address on the
+  account. You can ask what we hold about you, and ask us to correct it. You can
+  clear the device cookie through your browser's settings at any time.</p>
+
+  <h2>Security</h2>
+  <p>Passwords are stored hashed, traffic is served over HTTPS, and uploaded files
+  are removed on the schedule above. No service is perfectly secure, and Paperfill
+  is a small independent project rather than a company with a security team. Please
+  weigh that before uploading anything sensitive.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>If this policy changes in a way that matters, we will update the date at the
+  top of the page. Continuing to use Paperfill after a change means you accept the
+  updated policy.</p>
+
+  <p style="margin-top:34px;"><a href="{{ url_for('terms') }}">Terms of Service</a></p>
+</div>
+</body>
+</html>
