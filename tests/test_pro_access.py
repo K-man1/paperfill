@@ -26,7 +26,7 @@ from paperfill import app as A
 WHOP_SECRET = "ws_" + "e1" * 32
 
 BUYER = "buyer@example.com"
-ADMIN = sorted(A.ADMIN_EMAILS)[0]
+ADMIN = "admin@example.com"
 
 
 @pytest.fixture

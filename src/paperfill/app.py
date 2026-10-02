@@ -213,14 +213,19 @@ def _inject_auth_flags():
 
 # Accounts whose email is in this allowlist get the "admin" role at login.
 # Everyone else is a normal user (or pro, per their is_pro column). Read from
-# env as a comma-separated list so it's configurable without a code change;
-# defaults to the owner's address. Emails are lowercased so the check is
-# case-insensitive and stored in a set (see _role_for below).
+# env as a comma-separated list, with no default: an admin address in the
+# source is a named target for anyone reading the repo. Emails are lowercased
+# so the check is case-insensitive and stored in a set (see _role_for below).
 ADMIN_EMAILS = {
     e.strip().lower()
-    for e in os.environ.get("ADMIN_EMAILS", "karman.chhatwal@gmail.com").split(",")
+    for e in os.environ.get("ADMIN_EMAILS", "").split(",")
     if e.strip()
 }
+
+# Empty means nobody can reach /admin, which is correct for a fresh checkout
+# and an invisible outage in production. Say so at boot either way.
+if not ADMIN_EMAILS:
+    print("[auth] ADMIN_EMAILS is unset: no account will get the admin role.")
 
 
 def _role_for(email: str) -> str:
