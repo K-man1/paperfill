@@ -651,6 +651,17 @@ def detect_multiple_choice_units(lines: list[dict], page_num: int,
             i += 1
             continue
 
+        # Alternatives to pick between, or sub-parts to answer? A blank inside
+        # an option settles it: nobody writes into a choice they are meant to
+        # circle. Getting this wrong is expensive — the label gets circled, the
+        # answer text the fill step produced is thrown away, and every real
+        # answer space in the band is consumed on the way past.
+        on_option = set(opt_line_ids)
+        if any(find_underscore_runs(l["chars"])
+               for l in lines[i:j] if id(l) in on_option):
+            i += 1
+            continue
+
         units.append(_make_mc_unit(options, page_num, counter, stem_text))
         consumed.update(opt_line_ids)
         consumed.update(id(l) for l in stem_lines)
