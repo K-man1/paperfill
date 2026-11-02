@@ -48,3 +48,6 @@ user_prefs.json
 
 # Claude Code project instructions, personal tooling like .claude/
 CLAUDE.md
+# Codex's equivalents; AGENTS.md carries prod SSH details
+AGENTS.md
+.codex/
