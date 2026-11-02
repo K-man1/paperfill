@@ -660,43 +660,6 @@ def _require_login_for_api():
     return None
 
 
-# ww2explained.com is a second hostname pointed at this same backend (see
-# Caddyfile) that should only be usable by Pro accounts, while
-# paperfill.hackclub.app stays open to everyone. Only the pages needed to
-# sign in and buy Pro stay reachable without it; everything else redirects
-# to the pricing page (or, for /api/*, returns JSON so fetch() callers don't
-# choke on an HTML redirect).
-_WW2_HOSTS = frozenset({"ww2explained.com", "www.ww2explained.com"})
-_WW2_OPEN_PATHS = frozenset({
-    "/pricing", "/login", "/signup", "/logout",
-    "/auth/google", "/auth/google/callback", "/upgrade/success",
-    "/whop/webhook",
-    "/2d7883f358a775fc1a8f.txt", "/0efb70ed5ecb5409945db6f7bb100589.html",
-})
-
-
-@app.before_request
-def _require_pro_for_ww2explained():
-    if request.host.split(":")[0].lower() not in _WW2_HOSTS:
-        return None
-    path = request.path
-    if (path in _WW2_OPEN_PATHS or path.startswith("/static/")
-            or path.startswith("/verify/")):
-        return None
-    if path.startswith("/api/"):
-        if not _is_pro():
-            return jsonify({"error": "Pro required on this domain"}), 402
-        return None
-    if not _is_pro():
-        if not payments_enabled():
-            # Every other path on this host is Pro-only and /pricing is down
-            # with payments, so there is nowhere to send them.
-            abort(403, "This site is for Pro members, and Pro isn't on sale "
-                       "right now.")
-        return redirect(url_for("pricing", ww2_only=1))
-    return None
-
-
 # A device is a browser that loaded a page. Everything else arrives without the
 # cookie too — every /static/ asset on a cold visit, every XHR, Whop's
 # webhook — and each one would pay for a blocking Supabase insert. With two sync
@@ -2316,16 +2279,10 @@ def delete_fill():
 def pricing():
     """Free vs Pro comparison + the upgrade call-to-action. Viewable signed-out
     so it can double as a marketing page; the upgrade button routes to /login
-    first when there's no session (we need to know who's buying).
-
-    ww2_only=1 is set when the ww2explained.com gate redirects a non-Pro
-    visitor here — shows a one-off notice. It's intentionally separate from
-    _pro_benefits() so ww2explained.com access never shows up as a Pro perk
-    on this page, the upgrade card, or the limit message."""
+    first when there's no session (we need to know who's buying)."""
     if not payments_enabled():
         abort(404)
-    return render_template("pricing.html", upgraded=False,
-                            ww2_only=bool(request.args.get("ww2_only")))
+    return render_template("pricing.html", upgraded=False)
 
 
 @app.route("/privacy")
