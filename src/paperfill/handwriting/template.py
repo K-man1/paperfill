@@ -6,11 +6,6 @@ fills in). Its machine-readable geometry — per-page marker centres and per-cel
 drawing rectangles in canonical page pixels — is calibrated once into
 ``template_geometry.json`` (see ``calibrate.py``). The font builder reads that
 geometry; nothing here re-derives it at runtime.
-
-``data/Calligraphr-Template.pdf`` is the upstream Calligraphr sheet that
-``template.pdf`` was originally derived from. No code loads it — it's kept as
-provenance so the template can be regenerated or re-cut later. Deleting it
-costs nothing at runtime but loses that trail.
 """
 
 from __future__ import annotations

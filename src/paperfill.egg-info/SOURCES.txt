@@ -26,7 +26,6 @@ src/paperfill/handwriting/font_build.py
 src/paperfill/handwriting/font_render.py
 src/paperfill/handwriting/font_store.py
 src/paperfill/handwriting/template.py
-src/paperfill/handwriting/data/Calligraphr-Template.pdf
 src/paperfill/handwriting/data/template.pdf
 src/paperfill/handwriting/data/template_geometry.json
 src/paperfill/utils/__init__.py
