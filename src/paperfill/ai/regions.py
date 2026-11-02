@@ -449,7 +449,11 @@ def region_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
                 graph = next((g for g in graphs if _overlap(g[0][0], g[0][2], box[0], box[2])
                               * _overlap(g[0][1], g[0][3], box[1], box[3])
                               >= 0.5 * (box[2] - box[0]) * (box[3] - box[1])), None)
-                if graph is not None:
+                # An empty axis_range is the model saying this space is not a
+                # grid. _grid_geometry also passes photos (a dark desk edge reads
+                # as gridlines), and trusting it there dropped every box on the
+                # page, so the model's word decides.
+                if graph is not None and space.get("axis_range"):
                     axes = _axis_range(space.get("axis_range"))
                     if axes is None:
                         dropped.append({"reason": "graph_without_axis_range",
