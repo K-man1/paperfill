@@ -558,6 +558,31 @@ def clients(signins) -> dict:
     }
 
 
+def survey_summary(rows: list[dict]) -> dict:
+    """Headline numbers for the survey section. All-time, not windowed: there
+    are few rows and a response from last month is still a response.
+
+    Dismissals count toward the response rate but not toward any average. NPS
+    is the usual promoters (9-10) minus detractors (0-6), over everyone who
+    gave a likelihood score, on a -100..100 scale."""
+    answered = [r for r in rows if not r.get("dismissed")]
+    ratings = [r["rating"] for r in answered if r.get("rating") is not None]
+    scores = [r["recommend"] for r in answered if r.get("recommend") is not None]
+    promoters = sum(1 for n in scores if n >= 9)
+    detractors = sum(1 for n in scores if n <= 6)
+    heard = Counter((r.get("heard_from") or "").strip().lower()
+                    for r in answered)
+    heard.pop("", None)
+    return {
+        "answered": len(answered),
+        "dismissed": len(rows) - len(answered),
+        "avg_rating": round(sum(ratings) / len(ratings), 1) if ratings else None,
+        "nps": (round(100 * (promoters - detractors) / len(scores))
+                if scores else None),
+        "heard_from": heard.most_common(),
+    }
+
+
 def build(*, signins, assignments, users, ai_calls, payments,
           window: Window, hack_club_calls: list[dict] | None = None,
           rate_card: dict | None = None, hack_club_cap_usd: float = 3.0) -> dict:

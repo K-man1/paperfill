@@ -253,6 +253,7 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
   <a href="#models">Models</a>
   <a href="#reliability">AI health</a>
   <a href="#settings">Settings</a>
+  <a href="#survey">Survey</a>
   <a href="#logs">Assignments</a>
 </nav>
 
@@ -721,6 +722,63 @@ button.pdf-link { background: none; border: 0; padding: 0; cursor: pointer; font
           <button type="submit" class="save-btn">Save ads</button>
         </form>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ SURVEY ============ -->
+  <section id="survey">
+    <div class="section-title">Survey</div>
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Answered</div>
+        <div class="stat-value">{{ survey.answered }}</div>
+        <div class="stat-sub">{{ survey.dismissed }} dismissed · all-time</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Average rating</div>
+        <div class="stat-value">{{ survey.avg_rating if survey.avg_rating is not none else '–' }}</div>
+        <div class="stat-sub">out of 5</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Net promoter score</div>
+        <div class="stat-value">{{ survey.nps if survey.nps is not none else '–' }}</div>
+        <div class="stat-sub">promoters 9-10 minus detractors 0-6</div>
+      </div>
+    </div>
+    {% if survey.heard_from %}
+    <div class="rating-summary">
+      {% for name, count in survey.heard_from %}
+        <span class="rating-none">{{ name }} · {{ count }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="table-wrap" style="margin-bottom:30px;">
+      {% if survey_rows %}
+      <table>
+        <thead>
+          <tr><th>When</th><th>Account</th><th>Rating</th><th>Recommend</th><th>Good</th><th>Bad</th><th>Heard from</th></tr>
+        </thead>
+        <tbody>
+          {% for row in survey_rows %}
+          <tr>
+            <td class="mono">{{ row.timestamp }}</td>
+            <td style="font-size:0.82rem;">{{ row.user_email }}</td>
+            {% if row.dismissed %}
+            <td colspan="5" style="color:var(--ink-soft);font-size:0.82rem;">Dismissed</td>
+            {% else %}
+            <td class="mono">{{ row.rating if row.rating is not none else '–' }}</td>
+            <td class="mono">{{ row.recommend if row.recommend is not none else '–' }}</td>
+            <td style="max-width:240px;font-size:0.82rem;">{{ row.good or '' }}</td>
+            <td style="max-width:240px;font-size:0.82rem;">{{ row.bad or '' }}</td>
+            <td style="font-size:0.82rem;">{{ row.heard_from or '' }}</td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p style="color:var(--ink-soft);font-size:0.86rem;">No survey responses yet.</p>
+      {% endif %}
     </div>
   </section>
 

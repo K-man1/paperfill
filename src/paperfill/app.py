@@ -434,6 +434,9 @@ SIGNUP_LIMIT, SIGNUP_WINDOW = 20, 3600
 # the limit that matters: without it anyone can aim either form at a stranger's
 # inbox and flood it.
 VERIFY_MAIL_LIMIT, VERIFY_MAIL_WINDOW = 3, 3600
+# The survey is shown once per account, so a real user posts it once or twice.
+# This only stops a script from filling the table.
+SURVEY_LIMIT, SURVEY_WINDOW = 10, 3600
 # Failed sign-ins per address. Keyed by the address and not the IP because a
 # whole class shares one school NAT address, and locking all of them out
 # because one of them fat-fingered a password is worse than the brute force
@@ -860,7 +863,10 @@ def load_job(job_id: str) -> dict | None:
     style change can each land on a different worker; without this freshness
     check a worker would serve its own stale copy (e.g. pre-fill overlays),
     which silently skipped handwriting regeneration."""
-    if not job_id:
+    # Callers pass ids straight from URLs and JSON bodies, and the id becomes a
+    # path: an absolute or ../ one would point the job's reads and writes
+    # anywhere on disk this process can reach.
+    if not isinstance(job_id, str) or not _JOB_ID_RE.match(job_id):
         return None
     path = _job_meta_path(job_id)
     cached = JOBS.get(job_id)
@@ -1949,7 +1955,7 @@ def admin():
 
     window, window_key = _admin_window()
 
-    # Six independent HTTP round-trips to Supabase. Serially that's several
+    # Independent HTTP round-trips to Supabase. Serially that's several
     # seconds of pure latency, so fan them out — they don't depend on each
     # other. Each fetch already swallows its own errors and returns [].
     from concurrent.futures import ThreadPoolExecutor
@@ -1964,6 +1970,7 @@ def admin():
         # windowed fetch above can't answer for a window that ended earlier.
         "hack_club_calls": lambda: db.fetch_ai_calls(utc_day_start),
         "payments": db.fetch_payments,
+        "survey": db.fetch_survey_responses,
     }
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
         futures = {k: ex.submit(fn) for k, fn in jobs.items()}
@@ -2010,6 +2017,9 @@ def admin():
             .strftime("%Y-%m-%d %H:%M UTC") if last_download else None),
         reports_status=request.args.get("reports_status"),
         s=s,
+        survey=stats.survey_summary(data["survey"]),
+        survey_rows=[{**r, "timestamp": _fmt_ts(r.get("ts"))}
+                     for r in data["survey"]],
         window_presets=WINDOW_PRESETS,
         window_key=window_key,
         window_label=window.label,
@@ -2986,6 +2996,53 @@ def submit_report():
     _snapshot_reported_pdf(job_id)
     _snapshot_report_settings(job_id, text)
     _snapshot_report_diagnostics(job_id)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/survey")
+def survey_status():
+    """Whether to show this account the survey. Admins never see it, so
+    testing the site doesn't use up the prompt or skew the numbers."""
+    if session.get("role") == "admin":
+        return jsonify({"show": False})
+    return jsonify({"show": db.survey_due(session.get("user_email", ""))})
+
+
+@app.post("/api/survey")
+def submit_survey():
+    """Store a survey answer or a dismissal. Every field is optional; a body
+    with nothing in it is a dismissal, which is recorded too so the prompt
+    doesn't come back."""
+    email = (session.get("user_email") or "").strip().lower()
+    if _rate_limited("survey", email, SURVEY_LIMIT, SURVEY_WINDOW):
+        return jsonify({"error": "too many requests"}), 429
+    body = request.get_json(silent=True) or {}
+
+    scores = {}
+    for field, low, high in (("rating", 1, 5), ("recommend", 0, 10)):
+        raw = body.get(field)
+        if raw is None:
+            scores[field] = None
+        elif (isinstance(raw, int) and not isinstance(raw, bool)
+              and low <= raw <= high):
+            scores[field] = raw
+        else:
+            return jsonify({"error": f"bad {field}"}), 400
+    good = str(body.get("good") or "").strip()[:1000]
+    bad = str(body.get("bad") or "").strip()[:1000]
+    heard_from = str(body.get("heard_from") or "").strip()[:200]
+
+    blank = (not (good or bad or heard_from)
+             and all(v is None for v in scores.values()))
+    answers = {
+        **scores,
+        "good": good or None,
+        "bad": bad or None,
+        "heard_from": heard_from or None,
+        "dismissed": bool(body.get("dismissed")) or blank,
+    }
+    if not db.save_survey(email, answers):
+        return jsonify({"error": "could not save"}), 502
     return jsonify({"ok": True})
 
 

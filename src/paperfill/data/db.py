@@ -123,6 +123,29 @@ def set_report(job_id: str, text: str) -> bool:
         return False
 
 
+def save_survey(email: str, answers: dict) -> bool:
+    """Store one account's survey row. The first write wins: a dismissal can't
+    clobber an answer, and a second submit can't rewrite one. The caller sees
+    False on any failure so the page can say the answer didn't land."""
+    email = (email or "").strip().lower()
+    if not enabled() or not email:
+        return False
+    try:
+        r = requests.post(
+            _rest("survey_responses?on_conflict=user_email"),
+            headers=_headers({"Prefer": "resolution=ignore-duplicates"}),
+            json={**answers, "user_email": email},
+            timeout=_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        print(f"[db] save_survey failed: {e}")
+        return False
+    if r.status_code >= 400:
+        print(f"[db] save_survey HTTP {r.status_code}: {r.text[:200]}")
+        return False
+    return True
+
+
 def record_ai_call(row: dict) -> None:
     """Append one metered LLM call. Called from llm_client's writer thread, so
     it must swallow everything — a telemetry failure must never surface."""
@@ -180,19 +203,25 @@ def record_device(device_id: str, ip: str, ua: str,
 
 # ---- Reads (admin dashboard) ---------------------------------------------
 
-def _get(path: str) -> list[dict]:
+def _get_checked(path: str) -> list[dict] | None:
+    """Rows, or None when the request failed. Callers that must tell "no rows"
+    from "couldn't ask" (the survey, which fails closed) use this one."""
     if not enabled():
-        return []
+        return None
     try:
         r = requests.get(_rest(path), headers=_headers(), timeout=_TIMEOUT)
         if r.status_code >= 400:
             print(f"[db] GET {path} HTTP {r.status_code}: {r.text[:200]}")
-            return []
+            return None
         data = r.json()
-        return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else None
     except (requests.RequestException, ValueError) as e:
         print(f"[db] GET {path} failed: {e}")
-        return []
+        return None
+
+
+def _get(path: str) -> list[dict]:
+    return _get_checked(path) or []
 
 
 def fetch_signins() -> list[dict]:
@@ -221,6 +250,29 @@ def fetch_fills_for(email: str, since) -> list[dict]:
         f"&ts=gte.{requests.utils.quote(since.isoformat(), safe='')}"
         "&order=ts.desc"
     )
+
+
+def survey_due(email: str) -> bool:
+    """Whether to ask this account for survey answers: it has filled at least
+    one worksheet and has neither answered nor dismissed the survey. A failed
+    lookup means no, so a missing table or a Supabase outage never turns into
+    a prompt that can't be saved."""
+    email = (email or "").strip().lower()
+    if not enabled() or not email:
+        return False
+    quoted = requests.utils.quote(email, safe="")
+    seen = _get_checked("survey_responses?select=user_email"
+                        f"&user_email=eq.{quoted}&limit=1")
+    if seen is None or seen:
+        return False
+    fills = _get_checked("assignments?select=job_id"
+                         f"&user_email=eq.{quoted}&limit=1")
+    return bool(fills)
+
+
+def fetch_survey_responses() -> list[dict]:
+    return _get("survey_responses?select=ts,user_email,dismissed,rating,"
+                "recommend,good,bad,heard_from&order=ts.desc")
 
 
 def fill_owner(job_id: str) -> str | None:

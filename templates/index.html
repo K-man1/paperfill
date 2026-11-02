@@ -926,6 +926,91 @@ span.hw-cta { cursor: default; }
 .report-done p { margin: 0 0 16px; color: var(--ink-soft); font-size: 0.9rem; }
 .report-modal.sent .report-form { display: none; }
 .report-modal.sent .report-done { display: block; }
+/* ---- Survey (returning users, once) ---- */
+.survey-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(28, 25, 20, 0.55);
+  padding: 20px;
+  overflow-y: auto;
+}
+.survey-backdrop.open { display: flex; align-items: center; justify-content: center; }
+.survey-modal {
+  width: 100%;
+  max-width: 520px;
+  margin: auto;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: var(--shadow-deep);
+  padding: 24px;
+}
+.survey-modal h3 { margin: 0 0 6px; font-size: 1.15rem; color: var(--ink); }
+.survey-modal .survey-sub { font-size: 0.86rem; color: var(--ink-soft); margin: 0 0 16px; }
+.survey-modal label,
+.survey-modal .survey-q {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.survey-modal .survey-q small { font-weight: 400; color: var(--ink-soft); }
+.survey-stars { display: flex; gap: 2px; }
+.survey-stars button {
+  width: auto;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  font-size: 1.9rem;
+  line-height: 1;
+  color: var(--rule);
+  cursor: pointer;
+}
+.survey-stars button.on { color: var(--accent); }
+.survey-scale { display: flex; flex-wrap: wrap; gap: 4px; }
+.survey-scale button {
+  width: auto;
+  flex: 1 0 34px;
+  padding: 7px 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.survey-scale button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.survey-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+.survey-modal textarea,
+.survey-modal input[type="text"] {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  background: #fff;
+  color: var(--ink);
+}
+.survey-modal textarea { resize: vertical; min-height: 58px; }
+.survey-modal textarea:focus,
+.survey-modal input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.survey-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.survey-actions button { width: auto; flex: 0 0 auto; }
+.survey-done { display: none; text-align: center; padding: 8px 0 4px; }
+.survey-done p { margin: 0 0 16px; color: var(--ink-soft); font-size: 0.9rem; }
+.survey-modal.sent .survey-form { display: none; }
+.survey-modal.sent .survey-done { display: block; }
 .editor-pages {
   display: flex;
   flex-direction: column;
@@ -1602,6 +1687,40 @@ span.hw-cta { cursor: default; }
       <p>Thanks. We've got your PDF and your notes, and this is how PaperFill gets better.</p>
       <div class="report-actions" style="justify-content:center;">
         <button class="btn-ghost" id="report-close" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Optional survey, shown once to accounts that have already filled something.
+     /api/survey decides who sees it; the stars and 0-10 scale are built in JS. -->
+<div class="survey-backdrop" id="survey-backdrop" role="dialog" aria-modal="true"
+     aria-labelledby="survey-title" aria-hidden="true">
+  <div class="survey-modal" id="survey-modal">
+    <div class="survey-form">
+      <h3 id="survey-title">Quick feedback?</h3>
+      <p class="survey-sub">Four optional questions, under a minute. Skip any or all of them.</p>
+      <div class="survey-q">How would you rate PaperFill?</div>
+      <div class="survey-stars" id="survey-stars" role="group" aria-label="Rating out of 5"></div>
+      <div class="survey-q">How likely are you to recommend it to a friend?</div>
+      <div class="survey-scale" id="survey-scale" role="group" aria-label="Likelihood to recommend, 0 to 10"></div>
+      <div class="survey-ends"><span>Not likely</span><span>Very likely</span></div>
+      <label for="survey-good">What's good?</label>
+      <textarea id="survey-good" rows="2" maxlength="1000"></textarea>
+      <label for="survey-bad">What's bad?</label>
+      <textarea id="survey-bad" rows="2" maxlength="1000"></textarea>
+      <label for="survey-heard">Where did you hear about PaperFill?</label>
+      <input type="text" id="survey-heard" maxlength="200">
+      <div class="survey-actions">
+        <button class="btn-ghost" id="survey-skip" type="button">No thanks</button>
+        <button class="btn-primary" id="survey-send" type="button">Send</button>
+      </div>
+    </div>
+    <div class="survey-done">
+      <h3>Thanks</h3>
+      <p>That goes straight to the person building PaperFill.</p>
+      <div class="survey-actions" style="justify-content:center;">
+        <button class="btn-ghost" id="survey-close" type="button">Close</button>
       </div>
     </div>
   </div>
@@ -4069,6 +4188,105 @@ $("report-send").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
+
+// ---- Survey ----
+const survey = { rating: null, recommend: null, answered: false };
+
+// Clicking the chosen value again clears it, since every answer is optional.
+const starButtons = [1, 2, 3, 4, 5].map((n) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = "★";
+  b.setAttribute("aria-label", `${n} out of 5`);
+  b.addEventListener("click", () => {
+    survey.rating = survey.rating === n ? null : n;
+    starButtons.forEach((s, i) => s.classList.toggle("on", i < survey.rating));
+  });
+  $("survey-stars").appendChild(b);
+  return b;
+});
+const scaleButtons = Array.from({ length: 11 }, (_, n) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = n;
+  b.addEventListener("click", () => {
+    survey.recommend = survey.recommend === n ? null : n;
+    scaleButtons.forEach((s, i) => s.classList.toggle("on", i === survey.recommend));
+  });
+  $("survey-scale").appendChild(b);
+  return b;
+});
+
+function setSurveyOpen(open) {
+  const back = $("survey-backdrop");
+  back.classList.toggle("open", open);
+  back.setAttribute("aria-hidden", String(!open));
+}
+
+async function postSurvey(body) {
+  const r = await fetch("/api/survey", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return r.ok;
+}
+
+// Dismissing is recorded too, otherwise the same person is asked every visit.
+async function skipSurvey() {
+  setSurveyOpen(false);
+  if (survey.answered) return;
+  survey.answered = true;
+  try {
+    if (!(await postSurvey({ dismissed: true }))) throw new Error("not saved");
+  } catch (err) {
+    console.warn("survey dismissal not recorded:", err);
+  }
+}
+
+$("survey-skip").addEventListener("click", skipSurvey);
+$("survey-close").addEventListener("click", () => setSurveyOpen(false));
+$("survey-backdrop").addEventListener("click", (e) => {
+  if (e.target === $("survey-backdrop")) skipSurvey();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("survey-backdrop").classList.contains("open")) skipSurvey();
+});
+
+$("survey-send").addEventListener("click", async () => {
+  const btn = $("survey-send");
+  btn.disabled = true;
+  try {
+    const ok = await postSurvey({
+      rating: survey.rating,
+      recommend: survey.recommend,
+      good: $("survey-good").value,
+      bad: $("survey-bad").value,
+      heard_from: $("survey-heard").value,
+    });
+    if (!ok) throw new Error("not saved");
+    survey.answered = true;
+    $("survey-modal").classList.add("sent");
+  } catch (_) {
+    toast("Couldn't send that, try again.", true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Fire-and-forget after load so the two lookups behind it never hold up the
+// page. A failed check just means no survey this visit.
+(async () => {
+  try {
+    const r = await fetch("/api/survey");
+    if (!r.ok || !(await r.json()).show) return;
+  } catch (_) {
+    return;
+  }
+  setTimeout(() => {
+    if (!$("report-backdrop").classList.contains("open")) setSurveyOpen(true);
+  }, 1500);
+})();
 
 $("restart-btn").addEventListener("click", async () => {
   // Nothing to discard any more — flush whatever the debounce is still holding
