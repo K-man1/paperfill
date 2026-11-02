@@ -1,7 +1,6 @@
 """
-Per-account fill preferences, set on the /settings page: whether to stamp the
-Goodnotes watermark, whether to auto-fill "Name"/"Date" header blanks (and
-what name to use), and the default way a freshly-detected graph answer is
+Per-account fill preferences, set on the /settings page: whether to auto-fill
+"Name"/"Date" header blanks (and what name to use), and the default way a freshly-detected graph answer is
 drawn ("points", "curve", or "none" — see GRAPH_MODES in index.html).
 
 File-backed JSON keyed by the same user key as the credit ledger (_user_key()
@@ -12,7 +11,7 @@ Two gunicorn workers share the file, so it is locked the same way usage.json
 is: an exclusive lock around save()'s read-modify-write (without it the second
 writer drops the first one's row) and a shared lock around the read (without
 it a fill mid-save reads a truncated file, and falling back to DEFAULTS there
-stamps the watermark onto a sheet for someone who turned it off).
+fills a sheet with settings the user never chose).
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ PREFS_PATH = REPO_ROOT / "user_prefs.json"
 PLOT_MODES = ("points", "curve", "none")
 
 DEFAULTS = {
-    "watermark": True,
     "fill_name_date": False,
     "name": "",
     "graph_plot": "points",
@@ -77,7 +75,6 @@ def save(user_key: str, raw: dict) -> dict:
     if not user_key:
         raise ValueError("no user key")
     clean = {
-        "watermark": bool(raw.get("watermark", True)),
         "fill_name_date": bool(raw.get("fill_name_date", False)),
         "name": str(raw.get("name") or "")[:200].strip(),
         "graph_plot": raw.get("graph_plot")

@@ -55,17 +55,6 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--accent);flex:0 0 
   <p class="lede">Preferences for how a worksheet gets filled. Saved to your
      account, so they apply the next time you fill one.</p>
 
-  <h2 class="section">Watermark</h2>
-  <div class="card">
-    <div class="control toggle-row">
-      <div class="toggle-copy">
-        <span class="name">Goodnotes watermark</span>
-        <p class="hint">Stamp the "Made with Goodnotes" badge on every filled page.</p>
-      </div>
-      <input type="checkbox" id="watermark" />
-    </div>
-  </div>
-
   <h2 class="section">Name and date</h2>
   <div class="card">
     <div class="control">
@@ -135,7 +124,6 @@ function currentPlot() {
 
 function markDirty() { el("saved").classList.remove("show"); }
 
-el("watermark").addEventListener("change", markDirty);
 el("fill_name_date").addEventListener("change", () => {
   el("name-row").classList.toggle("open", el("fill_name_date").checked);
   markDirty();
@@ -143,7 +131,6 @@ el("fill_name_date").addEventListener("change", () => {
 el("name").addEventListener("input", () => { el("name-err").textContent = ""; markDirty(); });
 
 function setValues(s) {
-  el("watermark").checked = !!s.watermark;
   el("fill_name_date").checked = !!s.fill_name_date;
   el("name").value = s.name || "";
   el("name-row").classList.toggle("open", !!s.fill_name_date);
@@ -168,7 +155,6 @@ el("save").addEventListener("click", async () => {
     const r = await fetch("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        watermark: el("watermark").checked,
         fill_name_date: fillNameDate,
         name,
         graph_plot: currentPlot(),

@@ -2229,8 +2229,8 @@ def handwriting_settings():
 
 @app.route("/settings")
 def settings_page():
-    """Fill preferences: the Goodnotes watermark, auto-filling Name/Date
-    header blanks, and the default way a detected graph gets drawn."""
+    """Fill preferences: auto-filling Name/Date header blanks and the
+    default way a detected graph gets drawn."""
     if not session.get("role"):
         return redirect(url_for("login"))
     return render_template("settings.html")
@@ -3244,11 +3244,9 @@ def _rerender_job(job_id: str) -> None:
     font_id = _font_id_from_style(job.get("style_id"))
     pen_thickness = font_store.get_settings(font_id)["pen_thickness"] if font_id else None
     images = _load_hw_images(job_id)
-    watermark = prefs.get(_user_key())["watermark"]
     filled_path = OUTPUTS / f"{job_id}-filled.pdf"
     render_overlays_pdf(job["pdf_path"], job["overlays"], str(filled_path),
-                        images=images, pen_thickness_mm=pen_thickness,
-                        watermark=watermark)
+                        images=images, pen_thickness_mm=pen_thickness)
     # Previews leave the pen strokes out: the editor draws those itself, as SVG
     # over the image. Baking them in as well painted every stroke twice and left
     # an erased one on screen until the next save came back — gone from the DOM,
@@ -3261,8 +3259,7 @@ def _rerender_job(job_id: str) -> None:
     try:
         stamp_overlays(doc, [o for o in job["overlays"]
                              if o.get("kind") != "ink" and o.get("id") not in images],
-                       images=images, pen_thickness_mm=pen_thickness,
-                       watermark=watermark)
+                       images=images, pen_thickness_mm=pen_thickness)
         preview_dir = OUTPUTS / job_id
         for i, page in enumerate(doc):
             pix = page.get_pixmap(matrix=PREVIEW_MATRIX * page.derotation_matrix)

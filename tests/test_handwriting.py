@@ -206,7 +206,7 @@ def _stamped_ink(pdf_path, slot_bbox):
     doc = fitz.open(str(pdf_path))
     page = doc[0]
     slot = fitz.Rect(slot_bbox)
-    # The watermark is stamped too, so pick the image that lands in the slot.
+    # Only the image that lands in the slot is the answer.
     stamped = [(img, r) for img in page.get_images(full=True)
                for r in page.get_image_rects(img[0]) if r.intersects(slot)]
     assert len(stamped) == 1, f"{len(stamped)} images in the answer slot"

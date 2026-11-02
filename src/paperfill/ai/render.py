@@ -4,14 +4,12 @@ PDF. Coordinates are never seen by the LLM — they come from the
 preprocessor. Text auto-fits to the slot bbox.
 """
 
-import os
 import re
 from datetime import datetime
 
 import fitz
 
 from paperfill.handwriting.font_render import RENDER_PX, BASELINE_FRAC
-from paperfill.paths import REPO_ROOT
 
 
 # Tunables
@@ -21,10 +19,6 @@ FILLED_MARKER = "paperfill-filled"
 HANDWRITING_FONT = "helv"  # built-in PDF font
 MIN_FONT_SIZE = 6
 
-# "Made with Goodnotes" badge stamped on the bottom-left of every rendered page.
-WATERMARK_PATH = str(REPO_ROOT / "assets" / "goodnotes_watermark.png")
-WATERMARK_WIDTH = 58.5                                                                                            # px wide on the page (aspect ratio preserved)
-WATERMARK_MARGIN = 10   # px from the left and bottom edges
 # Handwriting is rendered by the font pipeline as fixed-height line bands
 # (LINE_BAND_PX tall) whose glyphs are drawn at RENDER_PX em. We scale every
 # band so the *em* lands at a target px on the page — sizing by the actual
@@ -345,35 +339,9 @@ def _insert_handwriting_image(page, bbox, png_bytes: bytes,
     page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
 
 
-def _stamp_watermark(doc) -> None:
-    """Stamp the 'Made with Goodnotes' badge on the bottom-left of every page.
-    The PNG is transparent, so it overlays cleanly. Sized to WATERMARK_WIDTH
-    with aspect ratio preserved and a small margin from the page edges."""
-    if not os.path.exists(WATERMARK_PATH):
-        return
-    import io
-    from PIL import Image
-
-    with open(WATERMARK_PATH, "rb") as f:
-        png_bytes = f.read()
-    img_w, img_h = Image.open(io.BytesIO(png_bytes)).size
-    if not (img_w and img_h):
-        return
-    scale = WATERMARK_WIDTH / img_w
-    draw_w, draw_h = img_w * scale, img_h * scale
-
-    for page in doc:
-        ph = page.rect.height
-        x0 = WATERMARK_MARGIN
-        y1 = ph - WATERMARK_MARGIN
-        rect = fitz.Rect(x0, y1 - draw_h, x0 + draw_w, y1)
-        page.insert_image(rect, stream=png_bytes, keep_proportion=True, overlay=True)
-
-
 def stamp_overlays(doc, overlays: list[dict],
                    images: dict[str, bytes] | None = None,
-                   pen_thickness_mm: float | None = None,
-                   watermark: bool = True) -> None:
+                   pen_thickness_mm: float | None = None) -> None:
     """
     Draw the flat overlay list onto an open document. Each overlay carries its
     own formatting (font, size, bold/italic/underline) which is applied via
@@ -382,8 +350,7 @@ def stamp_overlays(doc, overlays: list[dict],
     If `images` maps an overlay id -> PNG bytes (rendered handwriting), that
     overlay is stamped as an image instead of typeset text. `pen_thickness_mm`,
     if given, recalibrates every stamped answer's ink to that physical stroke
-    width (see `_insert_handwriting_image`). `watermark` gates the Goodnotes
-    badge stamp, on by default — a user turns it off from the settings page.
+    width (see `_insert_handwriting_image`).
 
     Split out from render_overlays_pdf so the editor's preview images can be
     rasterised from a document stamped with a different subset of the overlays,
@@ -462,18 +429,15 @@ def stamp_overlays(doc, overlays: list[dict],
         except Exception:
             # htmlbox failed (bad rect, unsupported font) — fall back to plain text
             insert_text_in_region(page, ov["bbox"], ov.get("text", ""))
-    if watermark:
-        _stamp_watermark(doc)
 
 
 def render_overlays_pdf(pdf_path: str, overlays: list[dict], out_path: str,
                         images: dict[str, bytes] | None = None,
-                        pen_thickness_mm: float | None = None,
-                        watermark: bool = True) -> None:
+                        pen_thickness_mm: float | None = None) -> None:
     """Stamp the overlays onto a copy of the PDF and write it to `out_path`."""
     doc = fitz.open(pdf_path)
     try:
-        stamp_overlays(doc, overlays, images, pen_thickness_mm, watermark)
+        stamp_overlays(doc, overlays, images, pen_thickness_mm)
         # Tag our own output so a re-upload of it is recognisable. Merged into the
         # existing Info dict rather than replacing it, because set_metadata writes
         # the whole dict and would otherwise drop the source document's author.

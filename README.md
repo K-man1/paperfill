@@ -61,6 +61,5 @@ tests/
 tools/
 deploy/         
 docs/
-assets/
 verification/
 ```
