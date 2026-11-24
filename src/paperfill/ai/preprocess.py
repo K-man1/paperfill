@@ -831,8 +831,10 @@ def extract_table_unit(table, page_num: int, counter: dict) -> Unit | None:
     for r in range(row_count):
         row_struct = []
         for c in range(col_count):
-            # PyMuPDF's table.cells is column-major: cells[c*row_count + r]
-            cell_bbox = table.cells[c * row_count + r]
+            # table.cells lists only the cells that exist, so a merged cell
+            # makes it shorter than row_count * col_count. rows[r].cells is
+            # the full grid, with None where a merged cell spans.
+            cell_bbox = table.rows[r].cells[c]
             if cell_bbox is None:
                 row_struct.append(None)
                 continue
