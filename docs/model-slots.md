@@ -56,7 +56,8 @@ built by `build_client()` ([llm_client.py:258-282](../src/paperfill/ai/llm_clien
   none ([llm_client.py:261-267](../src/paperfill/ai/llm_client.py)).
 - **Fallback base URL**: `OPENROUTER_BASE_URL` → `https://openrouter.ai/api/v1`,
   built only if `OPENROUTER_API_KEY` is set
-  ([llm_client.py:274-280](../src/paperfill/ai/llm_client.py)).
+  ([llm_client.py:274-280](../src/paperfill/ai/llm_client.py)), and used only
+  for admin requests (`allow_fallback`, set per request in `app.py`).
 
 The same URL selection is duplicated for the catalog fetch at
 [models.py:158-161](../src/paperfill/data/models.py) (`GET {base}/models`, 900 s

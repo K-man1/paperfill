@@ -17,6 +17,7 @@ model coordinates instead of failing.
 """
 
 import base64
+import contextvars
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -388,8 +389,12 @@ def region_preprocess_pdf(path: str, formats=None, detector=None) -> dict:
     doc = fitz.open(path)
     try:
         pngs = [page.get_pixmap(dpi=DETECT_DPI).tobytes("png") for page in doc]
+        # Pool threads don't inherit contextvars, which carry the admin's
+        # fallback flag (llm_client.allow_fallback).
+        ctx = contextvars.copy_context()
         with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as pool:
-            detected = list(pool.map(lambda png: detector(png) or [], pngs))
+            detected = list(pool.map(
+                lambda png: ctx.copy().run(detector, png) or [], pngs))
 
         counter = {"u": 0, "n": 0}
         units: list[Unit] = []

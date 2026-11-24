@@ -11,6 +11,7 @@ Endpoints:
 """
 
 import base64
+import contextvars
 import hashlib
 import hmac
 import io
@@ -66,7 +67,7 @@ from paperfill.ai.render import (render_overlays_pdf, stamp_overlays,
                                  build_overlays_from_structure,
                                  apply_name_date_fill, FILLED_MARKER)
 from paperfill.ai.vision_preprocess import VISION_DPI
-from paperfill.ai.llm_client import call_context
+from paperfill.ai.llm_client import allow_fallback, call_context
 from paperfill.handwriting import font_store
 from paperfill.utils.context_sources import (extract_file_text, fetch_youtube_transcript,
                                              assemble_context, web_search_context)
@@ -719,9 +720,15 @@ def _set_device_cookie(resp):
                         samesite="Lax")
     return resp
 
+# The paid OpenRouter fallback is for the admin only. Reset on every request
+# so a reused worker thread never carries the last request's flag forward.
+@app.before_request
+def _scope_ai_fallback():
+    allow_fallback(session.get("role") == "admin")
+
 # OpenAI-compatible client. Uses the Hack Club AI proxy by default
-# (free, no credit card), with an OpenRouter fallback on any failure. Reads
-# AI_API_KEY / OPENROUTER_API_KEY from environment / .env.
+# (free, no credit card), with an OpenRouter fallback on any failure for admin
+# requests only. Reads AI_API_KEY / OPENROUTER_API_KEY from environment / .env.
 _openai_client = None
 def get_openai_client():
     global _openai_client
@@ -1412,8 +1419,11 @@ def call_vision_to_fill(structure: dict, page_pngs: list[bytes],
 
     pages = sorted(by_page)
     answers: dict[str, str] = {}
+    # Pool threads don't inherit contextvars; each page gets its own copy so
+    # the admin fallback flag still applies.
+    ctx = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=min(4, len(pages) or 1)) as ex:
-        for part in ex.map(fill_page, pages):
+        for part in ex.map(lambda p: ctx.copy().run(fill_page, p), pages):
             answers.update(part)
     return answers
 
@@ -2611,7 +2621,10 @@ def upload():
     # browser a 502 while the work finishes unseen. So it runs off the request
     # and the client polls GET /api/upload/<job_id>. Not a daemon thread: a
     # worker recycled by max_requests then waits for it instead of killing it.
-    threading.Thread(target=_detect_job, args=(job_id, JOBS[job_id]),
+    # Run in a copy of this request's context so the admin's fallback flag
+    # follows the detection off-request.
+    threading.Thread(target=contextvars.copy_context().run,
+                     args=(_detect_job, job_id, JOBS[job_id]),
                      name=f"detect-{job_id}").start()
     return jsonify({"job_id": job_id, "status": "detecting"}), 202
 
@@ -2822,7 +2835,8 @@ def fill():
     # copied request context keeps the session-backed helpers (_is_pro,
     # _user_key, _record_fill, and prefs inside _rerender_job) working there.
     work = copy_current_request_context(_fill_job)
-    threading.Thread(target=work, args=(job_id, job, instructions, want_web),
+    threading.Thread(target=contextvars.copy_context().run,
+                     args=(work, job_id, job, instructions, want_web),
                      name=f"fill-{job_id}").start()
     return jsonify({"job_id": job_id, "status": "filling"}), 202
 

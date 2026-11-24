@@ -10,6 +10,9 @@ itself an OpenRouter front end, so the two share one id namespace and the
 retry is a change of route, not of model: a Pro call fails over to the Pro
 model, a Free call to the Free one.
 
+The fallback key is paid, so only admin requests may use it (see
+`allow_fallback`). Everyone else gets the primary's error.
+
 The wrapper mimics just the surface the app uses — `client.chat.completions
 .create(...)` and `client.files.create(...)` — so it drops in wherever a raw
 OpenAI client was used, with no call-site changes.
@@ -34,6 +37,14 @@ _purpose = contextvars.ContextVar("llm_purpose", default="unknown")
 _job_id = contextvars.ContextVar("llm_job_id", default="")
 _is_pro = contextvars.ContextVar("llm_is_pro", default=None)
 _user_key = contextvars.ContextVar("llm_user_key", default="")
+# Kept apart from call_context, which resets its labels on every nested block.
+# Set once per request; background threads only see it if they were started
+# with a copy of the request's context, and default to no fallback otherwise.
+_fallback_allowed = contextvars.ContextVar("llm_fallback_allowed", default=False)
+
+
+def allow_fallback(allowed: bool) -> None:
+    _fallback_allowed.set(allowed)
 
 
 class call_context:
@@ -162,7 +173,7 @@ class _Method:
                 self._record(kwargs.get("model", ""), "primary", t0, resp, None)
             return resp
         except Exception as primary_err:
-            fb = self._parent.fallback
+            fb = self._parent.fallback if _fallback_allowed.get() else None
             if fb is None:
                 if meter:
                     self._record(kwargs.get("model", ""), "primary", t0, None,
