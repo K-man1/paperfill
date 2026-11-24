@@ -343,7 +343,10 @@ def detect_open_response_units(lines: list[dict], page_num: int,
     units: list[Unit] = []
     for pi, group in enumerate(prompts):
         joined = re.sub(r"\s+", " ", " ".join(l["text"] for l in group)).strip()
-        if not joined or "_" in joined:
+        # Google Docs exports some empty lines as a lone zero-width space,
+        # which str.strip() keeps. Such a line still bounds the prompt above
+        # it, but it is not a prompt itself.
+        if not re.sub(r"[\u200b\u200c\u200d]", "", joined).strip() or "_" in joined:
             continue  # empty, or an inline-blank prompt handled elsewhere
 
         p_top = min(l["bbox"][1] for l in group)
@@ -1014,15 +1017,23 @@ def table_fill_regions(unit: Unit, page, counter: dict) -> list[Unit]:
 
 # ---------- main preprocessor ----------------------------------------------
 
+# A page whose only real text is a running page number ("3", "Página 3 de 12")
+# has nothing for the text parser to work with: its content is in images, often
+# screenshots pasted into a Docs/Word file. Treat it like a page with no text.
+MIN_TEXT_LAYER_CHARS = 16
+
+
 def page_has_text_layer(page) -> bool:
     """True if the page exposes real characters (digital PDF), False for a scan."""
     raw = page.get_text("rawdict")
+    seen = 0
     for block in raw["blocks"]:
         if block.get("type") != 0:
             continue
         for line in block.get("lines", []):
             for span in line.get("spans", []):
-                if span.get("chars"):
+                seen += sum(1 for ch in span.get("chars", []) if not ch["c"].isspace())
+                if seen > MIN_TEXT_LAYER_CHARS:
                     return True
     return False
 
@@ -1043,13 +1054,22 @@ def page_is_scanned(page) -> bool:
     page_area = page.rect.width * page.rect.height
     if page_area <= 0:
         return False
-    for block in page.get_text("rawdict")["blocks"]:
-        if block.get("type") != 1:  # image block
-            continue
-        x0, y0, x1, y1 = block["bbox"]
-        if (x1 - x0) * (y1 - y0) >= SCAN_IMAGE_COVERAGE * page_area:
-            return True
-    return False
+    cover_seqno = next(
+        (seqno for seqno, (kind, box) in enumerate(page.get_bboxlog())
+         if kind in ("fill-image", "fill-imgmask")
+         and fitz.Rect(box).get_area() >= SCAN_IMAGE_COVERAGE * page_area),
+        None,
+    )
+    if cover_seqno is None:
+        return False
+    # A digital worksheet on a full-page background (a decorative border, a
+    # paper texture) paints its visible text on top of that image. An OCR layer
+    # is invisible (render mode 3) or sits underneath the scan, so only text
+    # that is both visible and painted later proves the page is not a scan.
+    return not any(
+        span["seqno"] > cover_seqno and span["type"] != 3 and span["opacity"] > 0
+        for span in page.get_texttrace()
+    )
 
 
 def preprocess_pdf(path: str, formats=None) -> dict:
